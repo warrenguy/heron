@@ -81,6 +81,11 @@ type ConsensusModule struct {
 	// Opened only when Config.ServiceCount > 0.
 	serviceControl *ServiceControlSubscription
 
+	// recoveryState is the recovery state counter (type 204). Nil when
+	// ServiceCount is 0. The service start handler closes the counter when
+	// the wait pops. Close closes the counter too.
+	recoveryState *aeron.Counter
+
 	streams   *LogStreams
 	host      *election.HostAdapter
 	election  *election.Election
@@ -118,95 +123,54 @@ type ConsensusModule struct {
 	reseedCtx context.Context
 }
 
-// OpenConsensusModule assembles one consensus member and returns the member with
-// every transport handle and agent dependency bound before the first duty tick.
+// OpenConsensusModule assembles one consensus member. Open binds every
+// transport handle and agent dependency before it returns.
 //
 // ctx bounds the transport connect, the archive control connect, the term
-// recording stop, its catalog wait, and the recording-extent lookups the
-// recovery plan makes.
+// recording stop, its catalog wait, the recording-extent lookups the recovery
+// plan makes, and the module snapshot load. When Config.Aeron is set, ctx
+// still bounds the archive control connect.
 //
 // The log recording control and the log replay helpers keep Open's context
 // values and detach cancel (context.WithoutCancel). Cancel after Open returns
 // does not fail later start or stop awaits. ControlResponseTimeout bounds
 // those awaits.
 //
-// When Config.Aeron is set, ctx still bounds the archive control connect.
+// Open blocks on:
+//   - the archive control connect, bounded by archive.DefaultConnectTimeout
+//   - on a restart, the term recording stop and its catalog wait. The wait
+//     ends ControlResponseTimeout after the stop reply. The wait checks that
+//     deadline only between catalog lists
+//   - on a plan that holds a snapshot, the module snapshot load. The image
+//     wait and each fragment gap stop after one leader heartbeat timeout
 //
-// Open order:
-//  1. topology
-//  2. transport client
-//  3. archive control client
-//  4. recording-log archive lister
-//  5. recovery: stops the term recording, then plans
-//  6. agent
-//  7. log recording control, then the module snapshot recording control,
-//     the snapshot publication adder, the snapshot recording log and the
-//     snapshot stream
-//  8. consensus publications
-//  9. consensus subscription
-//  10. cluster log streams
-//  11. host adapter
-//  12. election
-//  13. election factory
-//  14. log replay factory, then log replication factory
-//  15. catchup control
-//  16. log publication reseed
-//  17. client ingress subscription (all members; accept and redirect in
-//     dispatch)
-//  18. session egress adder and ingress-endpoints string (no new resource open)
-//  19. service control publication when ServiceCount > 0
-//  20. service control subscription when ServiceCount > 0
+// A process that opens several members in sequence does not service an
+// earlier member's transport client during a block. Open every member's
+// Archive before opening any member. Keep the total connect cost below each
+// member's Client.InterServiceTimeout.
 //
-// Recovery plans from the recording log.
+// Open does not start a log recording or a snapshot. The cluster log
+// publication and subscription open before return, so the first duty tick
+// can win leadership.
 //
-// A recording log that carries term entries needs a connected archive lister to
-// resolve extents.
-//
-// Assembly notes:
-//   - transport and archive control connect before recovery
-//   - log recording control is wired after the agent and before the log streams.
-//     No recording starts at Open
-//   - Open wires the module snapshot seams after the log recording control.
-//     The archive session handler passes each signal to the log recording,
-//     then to the snapshot STOP watch, then to the election. The snapshot
-//     publication adder uses the transport client. The snapshot rows go to
-//     the recovery recording log at RecordingLogFileSyncLevel. No snapshot
-//     starts at Open
-//   - cluster log publication and subscription open before return. The first
-//     duty tick can then win leadership and append a leadership-term event
-//   - every member opens the client ingress subscription. A settled leader
-//     accepts connects. A settled non-leader with a known leader sends REDIRECT
-//   - session egress uses the transport client as the publication adder and
-//     Topology.IngressEndpoints as REDIRECT detail
-//   - service control opens only when ServiceCount > 0: publication (stream
-//     104) then subscription (stream 105). No wait at Open. A member with no
-//     live service process still binds. JoinLog offers stay pending on
-//     NotConnected
+// With ServiceCount > 0, Open opens service control and adds the recovery
+// state counter. A service container with Recovery set reads that counter in
+// its Open. The election does not wait for the service start acks.
 //
 // Returns an error when:
 //   - Config fails Validate
 //   - the transport client cannot connect
 //   - the archive control client cannot connect
 //   - recovery fails
+//   - the module snapshot load fails
+//   - the recovery state counter add fails
 //   - consensus publications, consensus subscription, log streams, client
 //     ingress subscription, or service control publication or subscription
 //     (when ServiceCount > 0) fail to open
 //   - the transport client has no counters reader
 //
-// Open blocks on the archive control connect, bounded by
-// archive.DefaultConnectTimeout and by ctx. A process that opens several members
-// in sequence services no earlier member's transport client during that block.
-//
-// On a restart Open also blocks on the term recording stop and its catalog
-// wait. The stop and each catalog list run their own offer and response
-// bounds. The wait ends ControlResponseTimeout after the stop reply. The wait
-// checks that deadline only between lists. ctx bounds every step.
-//
-// Open every member's Archive before opening any member. Keep the total
-// connect cost below each member's Client.InterServiceTimeout.
-//
-// On error every handle opened so far is closed, the cluster directory lock is
-// released, and the returned value is nil.
+// On error Open closes every handle it opened. Open then releases the cluster
+// directory lock and returns nil.
 func OpenConsensusModule(
 	ctx context.Context,
 	deps ConsensusModuleDeps,
@@ -341,6 +305,22 @@ func OpenConsensusModule(
 	module.agent.SetSnapshotPublicationAdder(snapshotPublicationAdder{client: module.client})
 	module.agent.SetSnapshotRecordingLog(recovery.RecordingLog(), cfg.RecordingLogFileSyncLevel)
 	module.agent.SetSnapshotStream(cfg.SnapshotChannel, cfg.SnapshotStreamID)
+
+	if snapshots := recovery.Plan().Snapshots; len(snapshots) > 0 {
+		loader := moduleSnapshotLoad{
+			ctx:       ctx,
+			control:   module.archiveClient,
+			adder:     module.client,
+			pump:      module.client.DoWork,
+			nanoClock: module.nanoClock,
+			channel:   topology.ReplayChannel(),
+			streamID:  topology.ReplayStreamID(),
+			timeoutNs: electionCfg.LeaderHeartbeatTimeoutNs,
+		}
+		if err := loader.run(module.agent, snapshots[0]); err != nil {
+			return nil, err
+		}
+	}
 
 	publisher := election.NewAeronPublisher()
 
@@ -522,8 +502,6 @@ func OpenConsensusModule(
 	module.agent.SetEgressPublicationAdder(module.client)
 	module.agent.SetIngressEndpoints(topology.IngressEndpoints())
 
-	// Service control: only when clustered services are configured.
-	// Publication (stream 104) before subscription (stream 105). No wait at Open.
 	if cfg.ServiceCount > 0 {
 		serviceControlPub, err := OpenServiceControlPublication(ServiceControlPublicationDeps{
 			Adder:    module.client,
@@ -544,6 +522,20 @@ func OpenConsensusModule(
 			return nil, err
 		}
 		module.serviceControl = serviceControl
+
+		// Add the counter last, so a failed earlier step never exposes a
+		// recovery key.
+		plan := recovery.Plan()
+		counter, err := addRecoveryStateCounter(module.client, plan)
+		if err != nil {
+			return nil, err
+		}
+		module.recoveryState = counter
+		if err := module.agent.AwaitServiceStart(plan.SeedLogPosition(), func() {
+			_ = module.recoveryState.Close()
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	succeeded = true
@@ -607,30 +599,7 @@ func (m *ConsensusModule) trackLogReplication(r *logReplication) {
 	m.logReplication = r
 }
 
-// Close tears the member down in reverse open order:
-//  1. agent bindings (module snapshot take close, snapshot seam clears,
-//     ingress unbind, service proxy clear, session egress teardown, adder
-//     clear)
-//  2. catchup control
-//  3. best-effort log recording stop
-//  4. election close, log replication stop, and retained replay helper
-//     close error
-//  5. service control subscription
-//  6. service control publication
-//  7. client ingress subscription
-//  8. cluster log streams
-//  9. consensus subscription
-//  10. consensus publications
-//  11. archive control client
-//  12. owned transport client
-//  13. recovery
-//
-// The archive control client closes before the transport client. The archive
-// control publication and subscription belong to that transport client.
-// StopReplay and StopReplication must reach the archive while the archive
-// client is still connected. Election and helper teardown therefore run
-// before the archive close. The log replication stop blocks until the
-// archive replies.
+// Close tears the member down in reverse open order.
 //
 // The log recording stop abandons a pending async stop. The blocking drain
 // runs only when a start channel is still kept.
@@ -684,15 +653,18 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetCatchupControl(nil)
 		m.agent.SetLogPublicationReseed(nil)
 	}
+	if m.recoveryState != nil {
+		err = errors.Join(err, m.recoveryState.Close())
+		m.recoveryState = nil
+	}
 	if m.catchup != nil {
 		err = errors.Join(err, m.catchup.close())
 		m.catchup = nil
 	}
-	// Best-effort stop before streams and archive client close.
-	//
-	// Fail-closed election paths own stop errors.
-	//
-	// Close still releases transport handles.
+
+	// Best-effort stop before the streams and the archive client close.
+	// Fail-closed election paths own stop errors. Close still releases the
+	// transport handles.
 	if m.logRecording != nil {
 		if stopErr := m.logRecording.StopLogRecording(); stopErr != nil {
 			err = errors.Join(err, stopErr)
@@ -703,6 +675,10 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetLogRecordingControl(nil)
 		m.agent.SetLogTruncateControl(nil)
 	}
+
+	// StopReplay and StopReplication need a connected archive client, so the
+	// election and the replay helpers close first. The replication stop blocks
+	// until the archive replies.
 	if m.election != nil {
 		m.election.Close()
 	}
@@ -745,6 +721,9 @@ func (m *ConsensusModule) Close() error {
 		err = errors.Join(err, m.pubs.Close())
 		m.pubs = nil
 	}
+
+	// The transport client owns the archive control publication and
+	// subscription, so the archive client closes first.
 	if m.archiveClient != nil {
 		err = errors.Join(err, m.archiveClient.Close())
 		m.archiveClient = nil

@@ -116,10 +116,10 @@ func (p RecoveryPlan) TermRecordingID() int64 {
 }
 
 // SeedLogPosition returns the log position a restart replays from.
-//
-// It is 0: a restart replays the whole log. Recovery refuses a plan that
-// holds a snapshot, so no snapshot position raises it yet.
 func (p RecoveryPlan) SeedLogPosition() int64 {
+	if len(p.Snapshots) > 0 {
+		return p.Snapshots[0].LogPosition
+	}
 	return 0
 }
 

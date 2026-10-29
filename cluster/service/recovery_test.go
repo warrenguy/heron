@@ -138,6 +138,7 @@ func recoveryKeyPastMaxServiceCount(tb testing.TB) []byte {
 func recoveryOpenConfig(client *recoveryFakeTransport, svc ClusteredService) Config {
 	cfg := openConfig(client)
 	cfg.Service = svc
+	cfg.StartAck = nil
 	cfg.Recovery = &RecoveryConfig{}
 	return cfg
 }

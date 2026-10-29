@@ -114,6 +114,7 @@ func openSnapshotServiceCluster(t *testing.T) (serviceCluster, *snapshotRecorder
 		Service:           rec,
 		CommittedPosition: module.CommitPosition,
 		Archive:           &archive.Config{},
+		Recovery:          &service.RecoveryConfig{},
 	})
 	require.NoError(t, err)
 	harness.CleanupClose(t, "service container", container.Close)
@@ -448,6 +449,21 @@ func allocateRecoveryState(
 	fields codecs.RecoveryStateKeyFields,
 ) func() {
 	t.Helper()
+
+	// The module's recovery state counter stays until the service start wait
+	// pops. A service.Open call reads the first counter of that type. Wait
+	// until the driver frees the module counter.
+	reader, err := module.Client().CountersReader()
+	require.NoError(t, err)
+	requireServiceAwaitTick(
+		t, sc,
+		"module recovery state counter freed",
+		durableWorkBound,
+		func() bool {
+			_, found := reader.FindCounterOfType(codecs.RecoveryStateCounterTypeID)
+			return !found
+		},
+	)
 
 	key := make([]byte, cnc.CounterMetadataMaxKeyLength)
 	end, ok := codecs.EncodeRecoveryStateKey(key, 0, fields)

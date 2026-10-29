@@ -53,11 +53,21 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 		// failed latches after ErrServiceAckOutOfSequence (marks once). Model
 		// then expects no further wait progress.
 		failed := false
+		startPos := rapid.Int64Range(1, 1_000).Draw(rt, "startPos")
+		handlerRuns := 0
+		require.NoError(rt, a.AwaitServiceStart(startPos, func() { handlerRuns++ }))
+		modelWaits = append(modelWaits, startPos)
+		delivered = append(delivered, startPos)
 
 		assertInvariants := func() {
 			rt.Helper()
 			require.Equal(rt, len(modelWaits), a.PendingServiceAckWaits())
 			require.Equal(rt, expectedID, a.ExpectedServiceAckID())
+			wantRuns := 0
+			if !slices.Contains(modelWaits, startPos) {
+				wantRuns = 1
+			}
+			require.Equal(rt, wantRuns, handlerRuns)
 			if len(modelWaits) == 0 {
 				require.Equal(rt, int64(nullValue), a.ExpectedAckPosition())
 			} else {

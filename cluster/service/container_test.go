@@ -106,6 +106,7 @@ func openConfig(aeronClient TransportClient) Config {
 		Aeron:             aeronClient,
 		Service:           &recordingService{},
 		CommittedPosition: func() int64 { return 0 },
+		StartAck:          &StartAckConfig{},
 	}
 }
 
@@ -119,6 +120,7 @@ func archiveOpenConfig(t *testing.T, archiveCfg archive.Config) Config {
 func recoveryTransportConfig(t *testing.T, recovery RecoveryConfig) Config {
 	t.Helper()
 	cfg := openConfig(newRecoveryFakeTransport(t))
+	cfg.StartAck = nil
 	cfg.Recovery = &recovery
 	return cfg
 }
@@ -449,6 +451,15 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			wantErr: "service: SnapshotStreamID and ServiceStreamID must differ",
 		},
 		{
+			name: "neither recovery nor start ack",
+			cfg: func(t *testing.T) Config {
+				cfg := openConfig(newFakeTransport(t))
+				cfg.StartAck = nil
+				return cfg
+			},
+			wantErr: "service: Open needs Recovery or StartAck",
+		},
+		{
 			name: "start ack with recovery",
 			cfg: func(t *testing.T) Config {
 				cfg := recoveryTransportConfig(t, RecoveryConfig{})
@@ -491,6 +502,7 @@ func TestOpen_refusesInvalidConfig(t *testing.T) {
 			name: "recovery on a transport without the recovery surface",
 			cfg: func(t *testing.T) Config {
 				cfg := openConfig(newFakeTransport(t))
+				cfg.StartAck = nil
 				cfg.Recovery = &RecoveryConfig{}
 				return cfg
 			},
@@ -605,20 +617,34 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 	require.True(t, aeron.SubscriptionAddImageForHooks(client.sub, image))
 	writeUnfragmentedFrame(t, image, 0, encodeRequestServiceAckControl(t, 0))
 
-	work := agent.DoWork(0)
-	require.NoError(t, agent.ServiceFailure())
-	require.GreaterOrEqual(t, work, 3, "Start + control fragment + drain")
-	require.Equal(t, int64(1), agent.NextAckID())
-	require.Equal(t, 0, agent.PendingCoordinationAcks())
-
-	acks := decodeServiceAcksFromPub(t, client.pub)
-	require.Equal(t, []codecs.ServiceAckFields{{
+	startAck := codecs.ServiceAckFields{
 		LogPosition: 0,
 		Timestamp:   0,
 		AckID:       0,
-		RelevantID:  -1,
+		RelevantID:  0,
 		ServiceID:   3,
-	}}, acks)
+	}
+	work := agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
+	require.GreaterOrEqual(t, work, 3, "Start + control fragment + start ack")
+	require.Equal(t, int64(1), agent.NextAckID())
+	require.Equal(t, 1, agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{startAck}, decodeServiceAcksFromPub(t, client.pub))
+
+	require.Positive(t, agent.DoWork(0))
+	require.NoError(t, agent.ServiceFailure())
+	require.Equal(t, int64(2), agent.NextAckID())
+	require.Equal(t, 0, agent.PendingCoordinationAcks())
+	require.Equal(t, []codecs.ServiceAckFields{
+		startAck,
+		{
+			LogPosition: 0,
+			Timestamp:   0,
+			AckID:       1,
+			RelevantID:  nullValue,
+			ServiceID:   3,
+		},
+	}, decodeServiceAcksFromPub(t, client.pub))
 }
 
 func TestOpen_StartAckPassthrough(t *testing.T) {
@@ -810,7 +836,7 @@ func TestContainer_Close(t *testing.T) {
 		t.Parallel()
 		client, svc, c := openRecordingContainer(t)
 
-		require.Equal(t, 1, c.Agent().DoWork(0))
+		require.Equal(t, 2, c.Agent().DoWork(0))
 		require.Equal(t, 1, svc.startCount)
 		require.False(t, client.sub.IsClosed())
 		require.False(t, client.pub.IsClosed())

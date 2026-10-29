@@ -167,7 +167,22 @@ func (s *sessionRecorder) holdsCloseWithReason(
 // holdsMessagesAfterOpen reports the session open, then exactly one message
 // per payload in payload order, every message for sessionID.
 func (s *sessionRecorder) holdsMessagesAfterOpen(sessionID int64, payloads ...[]byte) bool {
-	if !s.holdsOpen(sessionID) || len(s.messages) != len(payloads) {
+	if !s.holdsOpen(sessionID) || !s.messagesAre(sessionID, payloads) {
+		return false
+	}
+	want := append([]string{"open"}, slices.Repeat([]string{"message"}, len(payloads))...)
+	return slices.Equal(s.order, want)
+}
+
+func (s *sessionRecorder) holdsMessages(sessionID int64, payloads ...[]byte) bool {
+	if s.holdsOpen(sessionID) || !s.messagesAre(sessionID, payloads) {
+		return false
+	}
+	return slices.Equal(s.order, slices.Repeat([]string{"message"}, len(payloads)))
+}
+
+func (s *sessionRecorder) messagesAre(sessionID int64, payloads [][]byte) bool {
+	if len(s.messages) != len(payloads) {
 		return false
 	}
 	for i, msg := range s.messages {
@@ -175,12 +190,7 @@ func (s *sessionRecorder) holdsMessagesAfterOpen(sessionID int64, payloads ...[]
 			return false
 		}
 	}
-	want := make([]string, 0, len(payloads)+1)
-	want = append(want, "open")
-	for range payloads {
-		want = append(want, "message")
-	}
-	return slices.Equal(s.order, want)
+	return true
 }
 
 // serviceMember is one member's recorder, agent, bound-check wrapper, and
@@ -305,6 +315,32 @@ func requireServiceAwaitTick(
 	t.Logf("%s elapsed=%s", label, time.Since(start))
 }
 
+func requireMessagesAfterOpen(
+	t *testing.T,
+	sc serviceCluster,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	label string,
+	sessionID int64,
+	payloads ...[]byte,
+) {
+	t.Helper()
+
+	requireServiceAwaitTick(
+		t, sc,
+		label,
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for _, mem := range sc.members {
+				if !mem.rec.holdsMessagesAfterOpen(sessionID, payloads...) {
+					return false
+				}
+			}
+			return true
+		}),
+	)
+}
+
 // requireNoServiceFailure asserts ServiceFailure and ServiceAckFailure are nil
 // on the member at index. detail is inserted into each failure message.
 func requireNoServiceFailure(
@@ -397,9 +433,6 @@ func startWrappedServiceCluster(
 	return serviceCluster{set: set, members: members}
 }
 
-// requireServicesJoined ticks until every service is log bound with no
-// pending join and ack id 1, and every module expects ack id 1 with no
-// pending ack wait.
 func requireServicesJoined(t *testing.T, sc serviceCluster) {
 	t.Helper()
 
@@ -411,10 +444,10 @@ func requireServicesJoined(t *testing.T, sc serviceCluster) {
 			for i, m := range sc.set.Modules() {
 				agent := sc.members[i].agent
 				ca := m.Agent()
-				if !agent.IsLogBound() || agent.HasPendingJoin() || agent.NextAckID() != 1 {
+				if !agent.IsLogBound() || agent.HasPendingJoin() || agent.NextAckID() != 2 {
 					return false
 				}
-				if ca.ExpectedServiceAckID() != 1 || ca.PendingServiceAckWaits() != 0 {
+				if ca.ExpectedServiceAckID() != 2 || ca.PendingServiceAckWaits() != 0 {
 					return false
 				}
 			}
@@ -477,19 +510,11 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 
 	payload := []byte(serviceMessagePayload)
 	offerServiceMessage(t, sc, session, payload)
-
-	requireServiceAwaitTick(
-		t, sc,
+	requireMessagesAfterOpen(
+		t, sc, transport, session,
 		"session message delivered",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			for _, mem := range sc.members {
-				if !mem.rec.holdsMessagesAfterOpen(wantSession, payload) {
-					return false
-				}
-			}
-			return true
-		}),
+		wantSession,
+		payload,
 	)
 
 	requireServiceAwaitTick(
@@ -512,13 +537,13 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 	}
 
 	for i, m := range set.Modules() {
-		if got := sc.members[i].agent.NextAckID(); got != 1 {
-			require.Equal(t, int64(1), got,
+		if got := sc.members[i].agent.NextAckID(); got != 2 {
+			require.Equal(t, int64(2), got,
 				"NextAckID after message member %d:\n%s",
 				m.ThisMemberID(), sc.dump())
 		}
-		if got := m.Agent().ExpectedServiceAckID(); got != 1 {
-			require.Equal(t, int64(1), got,
+		if got := m.Agent().ExpectedServiceAckID(); got != 2 {
+			require.Equal(t, int64(2), got,
 				"ExpectedServiceAckID after message member %d:\n%s",
 				m.ThisMemberID(), sc.dump())
 		}
@@ -559,9 +584,9 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 			durableWorkBound,
 			sessionPump(transport, session, func() bool {
 				ca := m.Agent()
-				return ca.ExpectedServiceAckID() == 2 &&
+				return ca.ExpectedServiceAckID() == 3 &&
 					ca.PendingServiceAckWaits() == 0 &&
-					agent.NextAckID() == 2
+					agent.NextAckID() == 3
 			}),
 		)
 		requireNoServiceFailure(t, sc, i, " after request")
@@ -620,6 +645,7 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 
 const (
 	serviceSecondPayload = "service-second-message"
+	serviceThirdPayload  = "service-third-message"
 	serviceClosePayload  = "service-close-session"
 )
 
@@ -780,6 +806,7 @@ func openServiceMember(
 		Service:           app,
 		CommittedPosition: module.CommitPosition,
 		Archive:           &archive.Config{},
+		Recovery:          &service.RecoveryConfig{},
 	})
 	require.NoError(t, err)
 	harness.CleanupClose(t, label, container.Close)
@@ -830,18 +857,11 @@ func TestClusterService_restartedMemberServiceConsumes(t *testing.T) {
 	sessionID := session.ClusterSessionID()
 	first := []byte(serviceMessagePayload)
 	offerServiceMessage(t, sc, session, first)
-	requireServiceAwaitTick(
-		t, sc,
+	requireMessagesAfterOpen(
+		t, sc, transport, session,
 		"first message delivered",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			for _, mem := range sc.members {
-				if !mem.rec.holdsMessagesAfterOpen(sessionID, first) {
-					return false
-				}
-			}
-			return true
-		}),
+		sessionID,
+		first,
 	)
 
 	followerIndex := firstNonLeaderIndex(set, leader.ThisMemberID())
@@ -873,6 +893,96 @@ func TestClusterService_restartedMemberServiceConsumes(t *testing.T) {
 	)
 	requireNoServiceFailure(t, sc, followerIndex, " after restart")
 	require.NoError(t, sc.members[followerIndex].checked.violation, sc.dump())
+}
+
+// TestClusterService_restartedMemberServiceConsumesFromSnapshot asserts a
+// restarted follower service loads its snapshot. The service consumes only
+// the log after the snapshot position.
+func TestClusterService_restartedMemberServiceConsumesFromSnapshot(t *testing.T) {
+	t.Parallel()
+
+	sc := startServiceCluster(
+		t,
+		harness.ClusterServiceSnapshotRestartPortBase,
+		harness.ClusterServiceSnapshotRestartLogEndpoint,
+		amendServiceMember,
+	)
+	set := sc.set
+	leader := requireSingleLeader(t, set, "")
+	requireServicesJoined(t, sc)
+
+	transport, session := connectServiceSession(t, sc, leader)
+	sessionID := session.ClusterSessionID()
+	first := []byte(serviceMessagePayload)
+	offerServiceMessage(t, sc, session, first)
+	requireMessagesAfterOpen(
+		t, sc, transport, session,
+		"first message delivered",
+		sessionID,
+		first,
+	)
+
+	_, actionPosition := requestSnapshotAction(
+		t, sc, leader, transport, session, "snapshot",
+	)
+	requireServiceAwaitTick(
+		t, sc,
+		"snapshot on every member",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			for i, m := range set.Modules() {
+				result, ok := m.Agent().LastSnapshotTake()
+				if !ok {
+					return false
+				}
+				if result.Err != nil {
+					require.NoError(t, result.Err,
+						"snapshot member %d:\n%s", m.ThisMemberID(), sc.dump())
+				}
+				if result.LogPosition != actionPosition || result.RecordingID < 0 {
+					return false
+				}
+				requireNoServiceFailure(t, sc, i, " during snapshot")
+			}
+			return true
+		}),
+	)
+
+	second := []byte(serviceSecondPayload)
+	offerServiceMessage(t, sc, session, second)
+	requireMessagesAfterOpen(
+		t, sc, transport, session,
+		"second message delivered",
+		sessionID,
+		first, second,
+	)
+
+	followerIndex := firstNonLeaderIndex(set, leader.ThisMemberID())
+	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", sc.dump())
+	restartServiceMember(t, sc, followerIndex, nil)
+
+	restarted := sc.members[followerIndex]
+	require.Equal(t, actionPosition, restarted.agent.LogPosition(), sc.dump())
+	restored, ok := restarted.agent.ClientSession(sessionID)
+	require.True(t, ok, "restored session %d:\n%s", sessionID, sc.dump())
+	require.Equal(t, sessionID, restored.ID(), sc.dump())
+	require.False(t, restarted.rec.holdsOpen(sessionID), sc.dump())
+
+	third := []byte(serviceThirdPayload)
+	offerServiceMessage(t, sc, session, third)
+	restartedModule := set.Module(followerIndex)
+	requireServiceAwaitTick(
+		t, sc,
+		"restarted service consumes from snapshot",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			requireNoServiceFailure(t, sc, followerIndex, " during restart")
+			return restarted.rec.holdsMessages(sessionID, second, third) &&
+				restartedModule.Agent().PendingServiceAckWaits() == 0
+		}),
+	)
+	requireNoServiceFailure(t, sc, followerIndex, " after restart")
+	require.NoError(t, restarted.checked.violation, sc.dump())
 }
 
 const (

@@ -229,6 +229,7 @@ func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serv
 				CommittedPosition: module.CommitPosition,
 				ServiceID:         int32(sid),
 				Archive:           &archive.Config{},
+				Recovery:          &service.RecoveryConfig{},
 			})
 			require.NoError(t, err)
 			harness.CleanupClose(
@@ -368,34 +369,7 @@ func requireHeldAckRound(
 }
 
 // TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks asserts a
-// requested service ack wait completes only after every service on that member
-// acks.
-//
-// Three members run with ServiceCount 2. Two containers attach per member
-// before the first tick.
-//
-// Open order:
-//  1. join settle
-//  2. committed session message
-//  3. leader holds service 1 then service 0
-//  4. each follower holds service 1 then service 0
-//
-// Asserts:
-//   - after join settle, expected ack id is 1
-//   - after join settle, both service queues are empty
-//   - a committed session message does not move expected ack id or NextAckID
-//
-// After RequestServiceAck with one service DoWork held:
-//   - the unheld service acks
-//   - 100 further ticks keep expected ack id unchanged
-//   - PendingServiceAckWaits is 1
-//   - held queue depth is 0
-//   - unheld queue depth is 1
-//   - held NextAckID is unchanged
-//   - ServiceAckFailure is nil
-//
-// Release completes the wait. Expected ack id and NextAckID advance. After
-// both holds on a member, expected ack id and NextAckID are 3.
+// requested service ack wait pops only after every service on the member acks.
 func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing.T) {
 	t.Parallel()
 
@@ -409,7 +383,7 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		func() bool {
 			for i, m := range set.Modules() {
 				ca := m.Agent()
-				if ca.ExpectedServiceAckID() != 1 || ca.PendingServiceAckWaits() != 0 {
+				if ca.ExpectedServiceAckID() != 2 || ca.PendingServiceAckWaits() != 0 {
 					return false
 				}
 				if ca.ServiceAckQueueDepth(0) != 0 || ca.ServiceAckQueueDepth(1) != 0 {
@@ -418,7 +392,7 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 				for _, seat := range seats[i] {
 					if !seat.agent.IsLogBound() ||
 						seat.agent.HasPendingJoin() ||
-						seat.agent.NextAckID() != 1 {
+						seat.agent.NextAckID() != 2 {
 						return false
 					}
 				}
@@ -519,8 +493,8 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 
 	for i, m := range set.Modules() {
 		ca := m.Agent()
-		if got := ca.ExpectedServiceAckID(); got != 1 {
-			require.Equal(t, int64(1), got,
+		if got := ca.ExpectedServiceAckID(); got != 2 {
+			require.Equal(t, int64(2), got,
 				"ExpectedServiceAckID after message member %d:\n%s",
 				m.ThisMemberID(), dumpMultiService(set, seats))
 		}
@@ -535,8 +509,8 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 				m.ThisMemberID(), dumpMultiService(set, seats))
 		}
 		for sid, seat := range seats[i] {
-			if got := seat.agent.NextAckID(); got != 1 {
-				require.Equal(t, int64(1), got,
+			if got := seat.agent.NextAckID(); got != 2 {
+				require.Equal(t, int64(2), got,
 					"NextAckID after message member %d service %d:\n%s",
 					m.ThisMemberID(), sid, dumpMultiService(set, seats))
 			}
@@ -554,15 +528,15 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		requireHeldAckRound(t, set, seats, m, transport, session, 1)
 		requireHeldAckRound(t, set, seats, m, transport, session, 0)
 
-		if got := m.Agent().ExpectedServiceAckID(); got != 3 {
-			require.Equal(t, int64(3), got,
+		if got := m.Agent().ExpectedServiceAckID(); got != 4 {
+			require.Equal(t, int64(4), got,
 				"ExpectedServiceAckID after both holds member %d:\n%s",
 				m.ThisMemberID(), dumpMultiService(set, seats))
 		}
 		i := int(m.ThisMemberID())
 		for sid, seat := range seats[i] {
-			if got := seat.agent.NextAckID(); got != 3 {
-				require.Equal(t, int64(3), got,
+			if got := seat.agent.NextAckID(); got != 4 {
+				require.Equal(t, int64(4), got,
 					"NextAckID after both holds member %d service %d:\n%s",
 					m.ThisMemberID(), sid, dumpMultiService(set, seats))
 			}

@@ -265,6 +265,18 @@ const (
 	ClusterServiceEgressLogEndpoint = "239.255.12.77:20104"
 )
 
+// Service snapshot restart endpoints. The pair reserves one three-member
+// consensus port block (base+1 .. base+205) and one shared cluster-log
+// multicast endpoint. The base sits between ClusterServiceEgressPortBase
+// and ClusterModuleImageLossPortBase.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterServiceSnapshotRestartPortBase    = 20400
+	ClusterServiceSnapshotRestartLogEndpoint = "239.255.12.83:20404"
+)
+
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package uses under
 // t.Parallel. Sibling packages use 9000-9205 and 23700-24605 and may run in
@@ -750,6 +762,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterServiceEgressPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterServiceEgressLogEndpoint,
+		},
+		{
+			name:        "service-snapshot-restart",
+			portBase:    ClusterServiceSnapshotRestartPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceSnapshotRestartLogEndpoint,
 		},
 		{
 			name:        "cluster-streams-multicast",

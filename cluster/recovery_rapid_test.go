@@ -3,6 +3,7 @@
 package cluster_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,20 +25,43 @@ const (
 	shapeTermsAndSnapshot
 )
 
-// drawLogShape draws a log shape over all fixture shapes. drawLogShape writes
-// the fixture into dir through the exported append API. drawLogShape registers
-// any recording ids used with lister. drawLogShape never computes a plan.
-// rapid's log_shape draw label names the shape on failure.
+const (
+	drawnSnapshotLogPosition    int64 = 128
+	drawnSnapshotLeadershipTerm int64 = 3
+	drawnSnapshotTimestamp      int64 = 1000
+)
+
+type drawnSnapshot struct {
+	termCount int
+
+	// moduleIndex is the consensus-module row index. Term rows and included
+	// service rows precede the module row.
+	moduleIndex int
+
+	// lowestMissing is the smallest service id omitted from a snapshot group.
+	// The value is -1 when the group includes every id in [0, serviceCount).
+	lowestMissing int
+}
+
+// drawLogShape writes one fixture shape into dir. A non-nil lister receives
+// the term recording when the shape includes terms. This function does not
+// call PlanRecovery.
 //
-// Returns the drawn shape so a caller can assert the nil-lister refusal.
-func drawLogShape(rt *rapid.T, dir string, lister *fakeLister) logShape {
+// A snapshot shape appends a subset of the service ids, highest id first.
+// The module row follows those ids.
+func drawLogShape(
+	rt *rapid.T,
+	dir string,
+	lister *fakeLister,
+	serviceCount int,
+) (logShape, drawnSnapshot) {
 	rt.Helper()
 	return drawLogShapeFrom(rt, dir, lister, []logShape{
 		shapeEmpty,
 		shapeTerms,
 		shapeSnapshot,
 		shapeTermsAndSnapshot,
-	})
+	}, serviceCount)
 }
 
 // drawLogShapeFrom draws one shape from shapes and writes that fixture.
@@ -46,13 +70,15 @@ func drawLogShapeFrom(
 	dir string,
 	lister *fakeLister,
 	shapes []logShape,
-) logShape {
+	serviceCount int,
+) (logShape, drawnSnapshot) {
 	rt.Helper()
 
 	shape := rapid.SampledFrom(shapes).Draw(rt, "log_shape")
+	drawn := drawnSnapshot{lowestMissing: -1}
 
 	if shape == shapeEmpty {
-		return shape
+		return shape, drawn
 	}
 
 	log, err := recordinglog.Open(dir, true)
@@ -60,6 +86,7 @@ func drawLogShapeFrom(
 
 	if shape == shapeTerms || shape == shapeTermsAndSnapshot {
 		n := rapid.IntRange(1, 4).Draw(rt, "term_count")
+		drawn.termCount = n
 		recordingID := int64(42)
 		for i := range n {
 			base := int64(i) * 512
@@ -71,11 +98,36 @@ func drawLogShapeFrom(
 	}
 
 	if shape == shapeSnapshot || shape == shapeTermsAndSnapshot {
-		require.NoError(rt, log.AppendSnapshot(55, 3, 0, 128, 1000, -1))
+		appendSnap := func(serviceID int32) {
+			rt.Helper()
+			require.NoError(rt, log.AppendSnapshot(
+				55,
+				drawnSnapshotLeadershipTerm,
+				0,
+				drawnSnapshotLogPosition,
+				drawnSnapshotTimestamp,
+				serviceID,
+			))
+		}
+
+		included := 0
+
+		// The loop visits high ids first. The last skip is the smallest
+		// missing id.
+		for id := serviceCount - 1; id >= 0; id-- {
+			if !rapid.Bool().Draw(rt, "include_service") {
+				drawn.lowestMissing = id
+				continue
+			}
+			appendSnap(int32(id))
+			included++
+		}
+		drawn.moduleIndex = drawn.termCount + included
+		appendSnap(recordinglog.ConsensusModuleServiceID)
 	}
 
 	require.NoError(rt, log.Close())
-	return shape
+	return shape, drawn
 }
 
 // restartHistory holds durable state a previous boot left under the cluster directory.
@@ -160,7 +212,7 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 			}
 		}
 
-		shape := drawLogShape(rt, dir, lister)
+		shape, drawn := drawLogShape(rt, dir, lister, serviceCount)
 
 		cfg := cluster.Config{
 			MemberID:                      int32(memberID),
@@ -188,22 +240,44 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 			return
 		}
 
-		if shape == shapeSnapshot || shape == shapeTermsAndSnapshot {
-			// Snapshot fixture with a lister. OpenRecovery must refuse.
-			// Nil-lister non-empty already returned above.
-			// PlanRecovery may fail when ServiceCount is greater than zero and
-			// service snapshot extents are incomplete.
-			// A plan that holds snapshots is refused with "snapshot load is not implemented".
-			require.Error(rt, err)
-			requireOpenFailed(t, rt, recovery, err, dir)
-			return
+		snapshotShape := shape == shapeSnapshot || shape == shapeTermsAndSnapshot
+		if snapshotShape {
+			// selectRecoveryAnchor returns ErrSnapshotMissingForService when the
+			// module row index is below ServiceCount.
+			if drawn.moduleIndex < serviceCount {
+				require.ErrorIs(rt, err, recordinglog.ErrSnapshotMissingForService)
+				require.ErrorContains(rt, err, "cluster: plan recovery")
+				require.NotContains(rt, err.Error(), "lacks service")
+				requireOpenFailed(t, rt, recovery, err, dir)
+				return
+			}
+			if drawn.termCount == 0 {
+				require.EqualError(rt, err, fmt.Sprintf(
+					"cluster: recovery plan holds a snapshot at log position %d and no log term",
+					drawnSnapshotLogPosition,
+				))
+				requireOpenFailed(t, rt, recovery, err, dir)
+				return
+			}
+			if drawn.lowestMissing >= 0 {
+				require.EqualError(rt, err, fmt.Sprintf(
+					"cluster: recovery plan snapshot group at log position %d in term %d lacks service %d",
+					drawnSnapshotLogPosition,
+					drawnSnapshotLeadershipTerm,
+					drawn.lowestMissing,
+				))
+				requireOpenFailed(t, rt, recovery, err, dir)
+				return
+			}
 		}
 
-		// Success path: empty log (any lister), or terms with a lister.
 		require.NoError(rt, err)
 		require.NotNil(rt, recovery)
 		require.NotNil(rt, recovery.RecordingLog())
 		require.NotNil(rt, recovery.NodeState())
+		if snapshotShape {
+			require.Equal(rt, drawnSnapshotLogPosition, recovery.ElectionConfig().LogPosition)
+		}
 		require.NoError(rt, recovery.Close())
 		require.NoError(rt, recovery.Close())
 		require.Empty(rt, fdsUnder(t, dir))
@@ -259,20 +333,17 @@ func drawRecoveryConfig(rt *rapid.T, dir string) cluster.Config {
 	}.Normalize()
 }
 
-// drawSeededConfig draws an open-success log shape into dir. Returns a
-// drawRecoveryConfig config with that shape.
+// drawSeededConfig draws an empty or terms fixture so OpenRecovery succeeds.
 //
-// Constraints:
-//   - only empty and terms fixtures
-//   - snapshot shapes refuse OpenRecovery
-//   - seed and reopen properties require a successful open
+// The fixture draw passes serviceCount 0. The config draws its own service
+// count.
 func drawSeededConfig(rt *rapid.T, dir string) (cluster.Config, *fakeLister, logShape) {
 	rt.Helper()
 
 	lister := &fakeLister{
 		extents: make(map[int64]recordinglog.LogRecordingExtents),
 	}
-	shape := drawLogShapeFrom(rt, dir, lister, []logShape{shapeEmpty, shapeTerms})
+	shape, _ := drawLogShapeFrom(rt, dir, lister, []logShape{shapeEmpty, shapeTerms}, 0)
 	return drawRecoveryConfig(rt, dir), lister, shape
 }
 
@@ -381,7 +452,8 @@ func TestOpenRecovery_restartSeed_rapid(t *testing.T) {
 		require.False(rt, recovery.IsColdStart())
 		require.False(rt, recovery.Plan().IsEmpty())
 
-		// History → plan geometry from the fixture writer, not an election oracle.
+		// The fixture writer supplies this plan geometry. The election does not
+		// supply this plan geometry.
 		plan := recovery.Plan()
 		require.Equal(rt, int64(history.terms-1), plan.LastLeadershipTermID)
 		require.Equal(rt, termBaseStride*int64(history.terms-1), plan.LastTermBaseLogPosition)

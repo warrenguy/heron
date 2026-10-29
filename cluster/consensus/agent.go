@@ -384,8 +384,9 @@ type Agent struct {
 	// returns true.
 	serviceAcks *serviceAckTracker
 
-	// serviceAckFailure is the first marked receive-time out-of-sequence
-	// failure, or nil until marked. Full contract on [Agent.ServiceAckFailure].
+	// serviceAckFailure is the first marked failure, or nil until marked. An
+	// out-of-sequence ack or a service start ack with RelevantID NULL_VALUE
+	// marks serviceAckFailure. Full contract on [Agent.ServiceAckFailure].
 	serviceAckFailure error
 
 	// serviceIngress polls service control fragments (stream 105). Nil means
@@ -423,6 +424,10 @@ type Agent struct {
 	// whose acks are not yet consumed. FIFO. The first entry pairs with the
 	// expected ack id of each service.
 	serviceAckWaits []int64
+
+	// serviceStartHandler runs once when the service start wait pops. Non-nil
+	// while the service start wait leads the coordination FIFO.
+	serviceStartHandler func()
 
 	// snapshotWaitPosition is the log position of a pending snapshot action
 	// wait, or 0 when none. Log polls stop at this position. The pop clears

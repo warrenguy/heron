@@ -140,7 +140,37 @@ func TestApplyRecoveryPlan(t *testing.T) {
 		election.ApplyRecoveryPlan(&cfg, plan)
 		require.Equal(t, int64(2), cfg.LeadershipTermID)
 		require.Equal(t, int64(5), cfg.TermBaseLogPosition)
-		require.Equal(t, int64(0), cfg.LogPosition)
+		require.Equal(t, int64(80), cfg.LogPosition)
 		require.Equal(t, int64(80), cfg.AppendPosition)
+	})
+
+	t.Run("snapshot log position leaves the append position", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := seededCfg()
+		plan := recordinglog.RecoveryPlan{
+			LastLeadershipTermID:    4,
+			LastTermBaseLogPosition: 0,
+			AppendedLogPosition:     200,
+			CommittedLogPosition:    128,
+			Log: &recordinglog.RecoveryPlanLog{
+				Term: recordinglog.TermRef{
+					RecordingID:         42,
+					LeadershipTermID:    4,
+					TermBaseLogPosition: 0,
+					LogPosition:         128,
+				},
+			},
+			Snapshots: []recordinglog.Snapshot{{
+				RecordingID:      55,
+				LeadershipTermID: 4,
+				LogPosition:      128,
+				ServiceID:        -1,
+			}},
+		}
+		election.ApplyRecoveryPlan(&cfg, plan)
+		require.Equal(t, int64(4), cfg.LeadershipTermID)
+		require.Equal(t, int64(128), cfg.LogPosition)
+		require.Equal(t, int64(200), cfg.AppendPosition)
 	})
 }

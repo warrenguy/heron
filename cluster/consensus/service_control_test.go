@@ -74,10 +74,20 @@ func enqueueServiceAck(
 	serviceID int32,
 ) {
 	t.Helper()
+	enqueueServiceAckRelevant(t, q, logPosition, ackID, ackID+1, serviceID)
+}
+
+func enqueueServiceAckRelevant(
+	t testing.TB,
+	q *QueueConsensusIngress,
+	logPosition, ackID, relevantID int64,
+	serviceID int32,
+) {
+	t.Helper()
 	q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
 		LogPosition: logPosition,
 		AckID:       ackID,
-		RelevantID:  ackID + 1,
+		RelevantID:  relevantID,
 		ServiceID:   serviceID,
 	}))
 }
@@ -795,6 +805,141 @@ func TestServiceControlWork_waitSiteMismatch(t *testing.T) {
 	first := a.ServiceAckFailure()
 	require.Equal(t, 0, a.serviceControlWork())
 	require.Same(t, first, a.ServiceAckFailure())
+}
+
+func TestServiceControlWork_startWait(t *testing.T) {
+	t.Parallel()
+
+	const (
+		startPos int64 = 64
+		laterPos int64 = 128
+	)
+
+	t.Run("ack pops the start wait once", func(t *testing.T) {
+		t.Parallel()
+
+		a, q, _ := agentWithServiceControl(t, 1)
+		runs := 0
+		require.NoError(t, a.AwaitServiceStart(startPos, func() { runs++ }))
+		enqueueServiceAck(t, q, startPos, 0, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+		require.Equal(t, int64(1), a.ExpectedServiceAckID())
+		require.Equal(t, 0, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.NoError(t, a.ServiceAckFailure())
+	})
+
+	t.Run("later request pairs with ack id 1", func(t *testing.T) {
+		t.Parallel()
+
+		a, q, _ := agentWithServiceControl(t, 1)
+		runs := 0
+		require.NoError(t, a.AwaitServiceStart(startPos, func() { runs++ }))
+		require.NoError(t, a.RequestServiceAck(laterPos))
+		enqueueServiceAck(t, q, startPos, 0, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.Equal(t, int64(1), a.ExpectedServiceAckID())
+
+		enqueueServiceAck(t, q, laterPos, 1, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+		require.Equal(t, int64(2), a.ExpectedServiceAckID())
+		require.Equal(t, 1, runs)
+		require.NoError(t, a.ServiceAckFailure())
+	})
+
+	t.Run("null value marks the lowest service", func(t *testing.T) {
+		t.Parallel()
+
+		a, q, _ := agentWithServiceControl(t, 2)
+		runs := 0
+		require.NoError(t, a.AwaitServiceStart(startPos, func() { runs++ }))
+		enqueueServiceAckRelevant(t, q, startPos, 0, 4, 0)
+		enqueueServiceAckRelevant(t, q, startPos, 0, nullValue, 1)
+		require.Equal(t, 2, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceStartFailed)
+		require.ErrorContains(t, a.ServiceAckFailure(), "service 1 acked NULL_VALUE")
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+		require.True(t, a.IsReplayLogJoined())
+	})
+
+	t.Run("null value keeps a later wait", func(t *testing.T) {
+		t.Parallel()
+
+		a, q, _ := agentWithServiceControl(t, 2)
+		runs := 0
+		require.NoError(t, a.AwaitServiceStart(startPos, func() { runs++ }))
+		require.NoError(t, a.RequestServiceAck(laterPos))
+		enqueueServiceAckRelevant(t, q, startPos, 0, 4, 0)
+		enqueueServiceAckRelevant(t, q, startPos, 0, nullValue, 1)
+		require.Equal(t, 2, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceStartFailed)
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.Equal(t, laterPos, a.ExpectedAckPosition())
+		require.Equal(t, 0, a.serviceControlWork())
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.Equal(t, 1, runs)
+	})
+
+	t.Run("refuses a start wait behind another wait", func(t *testing.T) {
+		t.Parallel()
+
+		a, _, _ := agentWithServiceControl(t, 1)
+		require.NoError(t, a.RequestServiceAck(startPos))
+		err := a.AwaitServiceStart(laterPos, func() {})
+		require.EqualError(t, err, "consensus: service start wait is already queued")
+		require.Equal(t, 1, a.PendingServiceAckWaits())
+		require.Equal(t, startPos, a.ExpectedAckPosition())
+	})
+
+	t.Run("refuses a nil start handler", func(t *testing.T) {
+		t.Parallel()
+
+		a, _, _ := agentWithServiceControl(t, 1)
+		err := a.AwaitServiceStart(startPos, nil)
+		require.EqualError(t, err, "consensus: service start handler is nil")
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+	})
+
+	t.Run("replay join stays behind the start wait", func(t *testing.T) {
+		t.Parallel()
+
+		a, q, _ := agentWithServiceControl(t, 1)
+		runs := 0
+		require.NoError(t, a.AwaitServiceStart(startPos, func() { runs++ }))
+		a.PublishReplayJoinLog(sampleReplayLogJoin(laterPos, laterPos+64))
+		require.Equal(t, 2, a.PendingServiceAckWaits())
+		require.Equal(t, 2, a.replayJoinWaitsAhead)
+		require.False(t, a.IsReplayLogJoined())
+
+		enqueueServiceAck(t, q, startPos, 0, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 1, runs)
+		require.Equal(t, 1, a.replayJoinWaitsAhead)
+		require.False(t, a.IsReplayLogJoined())
+
+		enqueueServiceAck(t, q, laterPos, 1, 0)
+		require.Equal(t, 1, a.pollServiceControl())
+		require.Equal(t, 1, a.serviceControlWork())
+		require.Equal(t, 0, a.replayJoinWaitsAhead)
+		require.True(t, a.IsReplayLogJoined())
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+		require.Equal(t, int64(2), a.ExpectedServiceAckID())
+		require.Equal(t, 1, runs)
+		require.NoError(t, a.ServiceAckFailure())
+	})
 }
 
 func TestRequestServiceAck_success(t *testing.T) {
