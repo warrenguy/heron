@@ -542,9 +542,9 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 		"LogReplayReason after replication:\n%s",
 		sc.set.State(),
 	)
-	routeName := "route 4"
-	if restartStop < missedTermBase {
-		routeName = "route 3"
+	path := "truncate then replicate"
+	if restartStop <= missedTermBase {
+		path = "replicate without truncate"
 	}
 	t.Logf(
 		"ex-leader replication stopPublication=%d restartStop=%d "+
@@ -554,7 +554,7 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 		entryStop,
 		missedTermBase,
 		rejoinBase,
-		routeName,
+		path,
 	)
 	sc.awaitPostRejoinTraffic(rejoinTerm, "session stopped after replication rejoin")
 }
@@ -1160,18 +1160,8 @@ func (sc *leaderStopScenario) awaitTrafficHeld(label string, down []int) int64 {
 			snapshot = pub.Position()
 			haveSnapshot = true
 		}
-		if !liveMembersReachCommit(sc.set, down, snapshot) {
-			return false
-		}
-		for i, m := range sc.set.Modules() {
-			if m == nil || slices.Contains(down, i) {
-				continue
-			}
-			if !localRecordingAtLeast(m, snapshot) {
-				return false
-			}
-		}
-		return true
+		return liveMembersReachCommit(sc.set, down, snapshot) &&
+			survivorsRecordingAtLeast(sc.set, down, sc.preIDs, snapshot)
 	})
 	sc.tr.logCounts(label, sc.sessionMark)
 	return snapshot
