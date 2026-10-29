@@ -334,23 +334,6 @@ func decodeSnapshotRows(t fragmentRequireT, rows [][]byte) []any {
 	return decoded
 }
 
-// snapshotMarkerRow returns the module marker row at logPosition.
-func snapshotMarkerRow(
-	logPosition, leadershipTermID int64,
-	appVersion int32,
-	mark clusterwire.SnapshotMark,
-) codecs.SnapshotMarkerFields {
-	return codecs.SnapshotMarkerFields{
-		TypeID:           codecs.ConsensusModuleSnapshotTypeID,
-		LogPosition:      logPosition,
-		LeadershipTermID: leadershipTermID,
-		Index:            0,
-		Mark:             mark,
-		TimeUnit:         clusterwire.ClusterTimeUnit_NANOS,
-		AppVersion:       appVersion,
-	}
-}
-
 func TestSnapshotTake_recordsModuleSnapshot(t *testing.T) {
 	t.Parallel()
 

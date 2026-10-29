@@ -3,6 +3,7 @@ package consensus
 import (
 	"bytes"
 	"cmp"
+	"fmt"
 	"math"
 	"slices"
 
@@ -502,6 +503,57 @@ func (m *sessionManager) snapshotSessionRows() []codecs.ClusterSessionFields {
 		return cmp.Compare(x.ClusterSessionID, y.ClusterSessionID)
 	})
 	return rows
+}
+
+// restoreSession inserts one snapshot session into byID and all. The call
+// raises the session id floor.
+//
+// Behaviour:
+//   - keeps the correlation id, response stream, response channel, and
+//     opened log position
+//   - CloseReason NULL_VALUE restores an open session
+//   - CLIENT_ACTION, SERVICE_ACTION, and TIMEOUT restore a closing session
+//     with that reason. Those reasons raise closingCount.
+//   - lastActivityNs stays 0
+//   - does not hold egress
+//
+// Returns an error when:
+//   - the session id is already present
+//   - the close reason is undefined
+//
+// Concurrency: invoker-only.
+func (m *sessionManager) restoreSession(fields codecs.ClusterSessionFields) error {
+	id := fields.ClusterSessionID
+	if _, ok := m.byID[id]; ok {
+		return fmt.Errorf("cluster session %d repeated", id)
+	}
+	reason := fields.CloseReason
+	session := &clientSession{
+		id:                     id,
+		correlationID:          fields.CorrelationID,
+		responseStreamID:       fields.ResponseStreamID,
+		responseChannel:        fields.ResponseChannel,
+		openedLogPosition:      fields.OpenedLogPosition,
+		egressAddCorrelationID: nullValue,
+	}
+	switch reason {
+	case clusterwire.CloseReason_NULL_VALUE:
+		session.state = sessionOpen
+
+	case clusterwire.CloseReason_CLIENT_ACTION,
+		clusterwire.CloseReason_SERVICE_ACTION,
+		clusterwire.CloseReason_TIMEOUT:
+		session.state = sessionClosing
+		session.closeReason = reason
+		m.closingCount++
+
+	default:
+		return fmt.Errorf("close reason %d unknown", int32(reason))
+	}
+	m.byID[id] = session
+	m.all = append(m.all, session)
+	m.reseedSessionIDFloor(id)
+	return nil
 }
 
 // trackUncommittedClose appends session to uncommittedCloses at the claim
