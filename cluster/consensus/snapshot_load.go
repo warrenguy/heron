@@ -18,7 +18,9 @@ var errSnapshotLoad = errors.New("consensus: load snapshot")
 // Behaviour: restores each row as it arrives. Accepts BEGIN, one
 // ConsensusModule row, cluster session rows, timer rows, pending-message
 // tracker rows, SECTION marks, NULL_VALUE marks, then END. Any other
-// sequence fails the load. An error formats each enum as an integer.
+// sequence fails the load. An error formats each enum as an integer. A
+// failed load leaves earlier rows in the agent. Discard the agent after a
+// failure.
 //
 // Concurrency: invoker-only. Call before the first Agent.DoWork.
 type SnapshotLoader struct {
@@ -29,8 +31,7 @@ type SnapshotLoader struct {
 	done        bool
 	err         error
 
-	seenTimers   map[int64]struct{}
-	seenTrackers map[int32]struct{}
+	seenTrackers []bool
 
 	handler aeron.ControlledFragmentHandler
 }
@@ -43,8 +44,7 @@ func (a *Agent) NewSnapshotLoader(logPosition int64) *SnapshotLoader {
 	l := &SnapshotLoader{
 		agent:        a,
 		logPosition:  logPosition,
-		seenTimers:   make(map[int64]struct{}),
-		seenTrackers: make(map[int32]struct{}),
+		seenTrackers: make([]bool, len(a.serviceAcks.queues)),
 	}
 	l.handler = aeron.NewControlledFragmentAssembler(l.handleMessage).Handler()
 	return l
@@ -124,8 +124,11 @@ func (l *SnapshotLoader) handleMarker(
 	frag []byte,
 	layout codecs.ClusterMessageLayout,
 ) aeron.ControlledAction {
-	fields, _ := codecs.SnapshotMarkerFieldsFromLayout(frag, layout)
+	fields, ok := codecs.SnapshotMarkerFieldsFromLayout(frag, layout)
 	switch {
+	case !ok:
+		return l.failf("snapshot marker does not decode")
+
 	case fields.TypeID != codecs.ConsensusModuleSnapshotTypeID:
 		return l.failf(
 			"snapshot type id %d, want %d",
@@ -223,13 +226,12 @@ func (l *SnapshotLoader) handleTimer(
 	if !ok {
 		return l.failf("timer row does not decode")
 	}
-	if _, seen := l.seenTimers[fields.CorrelationID]; seen {
+	if _, seen := l.agent.timers.timerIDByCorrelationID[fields.CorrelationID]; seen {
 		return l.failf("timer %d repeated", fields.CorrelationID)
 	}
 	if !l.agent.timers.schedule(fields.CorrelationID, fields.Deadline) {
 		return l.failf("timer wheel refused correlation id %d", fields.CorrelationID)
 	}
-	l.seenTimers[fields.CorrelationID] = struct{}{}
 	return aeron.ControlledContinue
 }
 
@@ -248,10 +250,10 @@ func (l *SnapshotLoader) handlePendingMessageTracker(
 			len(l.agent.serviceAcks.queues),
 		)
 	}
-	if _, seen := l.seenTrackers[fields.ServiceID]; seen {
+	if l.seenTrackers[fields.ServiceID] {
 		return l.failf("tracker service id %d repeated", fields.ServiceID)
 	}
-	l.seenTrackers[fields.ServiceID] = struct{}{}
+	l.seenTrackers[fields.ServiceID] = true
 	return aeron.ControlledContinue
 }
 
@@ -286,6 +288,5 @@ func (l *SnapshotLoader) failf(format string, args ...any) aeron.ControlledActio
 	if l.err == nil {
 		l.err = fmt.Errorf("%w: %s", errSnapshotLoad, fmt.Sprintf(format, args...))
 	}
-	l.done = false
 	return aeron.ControlledAbort
 }
