@@ -104,14 +104,17 @@ func survivorsAppendAtLeast(
 	return true
 }
 
-// membersReachCommit reports whether every live member has CommitPosition at
-// least target, and every non-leader has NotifiedCommitPosition at least
-// target.
+// liveMembersReachCommit reports whether every slot outside down reaches
+// target. A nil slot fails the check. CommitPosition must reach target. Each
+// follower's NotifiedCommitPosition must reach target.
 //
-// NotifiedCommitPosition advances only while a member is a follower. A
-// leader's value stays at whatever it held when leadership was won.
-func membersReachCommit(set *harness.ClusterMemberSet, target int64) bool {
-	for _, m := range set.Modules() {
+// NotifiedCommitPosition advances only while a member is a follower. It
+// stays at the last follower value after the member becomes leader.
+func liveMembersReachCommit(set *harness.ClusterMemberSet, down []int, target int64) bool {
+	for i, m := range set.Modules() {
+		if slices.Contains(down, i) {
+			continue
+		}
 		if m == nil {
 			return false
 		}
@@ -126,6 +129,11 @@ func membersReachCommit(set *harness.ClusterMemberSet, target int64) bool {
 		}
 	}
 	return true
+}
+
+// membersReachCommit is liveMembersReachCommit with no slot down.
+func membersReachCommit(set *harness.ClusterMemberSet, target int64) bool {
+	return liveMembersReachCommit(set, nil, target)
 }
 
 // survivorsReachCommit reports leader commit and follower notified positions
