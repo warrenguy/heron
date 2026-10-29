@@ -391,6 +391,58 @@ func localRecordingAtLeast(m *cluster.ConsensusModule, target int64) bool {
 	return recordingAtLeast(m, m.Agent().LocalLogRecordingID(), target)
 }
 
+// failIfCommitPassesRecording fails when a live member's commit sits above
+// its active log recording counter. Skips a member with no module, an
+// inactive recording, or a missing counter. Reads CommitPosition before the
+// recording counter.
+func failIfCommitPassesRecording(t *testing.T, set *harness.ClusterMemberSet) {
+	t.Helper()
+
+	for i, m := range set.Modules() {
+		if m == nil {
+			continue
+		}
+		commit := m.CommitPosition()
+		agent := m.Agent()
+		if !agent.IsRecordingActive() {
+			continue
+		}
+		recorded := harness.RecordingCounterPosition(m, agent.LocalLogRecordingID())
+		if recorded < 0 || commit <= recorded {
+			continue
+		}
+		require.FailNow(
+			t,
+			"commit passed the log recording",
+			"member=%d commit=%d recorded=%d:\n%s",
+			i,
+			commit,
+			recorded,
+			set.State(),
+		)
+	}
+}
+
+func requireRecordingCoversCommit(t *testing.T, set *harness.ClusterMemberSet) {
+	t.Helper()
+
+	for i, m := range set.Modules() {
+		require.NotNil(t, m, "member %d missing:\n%s", i, set.State())
+		commit := m.CommitPosition()
+		recorded := harness.RecordingCounterPosition(m, m.Agent().LocalLogRecordingID())
+		require.GreaterOrEqual(
+			t,
+			recorded,
+			commit,
+			"member=%d commit=%d recorded=%d:\n%s",
+			i,
+			commit,
+			recorded,
+			set.State(),
+		)
+	}
+}
+
 // failIfFollowerLogReplication fails the test when m is on the follower
 // log-replication path. A scenario that calls it expects a catchup or a log
 // join instead.

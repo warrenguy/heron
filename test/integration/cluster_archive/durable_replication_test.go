@@ -84,21 +84,26 @@ func isolateNewLeader(
 	})
 }
 
-// awaitReplicatedRejoin ticks until the ex-leader at exIndex and the leader at
-// leaderIndex complete an election in the same term. The ex-leader must pass
-// through FOLLOWER_LOG_REPLICATION without a commit timeout. Returns the
-// ex-leader's log recording stop position on entry to that state.
+// awaitReplicatedRejoin ticks until the ex-leader at exIndex and the leader
+// at leaderIndex complete an election in the same term. The ex-leader must
+// pass through FOLLOWER_LOG_REPLICATION without a commit timeout. A non-nil
+// perTick runs at the start of each rejoin tick. Returns the ex-leader's log
+// recording stop position on entry to FOLLOWER_LOG_REPLICATION.
 func awaitReplicatedRejoin(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
 	exIndex int,
 	leaderIndex int,
+	perTick func(),
 ) int64 {
 	t.Helper()
 
 	watch := &replicationWatch{t: t, set: set, index: exIndex}
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 	requireAwaitTick(t, set, "ex-leader rejoins through replication", durableElectBound, func() bool {
+		if perTick != nil {
+			perTick()
+		}
 		watch.observe()
 		ex := set.Module(exIndex)
 		leader := set.Module(leaderIndex)
@@ -215,7 +220,7 @@ func TestDurableCluster_replicatesAnExLeaderBehindTheTermBase(t *testing.T) {
 	// base.
 	require.NoError(t, set.RestartMember(exIndex))
 	requireWarmRestartOpen(t, set, exIndex, "returning ex-leader")
-	awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex)
+	awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex, nil)
 
 	requireReplicatedCommit(t, set, exIndex, newLeaderIndex, recordingID)
 	require.Equal(
@@ -265,7 +270,7 @@ func TestDurableCluster_replicatesATruncatedExLeader(t *testing.T) {
 
 	// Phase: the ex-leader returns with a tail above the new term base.
 	restartDivergedLeader(t, set, diverged)
-	entryStopPosition := awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex)
+	entryStopPosition := awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex, nil)
 	require.Equal(
 		t,
 		diverged.newTermBase,

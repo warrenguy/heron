@@ -162,6 +162,16 @@ func (w *logWitness) sawSession(sessionID int64) bool {
 	return slices.Contains(w.sessionIDs, sessionID)
 }
 
+func (w *logWitness) count(sessionID int64) int {
+	n := 0
+	for _, id := range w.sessionIDs {
+		if id == sessionID {
+			n++
+		}
+	}
+	return n
+}
+
 // sessionFollower pairs one follower module with the log-adapter witness.
 type sessionFollower struct {
 	module  *cluster.ConsensusModule
