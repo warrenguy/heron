@@ -99,6 +99,7 @@ const (
 	testReplayRecordingID int64 = 77
 	testReplayStart       int64 = 1000
 	testReplayStop        int64 = 2000
+	testReplayMid               = testReplayStart + (testReplayStop-testReplayStart)/2
 	testReplaySessionID   int64 = 4242
 	testReplayStreamID    int32 = 103
 	testReplayChannel           = "aeron:ipc"
@@ -315,8 +316,16 @@ func attachReplayImage(
 	return image
 }
 
+func newBoundReplayImage(t *testing.T, position int64) *aeron.Image {
+	t.Helper()
+	return aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), position)
+}
+
 func TestLogReplay_terminalClassification(t *testing.T) {
 	t.Parallel()
+
+	boundPayload := []byte{1}
+	boundFrameEnd := testReplayStart + int64(logbuffer.AlignFragmentChunkLength(len(boundPayload)))
 
 	tests := []struct {
 		name       string
@@ -357,14 +366,13 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 				)
 				image := attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
 				require.Equal(t, 1, r.DoWork(0))
-				mid := testReplayStart + (testReplayStop-testReplayStart)/2
-				aeron.ImageSetSubscriberPositionForHooks(image, mid)
+				aeron.ImageSetSubscriberPositionForHooks(image, testReplayMid)
 				aeron.ImageInternalCloseForHooks(image)
 				_ = r.DoWork(1)
 				return r
 			},
-			wantPos:    testReplayStart + (testReplayStop-testReplayStart)/2,
-			wantReason: "before the bound",
+			wantPos:    testReplayMid,
+			wantReason: replayEndedShortReason,
 		},
 		{
 			name: "closedAtBound",
@@ -401,7 +409,7 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 				)
 				_ = attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
 				require.Equal(t, 1, r.DoWork(0))
-				other := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), testReplayStop)
+				other := newBoundReplayImage(t, testReplayStop)
 				agent.BindReplayLog(other)
 				require.Equal(t, 0, r.DoWork(1))
 
@@ -411,7 +419,7 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 				return r
 			},
 			wantPos:    testReplayStart,
-			wantReason: "before the bound",
+			wantReason: replayEndedShortReason,
 		},
 		{
 			name: "imageNeverAppears",
@@ -548,6 +556,112 @@ func TestLogReplay_terminalClassification(t *testing.T) {
 			wantPos:    testReplayStart,
 			wantReason: "no subscription",
 		},
+		{
+			name: "boundImageEndOfStream",
+			setup: func(t *testing.T) *logReplay {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				frameEnd := writeReplayFrame(t, image, testReplayStart, boundPayload)
+				require.Equal(t, boundFrameEnd, frameEnd)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, frameEnd)
+				r, _ := startBoundReplay(t, agent, image, testReplayStop)
+				require.Equal(t, 1, r.DoWork(0))
+				return r
+			},
+			wantPos:    boundFrameEnd,
+			wantReason: replayEndOfStreamReason,
+		},
+		{
+			name: "boundImageStalled",
+			setup: func(t *testing.T) *logReplay {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				r, _ := startBoundReplay(t, agent, image, testReplayStop)
+				requireBoundReplayStalls(t, r)
+				return r
+			},
+			wantPos:    testReplayStart,
+			wantReason: replayStalledReason,
+		},
+		{
+			name: "boundImageProgressRestartsDeadline",
+			setup: func(t *testing.T) *logReplay {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				r, _ := startBoundReplay(t, agent, image, testReplayStop)
+				require.Equal(t, 0, r.DoWork(0))
+				require.False(t, r.IsDone())
+
+				frameEnd := writeReplayFrame(t, image, testReplayStart, boundPayload)
+				require.Equal(t, boundFrameEnd, frameEnd)
+				const (
+					drainNs     = testImageAwaitNs - 1
+					restartedNs = drainNs + testImageAwaitNs
+				)
+				require.Equal(t, 1, r.DoWork(drainNs))
+				require.False(t, r.IsDone())
+				require.Equal(t, frameEnd, r.Position())
+
+				// The drain at drainNs restarts the deadline before it fires. The
+				// replay ends one ImageAwaitNs after that drain.
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs))
+				require.False(t, r.IsDone())
+				require.Equal(t, 0, r.DoWork(restartedNs-1))
+				require.False(t, r.IsDone())
+				require.Equal(t, 0, r.DoWork(restartedNs))
+				return r
+			},
+			wantPos:    boundFrameEnd,
+			wantReason: replayStalledReason,
+		},
+		{
+			name: "archiveEndOfStreamShortOfBound",
+			setup: func(t *testing.T) *logReplay {
+				control := &fakeReplayControl{sessionID: testReplaySessionID}
+				sub := testReplaySubscription(t)
+				adder := &fakeSubscriptionAdder{result: sub}
+				r := newLogReplay(
+					testReplayDeps(control, adder, testReplayAgent(testReplayRecordingID)),
+					testReplayStart,
+					testReplayStop,
+				)
+				image := attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
+				require.Equal(t, 1, r.DoWork(0))
+				aeron.ImageSetSubscriberPositionForHooks(image, testReplayMid)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, testReplayMid)
+				_ = r.DoWork(1)
+				return r
+			},
+			wantPos:    testReplayMid,
+			wantReason: replayEndOfStreamReason,
+		},
+		{
+			name: "archiveImageIdleNeverStalls",
+			setup: func(t *testing.T) *logReplay {
+				control := &fakeReplayControl{sessionID: testReplaySessionID}
+				sub := testReplaySubscription(t)
+				adder := &fakeSubscriptionAdder{result: sub}
+				agent := testReplayAgent(testReplayRecordingID)
+				r := newLogReplay(
+					testReplayDeps(control, adder, agent),
+					testReplayStart,
+					testReplayStop,
+				)
+				image := attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
+				require.Equal(t, 1, r.DoWork(0))
+				require.True(t, agent.IsReplayLogJoined())
+				for i := int64(1); i <= 3; i++ {
+					require.Equal(t, 0, r.DoWork(i*testImageAwaitNs))
+					require.False(t, r.IsDone())
+					require.Equal(t, testReplayStart, r.Position())
+				}
+				aeron.ImageSetSubscriberPositionForHooks(image, testReplayStop)
+				_ = r.DoWork(4 * testImageAwaitNs)
+				return r
+			},
+			wantPos:    testReplayStop,
+			wantReason: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -673,28 +787,9 @@ func TestLogReplay_close(t *testing.T) {
 			name: "closeCancelsSnapshotTakeBeforeStop",
 			run: func(t *testing.T) {
 				agent := testServiceReplayAgent(0, 1)
-				snapshotAdder := &fakeSnapshotPublicationAdder{}
-				agent.SetSnapshotRecordingControl(fakeSnapshotRecordingControl{})
-				agent.SetSnapshotPublicationAdder(snapshotAdder)
-				agent.SetSnapshotRecordingLog(openTermLog(t, 1, 0), recordinglog.FileSyncData)
-				var actionEnd int64
-				r, control, _ := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
-					actionEnd = writeReplaySnapshotAction(t, image, 0)
-					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
-				})
-				snapshotAdder.control = control
-				require.Equal(t, 1, r.DoWork(0))
-				r.DoWork(1)
-				require.True(t, agent.HasPendingSnapshotAction())
+				r, control, _, snapshotAdder, _ := startSnapshotTakeInFlight(t, agent)
 
-				// Phase 1: the ack pops the wait into a take held at its add.
-				ackReplayServiceRecording(t, agent, actionEnd, 0, 7)
-				agent.DoWork(2)
-				require.True(t, agent.HasPendingSnapshotAction())
-				require.Equal(t, 1, snapshotAdder.offers)
-				require.False(t, r.IsDone())
-
-				// Phase 2: close cancels the take, then stops the replay.
+				// Close cancels the take, then stops the replay.
 				r.Close()
 				require.Equal(t, []int64{1}, snapshotAdder.cancelled)
 				require.Equal(t, []int{0}, snapshotAdder.stopsAtCancel)
@@ -812,18 +907,81 @@ func TestLogReplay_close(t *testing.T) {
 				)
 				image := attachReplayImage(t, sub, testReplaySessionID, testReplayStart)
 				require.Equal(t, 1, r.DoWork(0))
-				mid := testReplayStart + (testReplayStop-testReplayStart)/2
-				aeron.ImageSetSubscriberPositionForHooks(image, mid)
+				aeron.ImageSetSubscriberPositionForHooks(image, testReplayMid)
 				aeron.ImageInternalCloseForHooks(image)
 				_ = r.DoWork(1)
 				require.True(t, r.IsDone())
-				require.Equal(t, mid, r.Position())
+				require.Equal(t, testReplayMid, r.Position())
 				require.NotEmpty(t, r.reason())
 
 				// Done short of the bound still stops the archive session.
 				r.Close()
 				require.Equal(t, []int64{testReplaySessionID}, control.stopCalls)
 				require.True(t, sub.IsClosed())
+			},
+		},
+		{
+			name: "closeUnbindsBoundImageAfterEndOfStream",
+			run: func(t *testing.T) {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				frameEnd := writeReplayFrame(t, image, testReplayStart, []byte{1})
+				require.Less(t, frameEnd, testReplayStop)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, frameEnd)
+				r, control := startBoundReplay(t, agent, image, testReplayStop)
+				require.Equal(t, 1, r.DoWork(0))
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndOfStreamReason, r.reason())
+				require.Equal(t, frameEnd, r.Position())
+
+				requireCloseUnbindsBoundImage(t, r, agent, control, frameEnd, testReplayStop)
+			},
+		},
+		{
+			name: "closeUnbindsBoundImageAfterStall",
+			run: func(t *testing.T) {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				r, control := startBoundReplay(t, agent, image, testReplayStop)
+				requireBoundReplayStalls(t, r)
+				require.True(t, r.IsDone())
+				require.Equal(t, replayStalledReason, r.reason())
+				require.Equal(t, testReplayStart, r.Position())
+
+				requireCloseUnbindsBoundImage(t, r, agent, control, testReplayStart, testReplayStop)
+			},
+		},
+		{
+			name: "closeKeepsClosedBoundImage",
+			run: func(t *testing.T) {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				r, control := startBoundReplay(t, agent, image, testReplayStop)
+				aeron.ImageInternalCloseForHooks(image)
+				require.Equal(t, 0, r.DoWork(0))
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndedShortReason, r.reason())
+				require.Equal(t, testReplayStart, r.Position())
+
+				r.Close()
+				require.Same(t, image, agent.LogAdapter().Image())
+				require.Empty(t, control.stopCalls)
+			},
+		},
+		{
+			name: "closeUnbindsBoundImageClosedAtEndOfStream",
+			run: func(t *testing.T) {
+				agent := testReplayAgent(testReplayRecordingID)
+				image := newBoundReplayImage(t, testReplayStart)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, image.Position())
+				r, control := startBoundReplay(t, agent, image, testReplayStop)
+				aeron.ImageInternalCloseForHooks(image)
+				require.Equal(t, 0, r.DoWork(0))
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndOfStreamReason, r.reason())
+				require.Equal(t, testReplayStart, r.Position())
+
+				requireCloseUnbindsBoundImage(t, r, agent, control, testReplayStart, testReplayStop)
 			},
 		},
 		{
@@ -891,6 +1049,133 @@ func startArchiveReplay(
 	require.False(t, r.IsDone())
 	require.Len(t, control.startCalls, 1)
 	return r, control, image
+}
+
+// startBoundReplay builds a bound-image replay from image.Position to stop.
+// image must be open at the start position. Construction does not send
+// StartReplay.
+func startBoundReplay(
+	t *testing.T,
+	agent *consensus.Agent,
+	image *aeron.Image,
+	stop int64,
+) (*logReplay, *fakeReplayControl) {
+	t.Helper()
+	agent.LogAdapter().SetImage(image)
+	control := &fakeReplayControl{sessionID: testReplaySessionID}
+	r := newLogReplay(
+		testReplayDeps(control, &fakeSubscriptionAdder{}, agent),
+		image.Position(),
+		stop,
+	)
+	require.Empty(t, control.startCalls)
+	require.True(t, r.imageBound)
+	require.False(t, r.IsDone())
+	return r, control
+}
+
+// startSnapshotTakeInFlight builds an archive replay whose snapshot action
+// pops into a module snapshot take held at its add. It returns the replay,
+// the control, the replay image, the snapshot adder and the action end.
+func startSnapshotTakeInFlight(
+	t *testing.T,
+	agent *consensus.Agent,
+) (
+	*logReplay,
+	*fakeReplayControl,
+	*aeron.Image,
+	*fakeSnapshotPublicationAdder,
+	int64,
+) {
+	t.Helper()
+	snapshotAdder := &fakeSnapshotPublicationAdder{}
+	agent.SetSnapshotRecordingControl(fakeSnapshotRecordingControl{})
+	agent.SetSnapshotPublicationAdder(snapshotAdder)
+	agent.SetSnapshotRecordingLog(openTermLog(t, 1, 0), recordinglog.FileSyncData)
+	var actionEnd int64
+	r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+		actionEnd = writeReplaySnapshotAction(t, image, 0)
+		return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+	})
+	snapshotAdder.control = control
+	require.Equal(t, 1, r.DoWork(0))
+	r.DoWork(1)
+	require.True(t, agent.HasPendingSnapshotAction())
+	require.Equal(t, actionEnd, r.Position())
+
+	ackReplayServiceRecording(t, agent, actionEnd, 0, 7)
+	agent.DoWork(2)
+	require.True(t, agent.HasPendingSnapshotAction())
+	require.Equal(t, 1, snapshotAdder.offers)
+	require.False(t, r.IsDone())
+	return r, control, image, snapshotAdder, actionEnd
+}
+
+// requireReplayHeld drives r at each of nows. The replay stays held at
+// position by a pending snapshot action.
+func requireReplayHeld(
+	t *testing.T,
+	r *logReplay,
+	agent *consensus.Agent,
+	position int64,
+	nows ...int64,
+) {
+	t.Helper()
+	for _, nowNs := range nows {
+		r.DoWork(nowNs)
+		require.False(t, r.IsDone())
+		require.Equal(t, position, r.Position())
+		require.True(t, agent.HasPendingSnapshotAction())
+	}
+}
+
+func requireBoundReplayStalls(t *testing.T, r *logReplay) {
+	t.Helper()
+	require.Equal(t, 0, r.DoWork(0))
+	require.False(t, r.IsDone())
+	require.Equal(t, 0, r.DoWork(testImageAwaitNs-1))
+	require.False(t, r.IsDone())
+	require.Equal(t, 0, r.DoWork(testImageAwaitNs))
+}
+
+func requireCloseUnbindsBoundImage(
+	t *testing.T,
+	r *logReplay,
+	agent *consensus.Agent,
+	control *fakeReplayControl,
+	position, stop int64,
+) {
+	t.Helper()
+	r.Close()
+	require.Nil(t, agent.LogAdapter().Image())
+	require.Equal(t, position, agent.LogAdapter().Position())
+	require.Empty(t, control.stopCalls)
+
+	// The adapter no longer holds an open image at position. A new replay
+	// starts an archive replay.
+	control = &fakeReplayControl{sessionID: testReplaySessionID}
+	adder := &fakeSubscriptionAdder{result: testReplaySubscription(t)}
+	next := newLogReplay(testReplayDeps(control, adder, agent), position, stop)
+	require.Len(t, control.startCalls, 1)
+	require.Equal(t, position, control.startCalls[0].position)
+	require.False(t, next.imageBound)
+	require.False(t, next.IsDone())
+}
+
+func requireAckResolvesFailedTake(
+	t *testing.T,
+	r *logReplay,
+	agent *consensus.Agent,
+	actionEnd int64,
+) {
+	t.Helper()
+	ackReplayService(t, agent, actionEnd, 0)
+	require.False(t, r.IsDone())
+	require.False(t, agent.HasPendingSnapshotAction())
+	result, ok := agent.LastSnapshotTake()
+	require.True(t, ok)
+	require.Equal(t, actionEnd, result.LogPosition)
+	require.Error(t, result.Err)
 }
 
 func TestLogReplay_dispatchesThroughModuleAdapter(t *testing.T) {
@@ -1147,24 +1432,109 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 			},
 		},
 		{
-			name: "image closed while held below the stop",
+			name: "image closed while held keeps the hold",
 			run: func(t *testing.T) {
 				agent := testServiceReplayAgent(0, 1)
 				var actionEnd int64
-				r, _, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+				r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
 					actionEnd = writeReplaySnapshotAction(t, image, 0)
 					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
 				})
 				require.Equal(t, 1, r.DoWork(0))
+
+				// Phase 1: the drain holds at the action end.
 				r.DoWork(1)
+				require.Equal(t, actionEnd, r.Position())
+				require.Equal(t, actionEnd, agent.CommitPosition())
 				require.True(t, agent.HasPendingSnapshotAction())
 				require.False(t, r.IsDone())
 
+				// Phase 2: the closed image keeps the hold.
 				aeron.ImageInternalCloseForHooks(image)
-				r.DoWork(2)
+				requireReplayHeld(t, r, agent, actionEnd, 2, 3, 4)
+
+				// Phase 3: the ack resolves the take.
+				requireAckResolvesFailedTake(t, r, agent, actionEnd)
+
+				// Phase 4: the closed image ends the replay short.
+				r.DoWork(5)
 				require.True(t, r.IsDone())
 				require.Equal(t, replayEndedShortReason, r.reason())
 				require.Equal(t, actionEnd, r.Position())
+
+				// Phase 5: Close stops the replay session.
+				r.Close()
+				require.Equal(t, []int64{testReplaySessionID}, control.stopCalls)
+			},
+		},
+		{
+			name: "take in flight at the close keeps the hold",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				r, _, image, snapshotAdder, actionEnd := startSnapshotTakeInFlight(t, agent)
+
+				aeron.ImageInternalCloseForHooks(image)
+				requireReplayHeld(t, r, agent, actionEnd, 3, 4, 5)
+				require.Empty(t, snapshotAdder.cancelled)
+			},
+		},
+		{
+			name: "bound image end of stream while held",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				image := newBoundReplayImage(t, 0)
+				actionEnd := writeReplaySnapshotAction(t, image, 0)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, actionEnd)
+				r, _ := startBoundReplay(t, agent, image, actionEnd+64)
+
+				// Phase 1: the drain holds at the action end, at end of stream.
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, actionEnd, r.Position())
+				require.True(t, agent.HasPendingSnapshotAction())
+				require.False(t, r.IsDone())
+
+				// Phase 2: the ack resolves the take.
+				requireAckResolvesFailedTake(t, r, agent, actionEnd)
+
+				// Phase 3: end of stream ends the replay short.
+				r.DoWork(1)
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndOfStreamReason, r.reason())
+				require.Equal(t, actionEnd, r.Position())
+			},
+		},
+		{
+			name: "bound image held past the deadline",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				image := newBoundReplayImage(t, 0)
+				actionEnd := writeReplaySnapshotAction(t, image, 0)
+				stop := writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				r, _ := startBoundReplay(t, agent, image, stop)
+
+				// Phase 1: the drain holds at the action end.
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, actionEnd, r.Position())
+				require.True(t, agent.HasPendingSnapshotAction())
+
+				// Phase 2: the hold outlasts three stall timeouts.
+				requireReplayHeld(
+					t,
+					r,
+					agent,
+					actionEnd,
+					testImageAwaitNs,
+					2*testImageAwaitNs,
+					3*testImageAwaitNs,
+				)
+
+				// Phase 3: the ack clears the hold. The drain reaches the stop.
+				ackReplayService(t, agent, actionEnd, 0)
+				require.False(t, agent.HasPendingSnapshotAction())
+				require.Equal(t, 1, r.DoWork(3*testImageAwaitNs+1))
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, r.Position())
 			},
 		},
 	}
@@ -1294,6 +1664,34 @@ func TestLogReplay_replayJoin(t *testing.T) {
 				// Phase 3: Close drops the unpublished replay JoinLog.
 				r.Close()
 				require.False(t, agent.HasPendingJoinLog())
+			},
+		},
+		{
+			name: "image closed during the join wait",
+			run: func(t *testing.T) {
+				agent, _ := joinedAgent(t)
+				r, _, image := startArchiveReplay(t, agent, writeTimer)
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+				aeron.ImageInternalCloseForHooks(image)
+
+				// Phase 1: the join wait pends. The closed image does not end
+				// the replay.
+				for nowNs := range int64(3) {
+					require.Equal(t, 0, r.DoWork(nowNs+1))
+					require.Equal(t, int64(0), r.Position())
+					require.False(t, r.IsDone())
+					require.Equal(t, 1, agent.PendingServiceAckWaits())
+				}
+
+				ackReplayService(t, agent, 0, 0)
+				require.Equal(t, 0, agent.PendingServiceAckWaits())
+				require.False(t, r.IsDone())
+				require.Equal(t, 0, r.DoWork(4))
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndedShortReason, r.reason())
+				require.Equal(t, int64(0), r.Position())
+				require.Equal(t, 0, agent.PendingServiceAckWaits())
 			},
 		},
 		{
