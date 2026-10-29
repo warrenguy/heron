@@ -8,15 +8,19 @@ import io.aeron.exceptions.AeronException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.PrintStream;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -361,6 +365,63 @@ class ClusterNodeTest {
         assertEquals(
             ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA,
             blankAppointed.appointedLeaderId);
+
+        final ClusterNode.LauncherSettings unappointed = ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            "1",
+            String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE));
+        assertEquals(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE,
+            unappointed.appointedLeaderId);
+    }
+
+    @Test
+    void launcherSettingsFromEnv_stopFileParsesFromEnv() {
+        final ClusterNode.LauncherSettings unset = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, null);
+        assertNull(unset.stopFile);
+
+        final ClusterNode.LauncherSettings blank = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, "  ");
+        assertNull(blank.stopFile);
+
+        final ClusterNode.LauncherSettings set = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, " /dev/shm/heron-mixed/stop-member-1 ");
+        assertEquals(Path.of("/dev/shm/heron-mixed/stop-member-1"), set.stopFile);
+    }
+
+    @Test
+    void startStopFileWatcher_runsOnStopOnceWhenFileAppears(@TempDir final Path dir) throws Exception {
+        final Path stop = dir.resolve("stop");
+        final AtomicInteger runs = new AtomicInteger();
+        final Thread watcher = ClusterNode.startStopFileWatcher(stop, runs::incrementAndGet, 5);
+        try {
+            Files.writeString(stop, "stop\n");
+            watcher.join(1_000);
+            assertFalse(watcher.isAlive());
+            assertEquals(1, runs.get());
+        } finally {
+            watcher.interrupt();
+        }
+    }
+
+    @Test
+    void startStopFileWatcher_endsOnInterruptWithoutFile(@TempDir final Path dir) throws Exception {
+        final Path stop = dir.resolve("stop");
+        final AtomicInteger runs = new AtomicInteger();
+        final Thread watcher = ClusterNode.startStopFileWatcher(stop, runs::incrementAndGet, 5);
+        try {
+            Thread.sleep(50);
+            assertEquals(0, runs.get());
+            watcher.interrupt();
+            watcher.join(1_000);
+            assertFalse(watcher.isAlive());
+            assertEquals(0, runs.get());
+        } finally {
+            watcher.interrupt();
+        }
     }
 
     @Test
@@ -419,6 +480,18 @@ class ClusterNodeTest {
     }
 
     @Test
+    void mixedClusterConfig_unappointed_appliesMulticastClockAndSharedLog() {
+        final ConsensusModule.Context consensus = configureMixedConsensusWithAppointed(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE);
+
+        assertConsensusUsesFailoverUdpTransport(consensus);
+        assertEquals(Aeron.NULL_VALUE, consensus.appointedLeaderId());
+        assertEquals(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST, consensus.logChannel());
+        assertEquals(ClusterConstants.MIXED_CLUSTER_MEMBERS_GO_LEADER, consensus.clusterMembers());
+        assertInstanceOf(NanosecondClusterClock.class, consensus.clusterClock());
+    }
+
+    @Test
     void configureConsensusMixed_rejectsUnsupportedAppointedLeaderId() {
         final ClusterConfig config = createClusterConfig(0, MIXED_HOSTS);
         ClusterNode.configureConsensus(config, ClusterConstants.MIXED_MEMBER_COUNT);
@@ -427,8 +500,8 @@ class ClusterNodeTest {
             IllegalArgumentException.class,
             () -> ClusterNode.configureConsensusMixed(config, 1));
         assertEquals(
-            "HERON_CLUSTER_APPOINTED_LEADER_ID in mixed mode must be 0 (java leader) or "
-                + "2 (go leader); got 1",
+            "HERON_CLUSTER_APPOINTED_LEADER_ID in mixed mode must be 0 (java leader), "
+                + "2 (go leader) or -1 (no appointed leader); got 1",
             ex.getMessage());
     }
 

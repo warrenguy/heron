@@ -1,0 +1,47 @@
+# Overlay for an unset appointed leader. Start order makes the Go member the
+# first leader.
+# Use with: docker compose -f compose.yaml -f compose.ex-leader-rejoin.yaml
+#
+# Start order:
+# 1. aeronmd becomes healthy.
+# 2. archive-go becomes healthy.
+# 3. cluster-0 becomes healthy (cnc.dat present).
+#    cluster-1 stays down until step 5.
+# 4. go opens, leads a term, closes, then writes the readiness file.
+# 5. cluster-1 starts.
+#
+# The stop file later closes cluster-1.
+
+services:
+  go:
+    command:
+      [
+        "-test.timeout=300s",
+        "-test.run",
+        "^TestClusterMixedGoExLeaderRejoin$$",
+      ]
+    depends_on:
+      cluster-0:
+        condition: service_healthy
+    environment:
+      HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE: "1"
+    healthcheck:
+      retries: 120
+
+  archive-go:
+    environment:
+      HERON_ARCHIVE_CONTROL_CHANNEL: "aeron:udp?endpoint=${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}:9201"
+
+  cluster-0:
+    environment:
+      HERON_CLUSTER_APPOINTED_LEADER_ID: "-1"
+      AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT: "120s"
+
+  cluster-1:
+    environment:
+      HERON_CLUSTER_APPOINTED_LEADER_ID: "-1"
+      AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT: "120s"
+      HERON_CLUSTER_STOP_FILE: "/dev/shm/heron-mixed/stop-member-1"
+    depends_on:
+      go:
+        condition: service_healthy

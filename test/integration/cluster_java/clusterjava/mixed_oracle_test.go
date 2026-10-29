@@ -64,6 +64,21 @@ func TestMixedHarnessConstants(t *testing.T) {
 			got:  clusterjava.MixedComposeSkipHintGoLeader,
 			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader",
 		},
+		{
+			name: "MixedComposeExLeaderRejoinEnvKey",
+			got:  clusterjava.MixedComposeExLeaderRejoinEnvKey,
+			want: "HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE",
+		},
+		{
+			name: "MixedSmokeNameExLeaderRejoin",
+			got:  clusterjava.MixedSmokeNameExLeaderRejoin,
+			want: "TestClusterMixedGoExLeaderRejoin",
+		},
+		{
+			name: "MixedComposeSkipHintExLeaderRejoin",
+			got:  clusterjava.MixedComposeSkipHintExLeaderRejoin,
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-ex-leader-rejoin",
+		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},
 		{name: "MixedGoMemberID", got: clusterjava.MixedGoMemberID, want: int32(2)},
@@ -78,9 +93,19 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: int32(2),
 		},
 		{
+			name: "MixedAppointedLeaderIDNone",
+			got:  clusterjava.MixedAppointedLeaderIDNone,
+			want: int32(-1),
+		},
+		{
 			name: "MixedReadyPath",
 			got:  clusterjava.MixedReadyPath,
 			want: "/dev/shm/heron-mixed/member-ready",
+		},
+		{
+			name: "MixedStopPathMember1",
+			got:  clusterjava.MixedStopPathMember1,
+			want: "/dev/shm/heron-mixed/stop-member-1",
 		},
 		{
 			name: "MixedIngressEndpoints",
@@ -196,6 +221,26 @@ func TestMixedHarnessConstants(t *testing.T) {
 			got:  clusterjava.MixedTestTimeoutGoLeader,
 			want: 120 * time.Second,
 		},
+		{
+			name: "MixedRejoinStartupCanvassTimeout",
+			got:  clusterjava.MixedRejoinStartupCanvassTimeout,
+			want: 2 * time.Second,
+		},
+		{
+			name: "MixedJavaReelectBudget",
+			got:  clusterjava.MixedJavaReelectBudget,
+			want: 30 * time.Second,
+		},
+		{
+			name: "MixedRejoinBudget",
+			got:  clusterjava.MixedRejoinBudget,
+			want: 30 * time.Second,
+		},
+		{
+			name: "MixedTestTimeoutExLeaderRejoin",
+			got:  clusterjava.MixedTestTimeoutExLeaderRejoin,
+			want: 300 * time.Second,
+		},
 	}
 
 	for _, tt := range tests {
@@ -271,6 +316,36 @@ func TestMixedRequiredSmoke(t *testing.T) {
 				clusterjava.MixedComposeGoLeaderEnvKey:   "1",
 			},
 			wantName: clusterjava.MixedSmokeNameJavaLeader,
+		},
+		{
+			name: "exLeaderRejoinEnvOne",
+			env: map[string]string{
+				clusterjava.MixedComposeExLeaderRejoinEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameExLeaderRejoin,
+		},
+		{
+			name: "exLeaderRejoinEnvZero",
+			env: map[string]string{
+				clusterjava.MixedComposeExLeaderRejoinEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
+			name: "javaEnvBeforeRejoin",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey:     "1",
+				clusterjava.MixedComposeExLeaderRejoinEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeader,
+		},
+		{
+			name: "goEnvBeforeRejoin",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey:       "1",
+				clusterjava.MixedComposeExLeaderRejoinEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeader,
 		},
 	}
 
@@ -370,10 +445,15 @@ func TestMixedClusterMembersGoLeader_sharesLogEndpoint(t *testing.T) {
 }
 
 func TestMixedReadyPath_outsideAeronDirs(t *testing.T) {
-	require.False(t, strings.HasPrefix(clusterjava.MixedReadyPath, clusterjava.MixedAeronDirMember0))
-	require.False(t, strings.HasPrefix(clusterjava.MixedReadyPath, clusterjava.MixedAeronDirMember1))
-	require.False(t, strings.HasPrefix(clusterjava.MixedReadyPath, clusterjava.MixedAeronDirGo))
-	require.True(t, strings.HasPrefix(clusterjava.MixedReadyPath, "/dev/shm/heron-mixed/"))
+	for _, path := range []string{
+		clusterjava.MixedReadyPath,
+		clusterjava.MixedStopPathMember1,
+	} {
+		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember0))
+		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember1))
+		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirGo))
+		require.True(t, strings.HasPrefix(path, "/dev/shm/heron-mixed/"))
+	}
 }
 
 func TestMixedMemberHostnames_returnsFreshSlice(t *testing.T) {
@@ -477,6 +557,23 @@ func TestMixedComposeIngressAndEgress_rejectBadEnv(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestMixedComposeReplicationChannel_usesEnvHosts(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "")
+	got, err := clusterjava.MixedComposeReplicationChannel()
+	require.NoError(t, err)
+	require.Equal(t, "aeron:udp?endpoint=172.30.0.12:0", got)
+
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "172.30.9.10,172.30.9.11,172.30.9.12")
+	got, err = clusterjava.MixedComposeReplicationChannel()
+	require.NoError(t, err)
+	require.Equal(t, "aeron:udp?endpoint=172.30.9.12:0", got)
+
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "only-one-host")
+	_, err = clusterjava.MixedComposeReplicationChannel()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly 3 hostnames")
+}
+
 func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 	// 2x MixedCommitBudget: commit advance, then recorded-position reach.
 	stackedJavaLeader := clusterjava.MixedStartupBudget +
@@ -491,6 +588,18 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 		clusterjava.MixedElectionBudget +
 		2*clusterjava.MixedCommitBudget
 	require.Less(t, stackedGoLeader, clusterjava.MixedTestTimeoutGoLeader)
+
+	// Ex-leader rejoin stack: startup twice, election twice, the Java term, the
+	// rejoin, the client connect, the offer bound, then commit four times.
+	stackedExLeaderRejoin := 2*clusterjava.MixedStartupBudget +
+		2*clusterjava.MixedElectionBudget +
+		clusterjava.MixedJavaReelectBudget +
+		clusterjava.MixedRejoinBudget +
+		clusterjava.MixedConnectBudget +
+		harness.ConnectedPollTimeout +
+		4*clusterjava.MixedCommitBudget
+	require.Equal(t, 270*time.Second, stackedExLeaderRejoin)
+	require.Less(t, stackedExLeaderRejoin, clusterjava.MixedTestTimeoutExLeaderRejoin)
 }
 
 func TestServiceProbePath_underMemberBaseDir(t *testing.T) {

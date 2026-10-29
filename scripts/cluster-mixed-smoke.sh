@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mixed Go/Java cluster compose smoke. Exactly one overlay per run.
-# Requires the java-interop-aeronmd image. make smoke-cluster-mixed-java-leader
-# (or smoke-cluster-mixed-go-leader) runs aeronmd-compose-image first.
+# Requires the java-interop-aeronmd image. These make targets run
+# aeronmd-compose-image first: smoke-cluster-mixed-java-leader,
+# smoke-cluster-mixed-go-leader, smoke-cluster-mixed-ex-leader-rejoin.
 #
 # Isolation per run:
 # - Compose project HERON_COMPOSE_PROJECT=heron-cluster-mixed-$$ with -p
@@ -17,7 +18,7 @@
 # force-recreate plus EXIT/INT/TERM traps clean this project only.
 #
 # Usage: cluster-mixed-smoke.sh <overlay>
-#   overlay: java-leader | go-leader
+#   overlay: java-leader | go-leader | ex-leader-rejoin
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,12 +26,13 @@ COMPOSE_DIR="${ROOT}/test/integration/cluster_mixed/docker"
 COMPOSE_BASE="${COMPOSE_DIR}/compose.yaml"
 
 usage() {
-	echo "usage: $0 java-leader|go-leader" >&2
+	echo "usage: $0 java-leader|go-leader|ex-leader-rejoin" >&2
 	exit 1
 }
 
-# Outer wall-clock cap for the compose wait. Same value for both overlays.
-# 130s: 120s Go -test.timeout plus 10s compose teardown margin.
+# Outer wall-clock cap for the compose run. The 130s default covers a 120s Go
+# -test.timeout plus teardown. ex-leader-rejoin raises it to 310s for its 300s
+# timeout.
 OUTER_TIMEOUT_S=130
 
 # Max subnet picks before compose up gives up. Each attempt walks one octet.
@@ -39,20 +41,25 @@ SUBNET_ATTEMPTS=5
 [[ "$#" -eq 1 ]] || usage
 
 # Third-octet range per overlay. Ranges are disjoint and skip octet 0.
-# A smoke must not land on the other overlay range or on 172.30.0.0/24 manual topology.
+# A smoke must not land on another overlay's range or on 172.30.0.0/24.
+OCTET_SPAN=83
 OVERLAY_ARG="$1"
 case "${OVERLAY_ARG}" in
 java-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.java-leader.yaml"
 	SMOKE_NAME="TestClusterMixedJavaLeader"
 	OCTET_BASE=1
-	OCTET_SPAN=125
 	;;
 go-leader)
 	OVERLAY_FILE="${COMPOSE_DIR}/compose.go-leader.yaml"
 	SMOKE_NAME="TestClusterMixedGoLeader"
-	OCTET_BASE=126
-	OCTET_SPAN=125
+	OCTET_BASE=84
+	;;
+ex-leader-rejoin)
+	OVERLAY_FILE="${COMPOSE_DIR}/compose.ex-leader-rejoin.yaml"
+	SMOKE_NAME="TestClusterMixedGoExLeaderRejoin"
+	OCTET_BASE=167
+	OUTER_TIMEOUT_S=310
 	;;
 *)
 	usage

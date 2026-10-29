@@ -18,7 +18,8 @@ JAVA_OPTS=(
 )
 
 # Optional: raise the Java startup canvass window (Agrona getDurationInNanos units).
-# Unset leaves Aeron's default (60 s). go-leader sets 120s; java-leader leaves unset.
+# An unset property leaves Aeron's default (60 s). go-leader and
+# ex-leader-rejoin set 120s.
 if [[ -n "${AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT:-}" ]]; then
 	JAVA_OPTS+=(
 		-Daeron.cluster.startup.canvass.timeout="${AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT}"
