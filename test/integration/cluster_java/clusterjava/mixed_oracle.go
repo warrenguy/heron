@@ -67,7 +67,7 @@ const (
 
 	// MixedReadyPath is the readiness file the Go service healthcheck tests.
 	// The path sits outside every Aeron directory. A driver does not map the
-	// file. The smoke writes the file before each waiting service starts:
+	// file. Each smoke writes the file before the waiting services start:
 	//   - java-leader starts both Java members.
 	//   - ex-leader-rejoin starts Java member 1.
 	MixedReadyPath = "/dev/shm/heron-mixed/member-ready"
