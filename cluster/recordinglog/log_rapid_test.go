@@ -3,6 +3,8 @@
 package recordinglog_test
 
 import (
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,11 +22,7 @@ func requireReloadMatchesLogRapid(rt *rapid.T, path string, log *recordinglog.Lo
 	rt.Helper()
 	reloaded, err := recordinglog.Reload(path)
 	require.NoError(rt, err)
-	entries := log.Entries()
-	if entries == nil {
-		entries = []recordinglog.Entry{}
-	}
-	require.Equal(rt, reloaded, entries)
+	requireEntriesEqualRapid(rt, reloaded, log.Entries())
 }
 
 // writeLogFile draws a random sequence of encoded entries interleaved with
@@ -698,5 +696,498 @@ func TestOpenReloadRoundtrip_rapid(t *testing.T) {
 		require.NoError(rt, err)
 		require.Equal(rt, reloaded, log.Entries())
 		require.Equal(rt, slots, log.NextEntryIndex())
+	})
+}
+
+type invalidateCompactModel struct {
+	entries     []recordinglog.Entry
+	nextIndex   int32
+	writeOffset int64
+}
+
+func (m *invalidateCompactModel) appendFresh(entry recordinglog.Entry) {
+	entry.Valid = true
+	entry.Index = m.nextIndex
+	entry.Position = m.writeOffset
+	m.nextIndex++
+	m.writeOffset += int64(len(recordinglog.EncodeEntry(entry)))
+	insertAt := len(m.entries)
+	for insertAt > 0 && recordinglog.CompareEntries(entry, m.entries[insertAt-1]) < 0 {
+		insertAt--
+	}
+	m.entries = slices.Insert(m.entries, insertAt, entry)
+}
+
+func (m *invalidateCompactModel) termCount() int {
+	count := 0
+	for _, entry := range m.entries {
+		if entry.Valid && entry.Type == recordinglog.EntryTypeTerm {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *invalidateCompactModel) findTerm(termID int64) (int, bool) {
+	for i, entry := range m.entries {
+		if entry.Valid && entry.Type == recordinglog.EntryTypeTerm && entry.LeadershipTermID == termID {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func normalizeRapidEntries(entries []recordinglog.Entry) []recordinglog.Entry {
+	if entries == nil {
+		return []recordinglog.Entry{}
+	}
+	return entries
+}
+
+func requireEntriesEqualRapid(rt *rapid.T, want, got []recordinglog.Entry) {
+	rt.Helper()
+	require.Equal(rt, normalizeRapidEntries(want), normalizeRapidEntries(got))
+}
+
+func requireModelMatchesRapid(
+	rt *rapid.T,
+	path string,
+	log *recordinglog.Log,
+	model *invalidateCompactModel,
+) {
+	rt.Helper()
+	requireReloadMatchesLogRapid(rt, path, log)
+	requireEntriesEqualRapid(rt, model.entries, log.Entries())
+	require.Equal(rt, model.nextIndex, log.NextEntryIndex())
+}
+
+func modelProtectedKey(entries []recordinglog.Entry) (int64, int64, bool) {
+	for _, entry := range slices.Backward(entries) {
+		isModuleSnapshot := entry.Valid &&
+			entry.Type == recordinglog.EntryTypeSnapshot &&
+			entry.ServiceID == recordinglog.ConsensusModuleServiceID
+		if isModuleSnapshot {
+			return entry.LeadershipTermID, entry.LogPosition, true
+		}
+	}
+	return 0, 0, false
+}
+
+func invalidMatchIndexes(entries []recordinglog.Entry, probe recordinglog.Entry) map[int32]bool {
+	indexes := make(map[int32]bool)
+	for _, entry := range entries {
+		if entry.Valid {
+			continue
+		}
+		if recordinglog.CompareEntries(entry, probe) != 0 {
+			continue
+		}
+		indexes[entry.Index] = true
+	}
+	return indexes
+}
+
+func applyRecordedAppendRapid(
+	rt *rapid.T,
+	log *recordinglog.Log,
+	model *invalidateCompactModel,
+	entry recordinglog.Entry,
+	appendFn func() error,
+) {
+	rt.Helper()
+	matched := invalidMatchIndexes(model.entries, entry)
+	beforeNext := log.NextEntryIndex()
+	beforeCount := len(log.Entries())
+	require.NoError(rt, appendFn())
+	got := log.Entries()
+	if len(matched) == 0 {
+		model.appendFresh(entry)
+		requireEntriesEqualRapid(rt, model.entries, got)
+		require.Equal(rt, model.nextIndex, log.NextEntryIndex())
+		return
+	}
+
+	require.Len(rt, got, beforeCount)
+	require.Equal(rt, beforeNext, log.NextEntryIndex())
+	// Restore keeps comparator order, so cache slot i is still model entry i.
+	restored := 0
+	for i, old := range model.entries {
+		if !matched[old.Index] || !got[i].Valid {
+			continue
+		}
+		restored++
+		old.Valid = true
+		old.RecordingID = entry.RecordingID
+		old.Timestamp = entry.Timestamp
+		model.entries[i] = old
+	}
+	require.Equal(rt, 1, restored)
+	requireEntriesEqualRapid(rt, model.entries, got)
+}
+
+func usedSnapshotPositions(entries []recordinglog.Entry) []int64 {
+	seen := make(map[int64]bool)
+	var positions []int64
+	for _, entry := range entries {
+		if entry.Type == recordinglog.EntryTypeTerm {
+			continue
+		}
+		if seen[entry.LogPosition] {
+			continue
+		}
+		seen[entry.LogPosition] = true
+		positions = append(positions, entry.LogPosition)
+	}
+	return positions
+}
+
+type snapshotPositionKey struct {
+	term     int64
+	base     int64
+	position int64
+}
+
+func usedSnapshotKeys(entries []recordinglog.Entry) []snapshotPositionKey {
+	seen := make(map[snapshotPositionKey]bool)
+	var keys []snapshotPositionKey
+	for _, entry := range entries {
+		if entry.Type == recordinglog.EntryTypeTerm {
+			continue
+		}
+		key := snapshotPositionKey{
+			term:     entry.LeadershipTermID,
+			base:     entry.TermBaseLogPosition,
+			position: entry.LogPosition,
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func drawInvalidateBound(rt *rapid.T, name string, entries []recordinglog.Entry) int64 {
+	rt.Helper()
+	sources := []string{"zero", "max", "free"}
+	positions := usedSnapshotPositions(entries)
+	if len(positions) > 0 {
+		sources = append(sources, "used", "usedPlus")
+	}
+	switch rapid.SampledFrom(sources).Draw(rt, "boundSource"+name) {
+	case "zero":
+		return 0
+	case "max":
+		return math.MaxInt64
+	case "used":
+		return rapid.SampledFrom(positions).Draw(rt, "usedBound"+name)
+	case "usedPlus":
+		return rapid.SampledFrom(positions).Draw(rt, "usedPlusBound"+name) + 1
+	default:
+		return rapid.Int64().Draw(rt, "freeBound"+name)
+	}
+}
+
+func readOptionalBackupRapid(rt *rapid.T, dir string) ([]byte, bool) {
+	rt.Helper()
+	buf, err := os.ReadFile(recordingLogBackup(dir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false
+	}
+	require.NoError(rt, err)
+	return buf, true
+}
+
+func completeValidPlanRapid(
+	rt *rapid.T,
+	log *recordinglog.Log,
+	serviceCount int,
+) (recordinglog.RecoveryPlan, bool) {
+	rt.Helper()
+	entries := log.Entries()
+	plan, err := log.PlanRecovery(
+		fakeArchiveForEntries(entries),
+		recoveryPlanConfig(serviceCount),
+	)
+	if err != nil {
+		return recordinglog.RecoveryPlan{}, false
+	}
+	if len(plan.Snapshots) != serviceCount+1 {
+		return recordinglog.RecoveryPlan{}, false
+	}
+	for _, snapshot := range plan.Snapshots {
+		if !planSnapshotIsValidCache(entries, snapshot) {
+			return recordinglog.RecoveryPlan{}, false
+		}
+	}
+	return plan, true
+}
+
+func requireRecoveryPlanUnchangedRapid(
+	rt *rapid.T,
+	log *recordinglog.Log,
+	serviceCount int,
+	before recordinglog.RecoveryPlan,
+) {
+	rt.Helper()
+	after, err := log.PlanRecovery(
+		fakeArchiveForEntries(log.Entries()),
+		recoveryPlanConfig(serviceCount),
+	)
+	require.NoError(rt, err)
+	require.Equal(rt, before, after)
+}
+
+func planSnapshotIsValidCache(entries []recordinglog.Entry, snapshot recordinglog.Snapshot) bool {
+	for _, entry := range entries {
+		if entry.Valid && entry.Type == recordinglog.EntryTypeSnapshot &&
+			entry.RecordingID == snapshot.RecordingID &&
+			entry.LeadershipTermID == snapshot.LeadershipTermID &&
+			entry.LogPosition == snapshot.LogPosition &&
+			entry.ServiceID == snapshot.ServiceID {
+			return true
+		}
+	}
+	return false
+}
+
+func predictInvalidateRapid(entries []recordinglog.Entry, bound int64) ([]recordinglog.Entry, int) {
+	predicted := slices.Clone(entries)
+	if bound <= 0 {
+		return predicted, 0
+	}
+	termID, position, hasKey := modelProtectedKey(entries)
+	marked := 0
+	for i := range predicted {
+		entry := &predicted[i]
+		if !entry.Valid || entry.Type != recordinglog.EntryTypeSnapshot {
+			continue
+		}
+		if entry.LogPosition >= bound {
+			continue
+		}
+		atKey := hasKey && entry.LeadershipTermID == termID && entry.LogPosition == position
+		if atKey {
+			continue
+		}
+		entry.Valid = false
+		marked++
+	}
+	return predicted, marked
+}
+
+func TestInvalidateEntriesBeforeAndCompact_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		log, path := newLog(t)
+		defer func() { require.NoError(rt, log.Close()) }()
+		dir := filepath.Dir(path)
+
+		const (
+			termRecordingID = 1
+			termRange       = 512
+			// termServiceID is the NULL_VALUE service id of a TERM row.
+			termServiceID int32 = -1
+		)
+		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
+		model := &invalidateCompactModel{}
+		nextRecordingID := int64(100)
+
+		appendNextTerm := func(name string) {
+			rt.Helper()
+			termID := int64(model.termCount())
+			base := int64(0)
+			if termID > 0 {
+				priorIndex, ok := model.findTerm(termID - 1)
+				require.True(rt, ok)
+				prior := model.entries[priorIndex]
+				base = prior.TermBaseLogPosition + termRange +
+					rapid.Int64Range(0, 1024).Draw(rt, "baseStep"+name)
+				prior.LogPosition = base
+				model.entries[priorIndex] = prior
+			}
+			timestamp := rapid.Int64Range(0, 999999).Draw(rt, "termTimestamp"+name)
+			require.NoError(rt, log.AppendTerm(termRecordingID, termID, base, timestamp))
+			model.appendFresh(recordinglog.Entry{
+				RecordingID:         termRecordingID,
+				LeadershipTermID:    termID,
+				TermBaseLogPosition: base,
+				LogPosition:         recordinglog.NullPosition,
+				Timestamp:           timestamp,
+				ServiceID:           termServiceID,
+				Type:                recordinglog.EntryTypeTerm,
+			})
+		}
+
+		appendGroup := func(name string) {
+			rt.Helper()
+			if model.termCount() == 0 {
+				appendNextTerm(name + "seed")
+			}
+			termID := rapid.Int64Range(0, int64(model.termCount()-1)).Draw(rt, "groupTerm"+name)
+			termIndex, ok := model.findTerm(termID)
+			require.True(rt, ok)
+			base := model.entries[termIndex].TermBaseLogPosition
+			positions := usedSnapshotPositions(model.entries)
+			reuse := rapid.Bool().Draw(rt, "reuse"+name)
+			var position int64
+			if reuse && len(positions) > 0 {
+				position = rapid.SampledFrom(positions).Draw(rt, "reusedPosition"+name)
+			} else {
+				position = rapid.Int64Range(base, base+termRange-1).
+					Filter(func(candidate int64) bool {
+						return !slices.Contains(positions, candidate)
+					}).
+					Draw(rt, "freshPosition"+name)
+			}
+			timestamp := rapid.Int64Range(0, 999999).Draw(rt, "groupTimestamp"+name)
+			rowCount := rapid.IntRange(0, serviceCount+1).Draw(rt, "rowCount"+name)
+			for row := range rowCount {
+				serviceID := int32(serviceCount - 1 - row)
+				recordingID := nextRecordingID
+				nextRecordingID++
+				entry := recordinglog.Entry{
+					RecordingID:         recordingID,
+					LeadershipTermID:    termID,
+					TermBaseLogPosition: base,
+					LogPosition:         position,
+					Timestamp:           timestamp,
+					ServiceID:           serviceID,
+					Type:                recordinglog.EntryTypeSnapshot,
+				}
+				applyRecordedAppendRapid(rt, log, model, entry, func() error {
+					return log.AppendSnapshot(
+						recordingID, termID, base, position, timestamp, serviceID,
+					)
+				})
+			}
+		}
+
+		appendStandby := func(name string) {
+			rt.Helper()
+			keys := usedSnapshotKeys(model.entries)
+			if len(keys) == 0 {
+				appendGroup(name)
+				return
+			}
+			key := rapid.SampledFrom(keys).Draw(rt, "standbyKey"+name)
+			serviceID := rapid.Int32Range(-1, int32(serviceCount)).Draw(rt, "standbyService"+name)
+			timestamp := rapid.Int64Range(0, 999999).Draw(rt, "standbyTimestamp"+name)
+			endpoint := string(rapid.SliceOfN(rapid.ByteRange('a', 'z'), 1, 20).Draw(rt, "standbyEp"+name))
+			recordingID := nextRecordingID
+			nextRecordingID++
+			entry := recordinglog.Entry{
+				RecordingID:         recordingID,
+				LeadershipTermID:    key.term,
+				TermBaseLogPosition: key.base,
+				LogPosition:         key.position,
+				Timestamp:           timestamp,
+				ServiceID:           serviceID,
+				Type:                recordinglog.EntryTypeStandbySnapshot,
+				ArchiveEndpoint:     endpoint,
+			}
+			applyRecordedAppendRapid(rt, log, model, entry, func() error {
+				return log.AppendStandbySnapshot(
+					recordingID, key.term, key.base, key.position, timestamp, serviceID, endpoint,
+				)
+			})
+		}
+
+		n := rapid.IntRange(0, 16).Draw(rt, "n")
+		for i := range n {
+			name := strconv.Itoa(i)
+			op := rapid.SampledFrom([]string{
+				"term",
+				"group",
+				"standby",
+				"invalidateLatest",
+				"invalidateBefore",
+				"compact",
+				"reopen",
+			}).Draw(rt, "op"+name)
+			switch op {
+			case "term":
+				appendNextTerm(name)
+
+			case "group":
+				appendGroup(name)
+
+			case "standby":
+				appendStandby(name)
+
+			case "invalidateLatest":
+				_, err := log.InvalidateLatestSnapshot()
+				if err != nil {
+					require.ErrorIs(rt, err, recordinglog.ErrNoMatchingTermForSnapshot)
+				}
+				model.entries = slices.Clone(log.Entries())
+
+			case "invalidateBefore":
+				plan, keepPlan := completeValidPlanRapid(rt, log, serviceCount)
+				bound := drawInvalidateBound(rt, name, model.entries)
+				predicted, marked := predictInvalidateRapid(model.entries, bound)
+				got, err := log.InvalidateEntriesBefore(bound)
+				require.NoError(rt, err)
+				require.Equal(rt, marked, got)
+				requireEntriesEqualRapid(rt, predicted, log.Entries())
+				again, err := log.InvalidateEntriesBefore(bound)
+				require.NoError(rt, err)
+				require.Equal(rt, 0, again)
+				requireEntriesEqualRapid(rt, predicted, log.Entries())
+				model.entries = predicted
+				if keepPlan {
+					requireRecoveryPlanUnchangedRapid(rt, log, serviceCount, plan)
+				}
+
+			case "compact":
+				plan, keepPlan := completeValidPlanRapid(rt, log, serviceCount)
+				prior, err := os.ReadFile(path)
+				require.NoError(rt, err)
+				backupBefore, backupExisted := readOptionalBackupRapid(rt, dir)
+				allValid := !slices.ContainsFunc(model.entries, func(entry recordinglog.Entry) bool {
+					return !entry.Valid
+				})
+				dropped, err := log.Compact()
+				require.NoError(rt, err)
+				afterFirst, err := os.ReadFile(path)
+				require.NoError(rt, err)
+				backupAfter, backupExists := readOptionalBackupRapid(rt, dir)
+				if allValid {
+					require.Equal(rt, 0, dropped)
+					require.Equal(rt, prior, afterFirst)
+					require.Equal(rt, backupExisted, backupExists)
+					require.Equal(rt, backupBefore, backupAfter)
+				} else {
+					survivors, file := compactedEntries(model.entries)
+					require.Equal(rt, len(model.entries)-len(survivors), dropped)
+					require.Equal(rt, file, afterFirst)
+					require.True(rt, backupExists, "compact wrote no backup")
+					require.Equal(rt, prior, backupAfter)
+					model.entries = survivors
+					model.nextIndex = int32(len(survivors))
+					model.writeOffset = int64(len(file))
+				}
+				again, err := log.Compact()
+				require.NoError(rt, err)
+				require.Equal(rt, 0, again)
+				afterSecond, err := os.ReadFile(path)
+				require.NoError(rt, err)
+				require.Equal(rt, afterFirst, afterSecond)
+				backupAfterSecond, backupExistsSecond := readOptionalBackupRapid(rt, dir)
+				require.Equal(rt, backupExists, backupExistsSecond)
+				require.Equal(rt, backupAfter, backupAfterSecond)
+				if keepPlan {
+					requireRecoveryPlanUnchangedRapid(rt, log, serviceCount, plan)
+				}
+
+			case "reopen":
+				require.NoError(rt, log.Close())
+				reopened, err := recordinglog.Open(dir, false)
+				require.NoError(rt, err)
+				log = reopened
+			}
+			requireModelMatchesRapid(rt, path, log, model)
+		}
 	})
 }

@@ -21,6 +21,9 @@ const (
 	LogPositionOffset = logPositionOffset
 	EntryTypeOffset   = entryTypeOffset
 	EndpointOffset    = endpointOffset
+
+	RecordingLogBackupFileName = recordingLogBackupFileName
+	RecordingLogTempFileName   = recordingLogTempFileName
 )
 
 // FindLastTerm exposes the internal findLastTerm helper for black-box tests.
