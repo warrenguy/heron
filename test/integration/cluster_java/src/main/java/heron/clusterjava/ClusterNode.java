@@ -9,6 +9,8 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 
 import java.io.File;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -23,6 +25,9 @@ public final class ClusterNode
     static final String ENV_MIXED = "HERON_CLUSTER_MIXED";
     static final String ENV_APPOINTED_LEADER_ID = "HERON_CLUSTER_APPOINTED_LEADER_ID";
     static final String ENV_EXTERNAL_SERVICE = "HERON_CLUSTER_EXTERNAL_SERVICE";
+    static final String ENV_STOP_FILE = "HERON_CLUSTER_STOP_FILE";
+
+    static final long STOP_FILE_POLL_INTERVAL_MS = 50;
 
     static final class LauncherSettings
     {
@@ -32,6 +37,7 @@ public final class ClusterNode
         final boolean mixed;
         final int appointedLeaderId;
         final boolean externalService;
+        final Path stopFile;
 
         LauncherSettings(
             final int memberId,
@@ -39,7 +45,8 @@ public final class ClusterNode
             final List<String> hostnames,
             final boolean mixed,
             final int appointedLeaderId,
-            final boolean externalService)
+            final boolean externalService,
+            final Path stopFile)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
@@ -47,6 +54,7 @@ public final class ClusterNode
             this.mixed = mixed;
             this.appointedLeaderId = appointedLeaderId;
             this.externalService = externalService;
+            this.stopFile = stopFile;
         }
     }
 
@@ -108,14 +116,19 @@ public final class ClusterNode
     /**
      * Apply mixed Go/Java consensus settings after multi-node UDP transport setup.
      *
-     * <p>Appointed leader {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}: unicast
-     * logChannel, members string unchanged, clusterClock left unset.
-     * Appointed leader {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_GO}: multicast
-     * logChannel, shared log endpoint on every members row, {@link NanosecondClusterClock}.
-     * Other appointed ids throw.
+     * <p>Appointed leader id:
+     * <ul>
+     * <li>{@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}: unicast
+     * logChannel. The members string stays unchanged. clusterClock stays unset.</li>
+     * <li>{@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_GO} or
+     * {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_NONE}: multicast
+     * logChannel. Every members row uses the shared log endpoint.
+     * clusterClock is {@link NanosecondClusterClock}.</li>
+     * <li>Any other appointed id throws.</li>
+     * </ul>
      *
-     * @param clusterConfig      config whose consensus module context is mutated
-     * @param appointedLeaderId  mixed appointed leader member id (0 or 2)
+     * @param clusterConfig     config whose consensus module context is mutated
+     * @param appointedLeaderId mixed appointed leader member id (0, 2, or -1)
      */
     static void configureConsensusMixed(
         final ClusterConfig clusterConfig,
@@ -128,13 +141,14 @@ public final class ClusterNode
                 .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST);
             return;
         }
-        if (appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO)
+        if (appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO
+            || appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE)
         {
             final ConsensusModule.Context consensus = clusterConfig.consensusModuleContext();
             consensus
                 .clusterMembers(ClusterConfig.sharedLogEndpoint(
                     consensus.clusterMembers(), ClusterConstants.MIXED_LOG_ENDPOINT))
-                .appointedLeaderId(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO)
+                .appointedLeaderId(appointedLeaderId)
                 .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST)
                 .clusterClock(new NanosecondClusterClock());
             return;
@@ -142,9 +156,11 @@ public final class ClusterNode
         throw new IllegalArgumentException(
             ENV_APPOINTED_LEADER_ID + " in mixed mode must be "
                 + ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA
-                + " (java leader) or "
+                + " (java leader), "
                 + ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO
-                + " (go leader); got " + appointedLeaderId);
+                + " (go leader) or "
+                + ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE
+                + " (no appointed leader); got " + appointedLeaderId);
     }
 
     /**
@@ -292,7 +308,8 @@ public final class ClusterNode
             System.getenv(ENV_HOSTNAMES),
             System.getenv(ENV_MIXED),
             System.getenv(ENV_APPOINTED_LEADER_ID),
-            System.getenv(ENV_EXTERNAL_SERVICE));
+            System.getenv(ENV_EXTERNAL_SERVICE),
+            System.getenv(ENV_STOP_FILE));
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -332,6 +349,25 @@ public final class ClusterNode
         final String appointedLeaderIdEnv,
         final String externalServiceEnv)
     {
+        return launcherSettingsFromEnv(
+            memberIdEnv,
+            memberCountEnv,
+            hostnamesEnv,
+            mixedEnv,
+            appointedLeaderIdEnv,
+            externalServiceEnv,
+            null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv,
+        final String appointedLeaderIdEnv,
+        final String externalServiceEnv,
+        final String stopFileEnv)
+    {
         final boolean mixed = "1".equals(mixedEnv);
         final boolean externalService = "1".equals(externalServiceEnv);
         final int memberCount = parseIntEnv(
@@ -348,7 +384,54 @@ public final class ClusterNode
             appointedLeaderIdEnv,
             ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA);
         return new LauncherSettings(
-            memberId, memberCount, hostnames, mixed, appointedLeaderId, externalService);
+            memberId,
+            memberCount,
+            hostnames,
+            mixed,
+            appointedLeaderId,
+            externalService,
+            parseStopFile(stopFileEnv));
+    }
+
+    private static Path parseStopFile(final String stopFileEnv)
+    {
+        if (stopFileEnv == null || stopFileEnv.isBlank())
+        {
+            return null;
+        }
+        return Path.of(stopFileEnv.trim());
+    }
+
+    // An interrupt before the file appears ends the watcher without onStop.
+    static Thread startStopFileWatcher(
+        final Path stopFile,
+        final Runnable onStop,
+        final long pollIntervalMs)
+    {
+        Objects.requireNonNull(stopFile, "stopFile");
+        Objects.requireNonNull(onStop, "onStop");
+        final Thread thread = new Thread(() ->
+        {
+            while (!Thread.currentThread().isInterrupted())
+            {
+                if (Files.exists(stopFile))
+                {
+                    onStop.run();
+                    return;
+                }
+                try
+                {
+                    Thread.sleep(pollIntervalMs);
+                }
+                catch (final InterruptedException ex)
+                {
+                    return;
+                }
+            }
+        }, "heron-cluster-stop-file");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
     }
 
     /**
@@ -491,6 +574,18 @@ public final class ClusterNode
                     clusterConfig.clusteredServiceContext().terminationHook(barrier::signalAll)))
         {
             System.out.println("heron: cluster node ready memberId=" + settings.memberId);
+            if (settings.stopFile != null)
+            {
+                startStopFileWatcher(
+                    settings.stopFile,
+                    () ->
+                    {
+                        System.out.println(
+                            "heron: cluster node stop requested memberId=" + settings.memberId);
+                        barrier.signalAll();
+                    },
+                    STOP_FILE_POLL_INTERVAL_MS);
+            }
             barrier.await();
         }
     }

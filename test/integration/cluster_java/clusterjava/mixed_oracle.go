@@ -15,7 +15,6 @@ import (
 
 // Mixed Go/Java multi-node goldens. Hand-sync with ClusterConstantsMixedTest.
 // Java ClusterConfig helpers stay authoritative for topology strings.
-// Appointed leader is member 0 (Java) or member 2 (Go). Go member is id 2.
 
 const (
 	// MixedComposeJavaLeaderEnvKey is set to "1" by the java-leader overlay.
@@ -36,11 +35,21 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameGoLeader = "TestClusterMixedGoLeader"
 
+	// MixedComposeExLeaderRejoinEnvKey is set to "1" by the ex-leader-rejoin overlay.
+	MixedComposeExLeaderRejoinEnvKey = "HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE"
+
+	// MixedSmokeNameExLeaderRejoin is the TestClusterMixedGoExLeaderRejoin function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameExLeaderRejoin = "TestClusterMixedGoExLeaderRejoin"
+
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-java-leader"
 	MixedComposeSkipHintGoLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-go-leader"
+	MixedComposeSkipHintExLeaderRejoin = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-ex-leader-rejoin"
 
 	MixedMemberCount = 3
 	MixedGoMemberID  = int32(2)
@@ -51,11 +60,22 @@ const (
 	// MixedAppointedLeaderIDGoLeader is the appointed leader id for go-leader.
 	MixedAppointedLeaderIDGoLeader = int32(2)
 
-	// MixedReadyPath is the readiness file path. The Go service writes MixedReadyPath after
-	// the consensus module opens. MixedReadyPath sits outside every Aeron directory so
-	// no driver maps it. The Go healthcheck tests MixedReadyPath. The java-leader
-	// compose overlay starts Java peers only after that healthcheck passes.
+	// MixedAppointedLeaderIDNone matches
+	// ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE. The value equals the
+	// Java appointedLeaderId context default.
+	MixedAppointedLeaderIDNone = int32(-1)
+
+	// MixedReadyPath is the readiness file the Go service healthcheck tests.
+	// The path sits outside every Aeron directory. A driver does not map the
+	// file. Each smoke writes the file before the waiting services start:
+	//   - java-leader starts both Java members.
+	//   - ex-leader-rejoin starts Java member 1.
 	MixedReadyPath = "/dev/shm/heron-mixed/member-ready"
+
+	// MixedStopPathMember1 is the stop file for Java member 1. The path sits
+	// outside every Aeron directory. A driver does not map the file. The
+	// ex-leader-rejoin overlay repeats this literal.
+	MixedStopPathMember1 = "/dev/shm/heron-mixed/stop-member-1"
 )
 
 // Default bridge address literals for the 172.30.0.0/24 topology.
@@ -135,17 +155,21 @@ const (
 	// only. No interface or ttl. Same URI as cluster.DefaultLogChannel.
 	MixedLogChannelUnicast = cluster.DefaultLogChannel
 
-	// MixedLogEndpoint is the shared multicast log endpoint for go-leader.
-	// Final octet is odd so the media driver can derive the control address.
+	// MixedLogEndpoint is the shared multicast log endpoint for the go-leader and
+	// ex-leader-rejoin overlays. The final octet is odd. The media driver derives
+	// the control address from the next even octet.
+	//
 	// Hand-sync with ClusterConstants.MIXED_LOG_ENDPOINT.
 	MixedLogEndpoint = "239.255.12.15:9004"
 
 	// MixedLogChannelMulticast is the Go log channel template when the Go member
-	// is appointed. interface= pins the compose bridge subnet; ttl=1 keeps frames
-	// on that network. Must not carry endpoint=: cluster.Config rejects endpoint
-	// on LogChannel; Topology.LogChannel merges MixedLogEndpoint from the members
-	// string. Java MIXED_LOG_CHANNEL_MULTICAST keeps endpoint= in the final URI so
-	// the consensus module clears isLogMdc. Intentional asymmetry, not byte parity.
+	// leads on the go-leader and ex-leader-rejoin overlays. interface= fixes the
+	// compose bridge subnet. ttl=1 keeps frames on the bridge subnet. The
+	// template must not carry endpoint=. cluster.Config rejects endpoint on
+	// LogChannel. Topology.LogChannel merges MixedLogEndpoint from the members
+	// string. Java MIXED_LOG_CHANNEL_MULTICAST keeps endpoint= in the final URI.
+	// The consensus module then clears isLogMdc. The two strings differ on
+	// purpose.
 	MixedLogChannelMulticast = MixedLogChannelUnicast +
 		"|interface=172.30.0.0/16|ttl=1"
 )
@@ -183,16 +207,32 @@ const (
 	//
 	// No client connect wait.
 	MixedTestTimeoutGoLeader = 120 * time.Second
+
+	// MixedRejoinStartupCanvassTimeout shortens the Go member's startup canvass
+	// from the 60s default. A restart keeps the value. Java rejects a Go vote
+	// when the Java log is ahead.
+	MixedRejoinStartupCanvassTimeout = 2 * time.Second
+
+	// MixedJavaReelectBudget bounds the wait for the first Java term after the
+	// Go member closes.
+	MixedJavaReelectBudget = 30 * time.Second
+
+	MixedRejoinBudget = 30 * time.Second
+
+	// MixedTestTimeoutExLeaderRejoin bounds the ex-leader-rejoin smoke. The
+	// wait stack inside the test is 270s.
+	MixedTestTimeoutExLeaderRejoin = 300 * time.Second
 )
 
 // MixedRequiredSmoke reports which mixed proof the current overlay requires.
 //
-// Behaviour: reads the two overlay gate keys through getEnv. A key set to
-// "1" names that overlay's proof. Any other value, including unset, sets no
-// gate. No gate set means no proof is required (developer run outside
-// compose). Both gates set to "1" is a fixture error; the function still
-// returns the java-leader name so the failure path stays diagnostic and does
-// not panic.
+// Behaviour: reads the overlay env keys in a fixed order: java-leader,
+// go-leader, then ex-leader-rejoin. A key set to "1" selects that overlay.
+// Any other value, including unset, does not select an overlay. The caller
+// does not require a proof when the keys do not select an overlay. A
+// developer run outside compose leaves the keys unset. Several keys set to
+// "1" is a fixture error. MixedRequiredSmoke returns the first match in that
+// order. MixedRequiredSmoke does not panic.
 //
 // Concurrency: pure. Reads only through getEnv.
 //
@@ -205,6 +245,9 @@ func MixedRequiredSmoke(getEnv func(string) string) (string, bool) {
 	}
 	if getEnv(MixedComposeGoLeaderEnvKey) == "1" {
 		return MixedSmokeNameGoLeader, true
+	}
+	if getEnv(MixedComposeExLeaderRejoinEnvKey) == "1" {
+		return MixedSmokeNameExLeaderRejoin, true
 	}
 	return "", false
 }
@@ -262,7 +305,8 @@ func MixedComposeHostnames() ([]string, error) {
 //
 // Log endpoints:
 //   - sharedLogEndpoint empty keeps per-member unicast log endpoints (java-leader).
-//   - sharedLogEndpoint non-empty replaces every log slot (go-leader multicast).
+//   - sharedLogEndpoint non-empty replaces every log slot (go-leader and
+//     ex-leader-rejoin multicast).
 //
 // Ownership: the caller owns the returned string.
 //
@@ -305,11 +349,27 @@ func MixedComposeIngressEndpoints() (string, error) {
 // Returns an error when:
 //   - MixedComposeHostnames fails
 func MixedComposeEgressChannel() (string, error) {
+	channel, err := MixedComposeReplicationChannel()
+	if err != nil {
+		return "", err
+	}
+	return channel + "|" + termLength64kParam, nil
+}
+
+// MixedComposeReplicationChannel is the Go member's replication channel.
+//
+// Archive replay keeps the member-2 host. Replay replaces a wildcard port.
+//
+// Ownership: the caller owns the returned string.
+//
+// Returns an error when:
+//   - MixedComposeHostnames fails
+func MixedComposeReplicationChannel() (string, error) {
 	hosts, err := MixedComposeHostnames()
 	if err != nil {
 		return "", err
 	}
-	return UDPChannel + "?endpoint=" + hosts[2] + ":0|" + termLength64kParam, nil
+	return UDPChannel + "?endpoint=" + hosts[2] + ":0", nil
 }
 
 // ServiceProbe is one parsed EchoService service-probe file.

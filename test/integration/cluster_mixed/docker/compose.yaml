@@ -1,5 +1,6 @@
-# Base mixed cluster layout. No cross-language depends_on.
-# Overlay supplies start order (java-leader or go-leader).
+# Base mixed cluster layout. The base file does not add a cross-language
+# depends_on. An overlay supplies the start order: java-leader, go-leader,
+# or ex-leader-rejoin.
 #
 # Per-run env from the smoke script:
 # - HERON_COMPOSE_PROJECT

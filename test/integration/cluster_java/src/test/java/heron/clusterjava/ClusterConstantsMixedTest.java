@@ -140,6 +140,10 @@ class ClusterConstantsMixedTest {
                 2,
                 ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO),
             Arguments.of(
+                "MIXED_APPOINTED_LEADER_ID_NONE",
+                -1,
+                ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE),
+            Arguments.of(
                 "MIXED_LOG_ENDPOINT",
                 "239.255.12.15:9004",
                 ClusterConstants.MIXED_LOG_ENDPOINT),

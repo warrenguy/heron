@@ -1,5 +1,7 @@
 package heron.clusterjava;
 
+import io.aeron.Aeron;
+
 import java.util.concurrent.TimeUnit;
 
 public final class ClusterConstants {
@@ -81,10 +83,6 @@ public final class ClusterConstants {
         + "1,cluster-1:9102,cluster-1:9103,cluster-1:9104,cluster-1:9105,cluster-1:9101|"
         + "2,cluster-2:9202,cluster-2:9203,cluster-2:9204,cluster-2:9205,cluster-2:9201|";
 
-
-    // Mixed Go/Java multi-node defaults (clusterjava/mixed_oracle.go).
-    // Appointed leader is member 0 (Java) or member 2 (Go). Go member is id 2.
-
     public static final int MIXED_MEMBER_COUNT = 3;
 
     // Appointed leader member id when a Java peer leads.
@@ -92,6 +90,10 @@ public final class ClusterConstants {
 
     // Appointed leader member id when the Go peer leads.
     public static final int MIXED_APPOINTED_LEADER_ID_GO = 2;
+
+    // MIXED_APPOINTED_LEADER_ID_NONE does not appoint a leader. The value equals
+    // the appointedLeaderId context default, Aeron.NULL_VALUE.
+    public static final int MIXED_APPOINTED_LEADER_ID_NONE = Aeron.NULL_VALUE;
 
     // Cluster data parent for mixed compose volumes: /tmp/heron-cluster-{memberId}.
     public static final String MIXED_BASE_DIR_PREFIX = "/tmp/heron-cluster-";
@@ -115,17 +117,21 @@ public final class ClusterConstants {
     // MixedLogChannelUnicast / DefaultLogChannel.
     public static final String MIXED_LOG_CHANNEL_UNICAST = UDP_CHANNEL_64K;
 
-    // Shared multicast log endpoint for go-leader. Final octet is odd (Aeron control
-    // address is the next even octet; even groups are rejected at publication add).
+    // MIXED_LOG_ENDPOINT is the shared multicast log endpoint for go-leader and
+    // ex-leader-rejoin. The final octet is odd. Aeron derives the control
+    // address from the next even octet. Publication add rejects an even group.
+    //
     // Hand-sync with clusterjava.MixedLogEndpoint.
     public static final String MIXED_LOG_ENDPOINT = "239.255.12.15:9004";
 
-    // Log channel when the Go member is appointed. Final URI includes endpoint=
-    // so the consensus module clears isLogMdc and disables multi-destination
-    // fan-out. interface= pins the compose bridge subnet; ttl=1 keeps frames on
-    // that network. Go MixedLogChannelMulticast is a template only (no endpoint=);
-    // cluster.Config forbids endpoint on LogChannel and Topology merges the
-    // members-string log endpoint. Intentional asymmetry, not byte parity.
+    // MIXED_LOG_CHANNEL_MULTICAST is the log channel when the Go member leads
+    // on go-leader and ex-leader-rejoin. The final URI includes endpoint=.
+    // The consensus module then clears isLogMdc. The module stops
+    // multi-destination fan-out. interface= fixes the compose bridge subnet.
+    // ttl=1 keeps frames on the bridge subnet. Go MixedLogChannelMulticast is
+    // a template. The template must not carry endpoint=. cluster.Config
+    // rejects endpoint on LogChannel. Topology merges the members-string log
+    // endpoint. The two strings differ on purpose.
     public static final String MIXED_LOG_CHANNEL_MULTICAST =
         UDP_CHANNEL_64K
             + "|endpoint=" + MIXED_LOG_ENDPOINT

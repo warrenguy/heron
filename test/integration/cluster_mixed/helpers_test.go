@@ -37,20 +37,23 @@ const mixedIdlePollInterval = 50 * time.Millisecond
 //
 // Concurrency: invoker-only. Every method runs on the test goroutine.
 //
-// Lifetime: Open registers module Close on t.Cleanup. writeReady runs
-// immediately after open, before any assertion.
+// Lifetime: Open registers module Close on t.Cleanup.
+//
+// The caller writes the readiness file before the overlay's waiting services
+// start:
+//   - java-leader and go-leader write the file immediately after open.
+//   - ex-leader-rejoin writes the file only after the Go module closes.
 type mixedMemberFixture struct {
 	module *cluster.ConsensusModule
 	runner *cluster.Runner
 	driver *harness.MediaDriver
 }
 
-// requireMixedCompose skips with skipHint when envKey is unset.
-// envKey is the per-overlay gate (java-leader or go-leader compose env).
-// skipHint names the make target that runs the caller's smoke.
+// requireMixedCompose skips with skipHint when envKey is unset. skipHint names
+// the make target that runs the caller's smoke.
 //
-// When the gate is set, AERON_DIR must equal MixedAeronDirGo or the test fatals.
-// JoinExternal polls AERON_DIR for a ready CnC file at open.
+// When the key is set, AERON_DIR must equal MixedAeronDirGo. JoinExternal
+// polls AERON_DIR for a ready CnC file at open.
 func requireMixedCompose(t *testing.T, envKey, skipHint string) {
 	t.Helper()
 
@@ -117,6 +120,23 @@ func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 	}
 }
 
+// buildMixedExLeaderRejoinConfig starts from the Go-leader config,
+// then clears AppointedLeaderID. ReplicationChannel uses the member-2
+// replay channel. Startup canvass uses MixedRejoinStartupCanvassTimeout.
+// LeaderArchiveControlChannel stays empty. Normalize fills
+// DefaultLeaderArchiveControlChannel.
+func buildMixedExLeaderRejoinConfig(t *testing.T) cluster.Config {
+	t.Helper()
+
+	cfg := buildMixedGoLeaderConfig(t)
+	cfg.AppointedLeaderID = nil
+	replication, err := clusterjava.MixedComposeReplicationChannel()
+	require.NoError(t, err)
+	cfg.ReplicationChannel = replication
+	cfg.Election.StartupCanvassTimeoutNs = clusterjava.MixedRejoinStartupCanvassTimeout.Nanoseconds()
+	return cfg
+}
+
 // requireMixedAeronDirsPresent fatals when any of the three mixed Aeron
 // directories is missing. go-leader requires Java peers up before Go opens, so
 // all three CnC trees exist when the smoke starts.
@@ -135,8 +155,8 @@ func requireMixedAeronDirsPresent(t *testing.T) {
 	}
 }
 
-// openMixedGoMember joins the external driver, opens the consensus module, and
-// builds a Runner. Does not write the readiness file. Caller writes next.
+// openMixedGoMember returns an open Go member on the external driver. The
+// helper does not write the readiness file.
 func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
 	t.Helper()
 
@@ -167,12 +187,18 @@ func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
 }
 
 // writeReady creates the readiness file the Go service healthcheck tests.
-// Call immediately after OpenConsensusModule returns, before any assertion.
 func writeReady(t *testing.T) {
 	t.Helper()
 
-	require.NoError(t, os.MkdirAll(filepath.Dir(clusterjava.MixedReadyPath), 0o755))
-	require.NoError(t, os.WriteFile(clusterjava.MixedReadyPath, []byte("ready\n"), 0o644))
+	writeMarkerFile(t, clusterjava.MixedReadyPath, "ready\n")
+}
+
+// writeMarkerFile creates path and its parent directory with body.
+func writeMarkerFile(t *testing.T, path, body string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
 // tick runs one Runner.DoWork: transport client, archive Poll, then agent.
@@ -194,22 +220,29 @@ func (f *mixedMemberFixture) tickUntil(budget time.Duration, ok func() bool) boo
 	})
 }
 
-// awaitJavaModuleState waits until each Java member's CnC is readable and its
-// module state counter (type 200) is allocated.
-// Opens counters lazily as each CnC appears.
+// mixedJavaAeronDirs maps a Java member id to its AERON_DIR.
+var mixedJavaAeronDirs = [...]string{
+	clusterjava.MixedAeronDirMember0,
+	clusterjava.MixedAeronDirMember1,
+}
+
+// awaitJavaModuleState waits until each listed Java member's CnC is readable.
+// The module state counter (type 200) must also be allocated. The result
+// holds one entry per id in ids order.
 //
-// Pass nil f when Java peers start before the Go member opens.
-// A non-nil f runs the Go duty cycle on every poll.
-// Canvass continues while Java starts.
+// f controls the Go duty cycle during the wait:
+//   - nil when the Java members start before the Go member opens.
+//   - non-nil runs the Go duty cycle on every poll. Canvass continues
+//     while Java starts.
 func awaitJavaModuleState(
 	t *testing.T,
 	f *mixedMemberFixture,
+	ids []int,
 	budget time.Duration,
 ) []*harness.DriverCounters {
 	t.Helper()
 
-	dirs := []string{clusterjava.MixedAeronDirMember0, clusterjava.MixedAeronDirMember1}
-	out := make([]*harness.DriverCounters, len(dirs))
+	out := make([]*harness.DriverCounters, len(ids))
 	start := time.Now()
 
 	interval := mixedIdlePollInterval
@@ -222,8 +255,9 @@ func awaitJavaModuleState(
 			f.tick()
 		}
 		all := true
-		for i, dir := range dirs {
+		for i, id := range ids {
 			if out[i] == nil {
+				dir := mixedJavaAeronDirs[id]
 				c, err := harness.OpenDriverCounters(dir)
 				if err != nil {
 					all = false
@@ -240,22 +274,29 @@ func awaitJavaModuleState(
 	})
 
 	if !ok {
-		// Name each aeronDir: a missing CnC is the common startup failure and
-		// dumpMixedState reports counters, not directories.
 		var b strings.Builder
-		for i, dir := range dirs {
-			fmt.Fprintf(&b, "javaMember=%d aeronDir=%s cncOpen=%v\n", i, dir, out[i] != nil)
+		for i, id := range ids {
+			fmt.Fprintf(
+				&b,
+				"javaMember=%d aeronDir=%s cncOpen=%v\n",
+				id,
+				mixedJavaAeronDirs[id],
+				out[i] != nil,
+			)
 		}
 		var module *cluster.ConsensusModule
 		if f != nil {
 			module = f.module
 		}
+		b.WriteString(harness.ClusterMemberState(module))
+		for i, id := range ids {
+			appendJavaMemberCounters(&b, id, out[i])
+		}
 		t.Fatalf(
-			"java module state counter not allocated after %s (budget %s):\n%s%s",
+			"java module state counter not allocated after %s (budget %s):\n%s",
 			time.Since(start),
 			budget,
 			b.String(),
-			dumpMixedState(module, out),
 		)
 	}
 
@@ -811,8 +852,8 @@ func awaitJavaServiceSawTermStart(
 	}
 }
 
-// awaitGoLeaderElection ticks until the Go member leads and both Java members
-// report follower with a matching leadership term.
+// awaitGoLeaderElection ticks until the Go member leads. Each Java member in
+// the slice must report follower. Leadership terms must match.
 //
 // LeaderMemberID is -1 on the leader (no append target). Asserts -1, never
 // self.
@@ -900,9 +941,10 @@ func awaitGoLeaderElection(
 	return recordingBefore
 }
 
-// awaitJavaCommitAdvance waits for both Java commit counters to rise strictly
-// above recorded and for the Go leader CommitPosition to rise above 0.
-// Does not assert NotifiedCommitPosition (leader path does not advance it).
+// awaitJavaCommitAdvance waits for each Java commit counter in the slice to
+// rise strictly above recorded. The Go leader CommitPosition must rise above
+// 0. The wait does not assert NotifiedCommitPosition. The leader path does
+// not advance NotifiedCommitPosition.
 func awaitJavaCommitAdvance(
 	t *testing.T,
 	f *mixedMemberFixture,
@@ -952,8 +994,39 @@ func awaitJavaCommitAdvance(
 	)
 }
 
-// dumpMixedState dumps the Go member and each Java counter set.
-// module may be nil when Go has not opened yet.
+// appendJavaMemberCounters writes one line of Java member counters to b.
+func appendJavaMemberCounters(b *strings.Builder, memberID int, c *harness.DriverCounters) {
+	if c == nil {
+		fmt.Fprintf(b, "javaMember=%d counters=<nil>\n", memberID)
+		return
+	}
+	role, roleOK := c.Value(consensus.ClusterNodeRoleCounterTypeID)
+	term, termOK := c.Value(consensus.ClusterLeadershipTermIDCounterTypeID)
+	state, stateOK := c.Value(consensus.ClusterConsensusModuleStateCounterTypeID)
+	commit, commitOK := c.Value(consensus.ClusterCommitPositionCounterTypeID)
+	election, electionOK := c.Value(consensus.ClusterElectionStateCounterTypeID)
+	fmt.Fprintf(
+		b,
+		"javaMember=%d stateOK=%v state=%d roleOK=%v role=%d termOK=%v term=%d "+
+			"commitOK=%v commit=%d electionOK=%v election=%d\n",
+		memberID,
+		stateOK,
+		state,
+		roleOK,
+		role,
+		termOK,
+		term,
+		commitOK,
+		commit,
+		electionOK,
+		election,
+	)
+}
+
+// dumpMixedState returns the Go member state and one line per Java counter set.
+// The Go module may be nil when Go has not opened yet. dumpMixedState labels
+// each Java line with the slice index. The caller passes members in id order
+// from member 0.
 func dumpMixedState(
 	m *cluster.ConsensusModule,
 	java []*harness.DriverCounters,
@@ -961,31 +1034,7 @@ func dumpMixedState(
 	var b strings.Builder
 	b.WriteString(harness.ClusterMemberState(m))
 	for i, c := range java {
-		if c == nil {
-			fmt.Fprintf(&b, "javaMember=%d counters=<nil>\n", i)
-			continue
-		}
-		role, roleOK := c.Value(consensus.ClusterNodeRoleCounterTypeID)
-		term, termOK := c.Value(consensus.ClusterLeadershipTermIDCounterTypeID)
-		state, stateOK := c.Value(consensus.ClusterConsensusModuleStateCounterTypeID)
-		commit, commitOK := c.Value(consensus.ClusterCommitPositionCounterTypeID)
-		election, electionOK := c.Value(consensus.ClusterElectionStateCounterTypeID)
-		fmt.Fprintf(
-			&b,
-			"javaMember=%d stateOK=%v state=%d roleOK=%v role=%d termOK=%v term=%d "+
-				"commitOK=%v commit=%d electionOK=%v election=%d\n",
-			i,
-			stateOK,
-			state,
-			roleOK,
-			role,
-			termOK,
-			term,
-			commitOK,
-			commit,
-			electionOK,
-			election,
-		)
+		appendJavaMemberCounters(&b, i, c)
 	}
 	return b.String()
 }

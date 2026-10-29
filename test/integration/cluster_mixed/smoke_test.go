@@ -37,7 +37,7 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 
 	// Java up: each Java member has allocated a module state counter.
 	// Compose starts Java only after the readiness file.
-	java := awaitJavaModuleState(t, f, clusterjava.MixedStartupBudget)
+	java := awaitJavaModuleState(t, f, []int{0, 1}, clusterjava.MixedStartupBudget)
 
 	// Elect: Java member 0 leads; Go follows; terms agree.
 	awaitJavaLeaderElection(t, f, java, clusterjava.MixedElectionBudget)
@@ -125,7 +125,7 @@ func TestClusterMixedGoLeader(t *testing.T) {
 
 	// Java up before the Go member opens. Compose starts Java first.
 	// Nil fixture: no Go duty cycle until openMixedGoMember below.
-	java := awaitJavaModuleState(t, nil, clusterjava.MixedStartupBudget)
+	java := awaitJavaModuleState(t, nil, []int{0, 1}, clusterjava.MixedStartupBudget)
 
 	// Record commit counters while allocated and before Go opens as leader.
 	recorded := recordJavaCommitPositions(t, java)
