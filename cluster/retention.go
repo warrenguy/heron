@@ -50,6 +50,7 @@ type SnapshotRetentionArchive interface {
 
 var _ SnapshotRetentionArchive = (*archive.Client)(nil)
 
+// SnapshotRetentionConfig holds inputs for [RetainLatestSnapshot].
 type SnapshotRetentionConfig struct {
 	// ClusterDir is the member cluster directory. The directory must exist.
 	ClusterDir string
