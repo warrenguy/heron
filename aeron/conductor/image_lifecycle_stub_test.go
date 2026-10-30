@@ -272,6 +272,7 @@ func TestConductor_handleAvailableImage_emptyMediaDriverDirReportsError(t *testi
 	config := conductorTestConfig(t, errorHandler, fixedClocks{})
 	config.ImageLifecycle = lifecycle
 	conductorInstance := newConductorForTest(t, config)
+	scope := installCountingHandlerScope(conductorInstance)
 	registerGoldenImageSubscription(conductorInstance)
 
 	triggerGoldenAvailableImage(t, conductorInstance)
@@ -284,6 +285,7 @@ func TestConductor_handleAvailableImage_emptyMediaDriverDirReportsError(t *testi
 		registry,
 		goldenAvailableImageEvent.LogFileName,
 	))
+	requireHandlerScope(t, scope, 1, 0)
 }
 
 func TestConductor_handleAvailableImage_nilLifecycleNoOp(t *testing.T) {
@@ -313,6 +315,7 @@ func TestConductor_handleAvailableImage_newImageFailureReleasesAcquire(t *testin
 		newImageErr: errors.New("conductor: injected new image failure"),
 	}
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, errorHandler)
+	scope := installCountingHandlerScope(conductorInstance)
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
@@ -330,6 +333,7 @@ func TestConductor_handleAvailableImage_newImageFailureReleasesAcquire(t *testin
 		registry,
 		goldenAvailableImageEvent.LogFileName,
 	))
+	requireHandlerScope(t, scope, 1, 0)
 }
 
 func TestConductor_handleAvailableImage_addImageFailureReleasesAcquire(t *testing.T) {
@@ -338,6 +342,7 @@ func TestConductor_handleAvailableImage_addImageFailureReleasesAcquire(t *testin
 	errorHandler, gotErrors := collectConductorErrors()
 	lifecycle := &recordingImageLifecycle{addImageOK: false}
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, errorHandler)
+	scope := installCountingHandlerScope(conductorInstance)
 	registerGoldenImageSubscription(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 
@@ -352,6 +357,7 @@ func TestConductor_handleAvailableImage_addImageFailureReleasesAcquire(t *testin
 		registry,
 		goldenAvailableImageEvent.LogFileName,
 	))
+	requireHandlerScope(t, scope, 1, 0)
 }
 
 func TestConductor_handleUnavailableImage_closeFailureSkipsRelease(t *testing.T) {
@@ -362,7 +368,10 @@ func TestConductor_handleUnavailableImage_closeFailureSkipsRelease(t *testing.T)
 		skipMarkImageClosed: true,
 		removedLogFileName:  goldenAvailableImageEvent.LogFileName,
 	}
+	var handlerCalls int
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) { handlerCalls++ }
 	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, errorHandler)
+	scope := installCountingHandlerScope(conductorInstance)
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 	seedGoldenAvailableLogBuffers(t, conductorInstance)
 	registerGoldenImageSubscription(conductorInstance)
@@ -370,12 +379,14 @@ func TestConductor_handleUnavailableImage_closeFailureSkipsRelease(t *testing.T)
 	triggerGoldenUnavailableImage(t, conductorInstance)
 
 	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Zero(t, handlerCalls)
 	require.Len(t, *gotErrors, 1)
 	require.EqualError(t, (*gotErrors)[0], "conductor: image close failed before log buffer release")
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(
 		registry,
 		goldenAvailableImageEvent.LogFileName,
 	))
+	requireHandlerScope(t, scope, 1, 0)
 }
 
 func TestConductor_handleUnavailableImage_nilLifecycleNoOp(t *testing.T) {

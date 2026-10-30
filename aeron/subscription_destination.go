@@ -23,6 +23,7 @@ import (
 //   - channel is empty ("aeron: channel is required")
 //   - channel is non-ASCII ("aeron: channel must be ASCII")
 //   - the driver returns an error or the wait times out
+//   - the caller is inside a handler ([ErrReentrantCall])
 func (subscription *Subscription) AddDestination(channel string) error {
 	return subscription.receiveDestination(
 		channel,
@@ -47,6 +48,7 @@ func (subscription *Subscription) AddDestination(channel string) error {
 //   - channel is empty ("aeron: channel is required")
 //   - channel is non-ASCII ("aeron: channel must be ASCII")
 //   - the driver returns an error or the wait times out
+//   - the caller is inside a handler ([ErrReentrantCall])
 func (subscription *Subscription) RemoveDestination(channel string) error {
 	return subscription.receiveDestination(
 		channel,

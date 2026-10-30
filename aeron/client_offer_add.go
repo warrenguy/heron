@@ -157,7 +157,9 @@ func (client *Client) offerAdd(
 	channel string,
 	offer driverOfferFunc,
 ) (int64, error) {
-	client.lockClient()
+	if err := client.lockClient(); err != nil {
+		return 0, err
+	}
 	defer client.unlockClient()
 
 	if err := client.requireReadyWithConductor(); err != nil {
@@ -203,7 +205,9 @@ func pollAddWith[T any](
 	if client == nil {
 		return zero, false, ErrClientNotReady
 	}
-	client.lockClient()
+	if err := client.lockClient(); err != nil {
+		return zero, false, err
+	}
 	defer client.unlockClient()
 
 	if err := client.requireReadyWithConductor(); err != nil {

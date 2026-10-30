@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
 const publicationErrorFrameForeignRegistrationID int64 = 9009
@@ -162,6 +163,97 @@ func TestClient_PublicationErrorFrameHandler_localFrame(t *testing.T) {
 				SourceAddress:             netip.MustParseAddrPort("192.0.2.7:40123"),
 			}}, frames)
 			require.Equal(t, 1, client.PublicationCountForTest())
+		})
+	}
+}
+
+type closablePublication interface {
+	Close() error
+	IsClosed() bool
+}
+
+func TestClient_PublicationErrorFrameHandler_reentrantCalls(t *testing.T) {
+	for _, testCase := range clientAddPublicationKindCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir, logPath := testCase.setupLog(t)
+
+			var (
+				client           *Client
+				pendingID        int64
+				registrationID   int64
+				pub              closablePublication
+				gotErrors        []error
+				added            *Subscription
+				addErr           error
+				publicationFound bool
+				lookupOK         bool
+				closeErr         error
+			)
+			cfg := Config{
+				AeronDir: dir,
+				ErrorHandler: func(err error) {
+					gotErrors = append(gotErrors, err)
+				},
+				PublicationErrorFrameHandler: func(PublicationErrorFrame) {
+					client.CancelPending(pendingID)
+					added, addErr = client.AddSubscription(clientAddStreamID, clientAddChannel)
+					_, publicationFound = client.Publication(registrationID)
+					looked, ok := testCase.lookup(client, registrationID)
+					lookupOK = ok && looked == pub
+					closeErr = pub.Close()
+				},
+			}
+			client, fixture := newClientAddFixtureWithConfig(t, cfg)
+			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+
+			correlationID, err := testCase.offerAdd(client)
+			require.NoError(t, err)
+			addedPub := pollAddUntilReady(
+				t,
+				client,
+				correlationID,
+				func(t *testing.T, deadline time.Time) {
+					_, _ = testCase.pollRespond(t, fixture, logPath, deadline, nil)
+				},
+				testCase.pollAdd,
+				testCase.pollTimeoutMsg,
+			)
+			var ok bool
+			pub, ok = addedPub.(closablePublication)
+			require.True(t, ok)
+			var originalRegistrationID int64
+			registrationID, originalRegistrationID = addPublicationIDs(pub)
+
+			pendingID, err = client.OfferAddSubscription(
+				clientAddStreamID,
+				clientAddChannel,
+			)
+			require.NoError(t, err)
+
+			require.NoError(t, fixture.Transmit(
+				conductor.OnPublicationError,
+				conductor.PublicationErrorBytes(
+					publicationErrorFrameTestEvent(originalRegistrationID),
+				),
+			))
+
+			var workCount int
+			testutil.RequireReturnsWithin(t, clientConcurrentResultTimeout, func() {
+				workCount = client.DoWork()
+			})
+
+			require.Equal(t, 1, workCount)
+			require.Nil(t, added)
+			require.ErrorIs(t, addErr, ErrReentrantCall)
+			require.Len(t, gotErrors, 1)
+			require.ErrorIs(t, gotErrors[0], ErrReentrantCall)
+			_, isPublication := pub.(*Publication)
+			require.Equal(t, isPublication, publicationFound)
+			require.True(t, lookupOK)
+			require.NoError(t, closeErr)
+			require.True(t, pub.IsClosed())
+			_, pending := fixture.Conductor.PendingResult(pendingID)
+			require.True(t, pending)
 		})
 	}
 }

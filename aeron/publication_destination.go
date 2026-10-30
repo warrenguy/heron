@@ -14,9 +14,8 @@ import (
 //   - channel must name a UDP endpoint.
 //   - A full ring fails at once. Config.DriverTimeout bounds the driver wait.
 //
-// Concurrency: invoker-only with Client.DoWork. Same rules as AddPublication;
-// see Client godoc. A handler inside DoWork must not call AddDestination.
-// AddDestination takes clientLock.
+// Concurrency: invoker-only with Client.DoWork. Same rules as AddPublication.
+// A call from a handler returns [ErrReentrantCall].
 //
 // Returns an error when:
 //   - the publication is closed
@@ -34,6 +33,7 @@ import (
 //   - the conductor terminates during the wait. Driver shutdown and a stale
 //     driver keepalive map to [*DriverTimeoutError]. Other causes pass
 //     through unchanged
+//   - the caller is inside a handler ([ErrReentrantCall])
 func (pub *Publication) AddDestination(channel string) error {
 	return awaitSendDestination(pub.sendDestinationTarget().channelCommand(
 		channel,
@@ -92,9 +92,8 @@ func (pub *Publication) RemoveDestinationByID(destinationRegistrationID int64) e
 // Ownership: poll the id with Client.PollCommand until done, or call
 // Client.CancelPending. An abandoned entry stays until Client.Close.
 //
-// Concurrency: invoker-only with Client.DoWork. Same rules as AddPublication;
-// see Client godoc. A handler inside DoWork must not call AsyncAddDestination.
-// AsyncAddDestination takes clientLock.
+// Concurrency: invoker-only with Client.DoWork. Same rules as AddPublication.
+// A call from a handler returns [ErrReentrantCall].
 //
 // Returns an error when: see AddDestination. The wait outcomes do not apply:
 // driver rejection, timeout and termination during the wait.
@@ -341,7 +340,9 @@ func offerSendDestination(command preparedSendDestination) (int64, error) {
 		return 0, command.err
 	}
 	client := command.client
-	client.lockClient()
+	if err := client.lockClient(); err != nil {
+		return 0, err
+	}
 	defer client.unlockClient()
 
 	if err := client.requireReadyWithDriverProxy(); err != nil {

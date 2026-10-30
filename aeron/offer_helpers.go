@@ -95,6 +95,9 @@ func offerWithRetryObserved(
 	payload []byte,
 	onRetriable OfferRetriableObserver,
 ) (int64, error) {
+	if err := client.checkReentrant(); err != nil {
+		return 0, err
+	}
 	deadline, effective, err := retryDeadline(ctx, client.publicationOfferTimeout)
 	if err != nil {
 		return 0, err

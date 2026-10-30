@@ -20,8 +20,8 @@ import (
 // Ownership: poll each id until done, or call Client.CancelPending. An
 // abandoned entry stays until Client.Close.
 //
-// Concurrency: invoker-only with Client.DoWork. A handler inside DoWork must
-// not call PollCommand. PollCommand takes clientLock.
+// Concurrency: invoker-only with Client.DoWork. A call from a handler
+// returns [ErrReentrantCall]. The call does not change the entry.
 //
 // Returns:
 //   - false, nil: the command is in flight.
@@ -37,13 +37,17 @@ import (
 //     completed the id, a cancel removed it, or no call issued it.
 //   - false, [ErrClientClosed]: Client.Close removed every entry.
 //   - false, [ErrClientNotReady]: the entry is unchanged.
+//   - false, [ErrReentrantCall]: the caller is inside a handler. The
+//     call does not change the entry.
 //   - false, kind error: correlationID names another kind of command, such
 //     as an OfferAdd* registration. The entry is unchanged.
 func (client *Client) PollCommand(correlationID int64) (done bool, err error) {
 	if client == nil {
 		return false, ErrClientNotReady
 	}
-	client.lockClient()
+	if err = client.lockClient(); err != nil {
+		return false, err
+	}
 	defer client.unlockClient()
 
 	if err = client.requireReadyWithConductor(); err != nil {

@@ -10,12 +10,17 @@ import (
 //
 // Timeout or cancel returns promptly without waiting for fn to exit.
 //
+// A call from a handler returns [ErrReentrantCall] before fn starts.
+//
 // Does not install an ErrorHandler; wrap [Config.ErrorHandler] if transport
 // errors must fail the wait.
 func (client *Client) RunDuringClientWork(
 	ctx context.Context,
 	fn func() error,
 ) error {
+	if err := client.checkReentrant(); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -51,6 +56,9 @@ func (client *Client) pollUntil(
 	ready func() bool,
 	timeoutErr func(timeout time.Duration) error,
 ) error {
+	if err := client.checkReentrant(); err != nil {
+		return err
+	}
 	deadline, effective, err := retryDeadline(ctx, client.pollTimeout)
 	if err != nil {
 		return err

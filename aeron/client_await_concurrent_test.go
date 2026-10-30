@@ -1,7 +1,10 @@
 package aeron
 
 import (
+	"bytes"
+	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -309,4 +312,90 @@ func TestClient_IsTerminating_concurrentCloseDuringAwait(t *testing.T) {
 	hammerWG.Wait()
 	require.False(t, client.IsTerminating())
 	requireActiveCorrelationCleared(t, fixture)
+}
+
+func TestClient_handlerScope_otherGoroutineWaitsDuringHandler(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHandler)
+
+	env := startAvailableImageHandlerCall(t, func(*handlerCallEnv) {
+		close(entered)
+		<-release
+	})
+	client := env.client
+	env.transmitAvailable()
+
+	aDone := make(chan int, 1)
+	go func() {
+		aDone <- client.DoWork()
+	}()
+
+	receiveAddResult(t, entered, clientConcurrentResultTimeout, "handler did not enter")
+
+	bStarted := make(chan int64, 1)
+	bDone := make(chan struct{})
+	go func() {
+		bStarted <- currentGoroutineID()
+		client.CancelPending(env.correlationID)
+		client.DoWork()
+		close(bDone)
+	}()
+
+	bID := receiveAddResult(
+		t,
+		bStarted,
+		clientConcurrentResultTimeout,
+		"cancel goroutine did not start",
+	)
+
+	// Release the handler only after the cancel goroutine blocks in
+	// clientLock. The goroutine sends the start signal before CancelPending.
+	// A release on that signal lets a late schedule hide an incorrect
+	// ErrReentrantCall.
+	waitForGoroutineMutexLock(t, bID, bDone)
+
+	releaseHandler()
+
+	workCount := receiveAddResult(
+		t,
+		aDone,
+		clientConcurrentResultTimeout,
+		"DoWork did not return",
+	)
+	receiveAddResult(t, bDone, clientConcurrentResultTimeout, "cancel goroutine did not return")
+
+	require.Equal(t, 1, workCount)
+	require.Empty(t, env.gotErrors)
+	env.requirePending(false)
+}
+
+func waitForGoroutineMutexLock(t *testing.T, goroutineID int64, done <-chan struct{}) {
+	t.Helper()
+
+	marker := fmt.Sprintf("goroutine %d [sync.Mutex.Lock", goroutineID)
+	deadline := time.Now().Add(clientConcurrentResultTimeout)
+	buf := make([]byte, 64*1024)
+	for {
+		select {
+		case <-done:
+			require.FailNow(t, "cancel goroutine returned before it blocked on clientLock")
+		default:
+		}
+		for {
+			n := runtime.Stack(buf, true)
+			if n < len(buf) {
+				if bytes.Contains(buf[:n], []byte(marker)) {
+					return
+				}
+				break
+			}
+			buf = make([]byte, len(buf)*2)
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "cancel goroutine did not block on clientLock")
+		}
+		runtime.Gosched()
+	}
 }

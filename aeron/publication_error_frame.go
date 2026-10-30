@@ -40,10 +40,13 @@ type PublicationErrorFrame struct {
 // clientLock: Client.DoWork or the poll loop of a blocking Client call. The
 // conductor holds no resource lock during the call.
 //
-// Client API restrictions match AvailableImageHandler. Handlers may call
-// Publication.Close, ExclusivePublication.Close, and the Client.Publication,
-// Client.ExclusivePublication, and Client.Subscription lookups. None of these
-// takes clientLock.
+// Client calls from the handler follow the [Client] handler rule. The
+// handler may call these, since they do not take clientLock:
+//   - Publication.Close
+//   - ExclusivePublication.Close
+//   - Client.Publication
+//   - Client.ExclusivePublication
+//   - Client.Subscription
 //
 // The Client counts the matching publications before the first call. A later
 // call may arrive after its publication closed.
