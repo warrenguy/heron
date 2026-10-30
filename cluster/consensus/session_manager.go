@@ -114,9 +114,9 @@ type clientSession struct {
 	egressPublication *aeron.Publication
 
 	// newLeaderEventPending marks a session that must receive NewLeaderEvent
-	// from this member as the new leader. Set at ElectionComplete on the
-	// leader. Cleared on send, on terminal egress, on close or remove, and
-	// at PrepareForNewLeadership.
+	// from this member as the new leader. Set at ElectionComplete on a
+	// non-startup leader. Cleared on send, on terminal egress, on close or
+	// remove, and at PrepareForNewLeadership.
 	newLeaderEventPending bool
 }
 

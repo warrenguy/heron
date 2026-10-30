@@ -119,7 +119,11 @@ type Agent struct {
 	// [Agent.CommitPosition] return 0.
 	commit *atomic.Int64
 
-	role                     Role
+	role Role
+
+	// isLeaderStartup is the isStartup argument from the latest JoinLogAsLeader.
+	isLeaderStartup bool
+
 	timeOfLastLeaderUpdateNs int64
 	localLogRecordingID      int64
 
@@ -1880,6 +1884,7 @@ func (a *Agent) JoinLogAsLeader(
 	a.cancelSnapshotTake()
 	a.RoleSet(RoleLeader)
 	a.leadershipTermID = leadershipTermID
+	a.isLeaderStartup = isStartup
 	a.SetLeaderMemberID(nullMemberID)
 	a.termBaseLogPosition = logPosition
 	if a.logAdapter != nil {
@@ -2120,8 +2125,9 @@ func (a *Agent) adoptLogRecording(
 // Behaviour:
 //   - leader: stamps nowNs minus one heartbeat interval so the first steady
 //     tick publishes a commit heartbeat. Stamps the timer wheel current time
-//     to nowNs. Winding expires nothing. Rebinds open-session egress. Reads
-//     no log
+//     to nowNs. Winding does not expire timers. A startup leader marks each
+//     open session closing with TIMEOUT. Any other leader rebinds
+//     open-session egress. Does not read the log
 //   - any other role: stamps nowNs so the quiet-tick trigger waits one full
 //     leader heartbeat timeout. Does not touch session state
 //   - without a write to timeOfLastLogUpdateNs the field stays 0. A duty
@@ -2135,7 +2141,11 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 	if a.role == RoleLeader {
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
 		a.timers.currentTime(nowNs)
-		a.rebindOpenSessions(nowNs)
+		if a.isLeaderStartup {
+			a.markOpenSessionsClosing()
+		} else {
+			a.rebindOpenSessions(nowNs)
+		}
 		return
 	}
 	a.timeOfLastLogUpdateNs = nowNs
