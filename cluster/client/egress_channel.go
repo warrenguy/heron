@@ -24,20 +24,26 @@ func applyUDPRejoinFalse(egressChannel string) (string, error) {
 	return aeron.SetChannelParam(egressChannel, aeron.ChannelRejoinParam, "false"), nil
 }
 
-// validateClusterEgressChannel rejects egress media that cannot supply a wire
-// response channel. Supported: ipc, ipcx, and udp.
+// validateClusterEgressChannel rejects media other than ipc, ipcx, and udp,
+// then rejects control-mode=response.
 func validateClusterEgressChannel(egressChannel string) error {
 	media, ok := ingressChannelMedia(egressChannel)
 	if !ok {
 		return fmt.Errorf("cluster client: invalid egress channel: %s", egressChannel)
 	}
-	if ingressPassthroughMedia(media) || media == "udp" {
-		return nil
+	if !ingressPassthroughMedia(media) && media != "udp" {
+		return fmt.Errorf(
+			"cluster client: %s egress response channel not supported; use ipc, ipcx, or udp",
+			media,
+		)
 	}
-	return fmt.Errorf(
-		"cluster client: %s egress response channel not supported; use ipc, ipcx, or udp",
-		media,
-	)
+	if aeron.IsControlModeResponse(egressChannel) {
+		return fmt.Errorf(
+			"cluster client: EgressChannel control-mode=response not supported: %s",
+			egressChannel,
+		)
+	}
+	return nil
 }
 
 type responseChannelResolver interface {

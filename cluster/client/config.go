@@ -22,7 +22,8 @@ type Config struct {
 	// IngressChannel is required for cluster connect.
 	IngressChannel string
 
-	// EgressChannel is required for cluster connect. Supported: ipc, ipcx, and udp.
+	// EgressChannel is required for cluster connect. The media must be ipc,
+	// ipcx, or udp. It must not set control-mode=response.
 	EgressChannel string
 
 	// IngressEndpoints is "0=host:port,1=host:port"; empty means unset (Java null).
