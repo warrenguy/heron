@@ -10,6 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
+	archivecodecs "github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
@@ -37,7 +38,8 @@ func requestModuleSnapshot(
 ) consensus.SnapshotTakeResult {
 	t.Helper()
 
-	nowNs, actionPosition := requestSnapshotAction(t, sc, leader, transport, session, label)
+	pump := &transferPump{transport: transport, session: session}
+	nowNs, actionPosition := requestSnapshotAction(t, sc, leader, pump, label)
 	result, ok := leader.Agent().LastSnapshotTake()
 	require.True(t, ok, "%s resolved without a result:\n%s", label, sc.dump())
 	require.NoError(t, result.Err, "%s:\n%s", label, sc.dump())
@@ -83,9 +85,8 @@ func requireModuleSnapshotReplay(
 		"response channel %q", row.ResponseChannel)
 }
 
-// TestClusterModule_recordsModuleSnapshot asserts a one-member leader with
-// ServiceCount 0 records each module snapshot to a new archive recording and
-// a recording log row.
+// TestClusterModule_recordsModuleSnapshot asserts a ServiceCount 0 leader
+// records module snapshots and restarts from the latest one.
 func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -206,6 +207,52 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 			return archiveControlSessions(t, restarted) == controlSessions
 		},
 	)
+
+	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
+	requireAwait(t, set, "post-restart election", durableElectBound, set.AwaitElection)
+	restarted = requireSingleLeader(t, set, "")
+	require.Greater(t, restarted.LeadershipTermID(), second.LeadershipTermID, sc.dump())
+	requireServiceAwaitTick(
+		t, sc,
+		"restored session closed",
+		durableWorkBound,
+		func() bool { return restoredSessionClosed(set) },
+	)
+
+	freshTransport, fresh := openSession(t, set, restarted)
+	require.Equal(t, int64(2), fresh.ClusterSessionID(), sc.dump())
+	appended := restarted.LogPublisher().Position()
+	require.Greater(t, appended, second.LogPosition, sc.dump())
+	requireServiceAwaitTick(
+		t, sc,
+		"fresh append committed",
+		durableWorkBound,
+		sessionPump(freshTransport, fresh, func() bool {
+			return restarted.CommitPosition() >= appended
+		}),
+	)
+	require.Equal(t, logRecordingID, restarted.Agent().LocalLogRecordingID(), sc.dump())
+
+	replayed := replayRecordingPayloads(t, sc, restarted, archivecodecs.RecordingDescriptorFields{
+		RecordingID:   logRecordingID,
+		StartPosition: second.LogPosition,
+		StopPosition:  appended,
+	})
+	opens, closes := 0, 0
+	for _, payload := range replayed {
+		if event, ok := codecs.TryDecodeSessionOpenEventAt(payload, 0); ok {
+			opens++
+			require.Equal(t, int64(2), event.ClusterSessionID)
+			continue
+		}
+		if event, ok := codecs.TryDecodeSessionCloseEventAt(payload, 0); ok {
+			closes++
+			require.Equal(t, int64(1), event.ClusterSessionID)
+			require.Equal(t, clusterwire.CloseReason_TIMEOUT, event.CloseReason)
+		}
+	}
+	require.Equal(t, 1, opens, "session opens in [%d, %d)", second.LogPosition, appended)
+	require.Equal(t, 1, closes, "session closes in [%d, %d)", second.LogPosition, appended)
 }
 
 func withRecordingLog(t *testing.T, dir string, fn func(*recordinglog.Log)) {

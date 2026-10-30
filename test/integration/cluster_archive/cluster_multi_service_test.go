@@ -51,11 +51,18 @@ func (g *gatedService) DoWork(nowNs int64) int {
 // serviceSeat is one attached container on one member. Invoker-only. No extra
 // locks.
 type serviceSeat struct {
-	agent    *service.Agent
-	recorder *sessionRecorder
-	gate     *gatedService
-	checked  *boundCheckedService
+	agent     *service.Agent
+	recorder  *sessionRecorder
+	gate      *gatedService
+	checked   *boundCheckedService
+	container *service.Container
 }
+
+// A nil multiServiceWrap runs the recorder itself.
+type multiServiceWrap func(
+	memberIndex, serviceID int,
+	rec *sessionRecorder,
+) service.ClusteredService
 
 // dumpMultiService returns member-set state plus one line per attached
 // container. Each line is keyed by member id and service id.
@@ -201,60 +208,121 @@ func requireNoMultiServiceFailures(
 	}
 }
 
-// openMultiServiceCluster starts three members with two session recorder
-// containers attached per member. Each container connects its own archive
-// client on response stream 121 + service id. The helper then awaits log
-// images and election. Containers open and attach before the first tick.
-// Returned seats are indexed [member][serviceID].
-func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serviceSeat) {
+func requireMultiServiceCommitBound(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+) {
+	t.Helper()
+
+	for i, memberSeats := range seats {
+		for sid, seat := range memberSeats {
+			if seat.checked.violation != nil {
+				require.NoError(t, seat.checked.violation,
+					"commit bound member %d service %d:\n%s",
+					set.Module(i).ThisMemberID(), sid, dumpMultiService(set, seats))
+			}
+		}
+	}
+}
+
+// everyMultiServiceRecorder reports whether pred holds for the recorder of
+// every seat.
+func everyMultiServiceRecorder(seats [][]*serviceSeat, pred func(*sessionRecorder) bool) bool {
+	for _, memberSeats := range seats {
+		for _, seat := range memberSeats {
+			if !pred(seat.recorder) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func openMultiServiceSeat(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	index int,
+	serviceID int,
+	wrap multiServiceWrap,
+) *serviceSeat {
+	t.Helper()
+
+	rec := &sessionRecorder{}
+	var app service.ClusteredService = rec
+	if wrap != nil {
+		app = wrap(index, serviceID, rec)
+	}
+	module := set.Module(index)
+	container, err := service.Open(service.Config{
+		Aeron:             module.Client(),
+		Service:           app,
+		CommittedPosition: module.CommitPosition,
+		ServiceID:         int32(serviceID),
+		Archive:           &archive.Config{},
+		Recovery:          &service.RecoveryConfig{},
+	})
+	require.NoError(t, err)
+	harness.CleanupClose(
+		t,
+		fmt.Sprintf("service container member %d service %d", index, serviceID),
+		container.Close,
+	)
+	require.Equal(
+		t,
+		int32(121+serviceID),
+		container.ArchiveClient().Config().EffectiveControlResponseStreamID(),
+	)
+
+	agent := container.Agent()
+	checked := &boundCheckedService{agent: agent, module: module}
+	gate := &gatedService{inner: checked}
+	set.AttachService(t, index, gate)
+	return &serviceSeat{
+		agent:     agent,
+		recorder:  rec,
+		gate:      gate,
+		checked:   checked,
+		container: container,
+	}
+}
+
+func openMultiServiceMember(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	index int,
+	wrap multiServiceWrap,
+) []*serviceSeat {
+	t.Helper()
+
+	seats := make([]*serviceSeat, multiServiceCount)
+	for sid := range multiServiceCount {
+		seats[sid] = openMultiServiceSeat(t, set, index, sid, wrap)
+	}
+	return seats
+}
+
+// startMultiServiceCluster attaches each container before the first
+// tick. Returned seats are indexed [member][serviceID].
+func startMultiServiceCluster(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+	wrap multiServiceWrap,
+) (*harness.ClusterMemberSet, [][]*serviceSeat) {
 	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
 		MemberCount:          3,
-		PortBase:             harness.ClusterMultiServicePortBase,
-		LogMulticastEndpoint: harness.ClusterMultiServiceLogEndpoint,
+		PortBase:             portBase,
+		LogMulticastEndpoint: logEndpoint,
 		AmendMemberConfig:    amendMultiServiceMember,
 	})
 	require.Len(t, set.Modules(), 3)
 
 	seats := make([][]*serviceSeat, 3)
-	for i := range 3 {
-		module := set.Module(i)
-		memberSeats := make([]*serviceSeat, multiServiceCount)
-		for sid := range multiServiceCount {
-			rec := &sessionRecorder{}
-			container, err := service.Open(service.Config{
-				Aeron:             module.Client(),
-				Service:           rec,
-				CommittedPosition: module.CommitPosition,
-				ServiceID:         int32(sid),
-				Archive:           &archive.Config{},
-				Recovery:          &service.RecoveryConfig{},
-			})
-			require.NoError(t, err)
-			harness.CleanupClose(
-				t,
-				fmt.Sprintf("service container member %d service %d", i, sid),
-				container.Close,
-			)
-			require.Equal(
-				t,
-				int32(121+sid),
-				container.ArchiveClient().Config().EffectiveControlResponseStreamID(),
-			)
-
-			agent := container.Agent()
-			checked := &boundCheckedService{agent: agent, module: module}
-			gate := &gatedService{inner: checked}
-			memberSeats[sid] = &serviceSeat{
-				agent:    agent,
-				recorder: rec,
-				gate:     gate,
-				checked:  checked,
-			}
-			set.AttachService(t, i, gate)
-		}
-		seats[i] = memberSeats
+	for i := range seats {
+		seats[i] = openMultiServiceMember(t, set, i, wrap)
 	}
 
 	requireAwait(t, set, "log image fan-in", durableImageBound, set.AwaitLogImages)
@@ -262,6 +330,50 @@ func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serv
 	requireSingleLeader(t, set, "")
 
 	return set, seats
+}
+
+func openMultiServiceCluster(t *testing.T) (*harness.ClusterMemberSet, [][]*serviceSeat) {
+	t.Helper()
+
+	return startMultiServiceCluster(
+		t,
+		harness.ClusterMultiServicePortBase,
+		harness.ClusterMultiServiceLogEndpoint,
+		nil,
+	)
+}
+
+func stopMultiServiceMember(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	index int,
+) {
+	t.Helper()
+
+	require.NoError(t, set.StopMember(index))
+	for _, seat := range seats[index] {
+		if seat == nil || seat.container == nil {
+			continue
+		}
+		require.NoError(t, seat.container.Close())
+		seat.container = nil
+	}
+}
+
+// restartMultiServiceMember does not tick. Check each returned seat
+// before the next tick.
+func restartMultiServiceMember(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	index int,
+	wrap multiServiceWrap,
+) []*serviceSeat {
+	t.Helper()
+
+	require.NoError(t, set.RestartMember(index))
+	requireWarmRestartOpen(t, set, index, "restarted member")
+	return openMultiServiceMember(t, set, index, wrap)
 }
 
 // requireHeldAckRound holds one service across a requested ack, then releases.
@@ -434,14 +546,9 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 			if leader.Agent().OpenSessionCount() != 1 {
 				return false
 			}
-			for _, memberSeats := range seats {
-				for _, seat := range memberSeats {
-					if !seat.recorder.holdsOpen(wantSession) {
-						return false
-					}
-				}
-			}
-			return true
+			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
+				return rec.holdsOpen(wantSession)
+			})
 		}),
 	)
 
@@ -480,14 +587,9 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		"session message delivered",
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
-			for _, memberSeats := range seats {
-				for _, seat := range memberSeats {
-					if !seat.recorder.holdsMessagesAfterOpen(wantSession, payload) {
-						return false
-					}
-				}
-			}
-			return true
+			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
+				return rec.holdsMessagesAfterOpen(wantSession, payload)
+			})
 		}),
 	)
 
@@ -568,14 +670,6 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		},
 	)
 
-	for i, memberSeats := range seats {
-		for sid, seat := range memberSeats {
-			if seat.checked.violation != nil {
-				require.NoError(t, seat.checked.violation,
-					"commit bound member %d service %d:\n%s",
-					set.Module(i).ThisMemberID(), sid, dumpMultiService(set, seats))
-			}
-		}
-	}
+	requireMultiServiceCommitBound(t, set, seats)
 	requireNoMultiServiceFailures(t, set, seats, " final")
 }

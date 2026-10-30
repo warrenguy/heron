@@ -837,6 +837,27 @@ func restartServiceMember(t *testing.T, sc serviceCluster, index int, wrap wrapR
 	)
 }
 
+// requireRestoredSession asserts agent loaded a snapshot at actionPosition
+// that holds sessionID, and rec saw no SessionOpen for it. Call it before
+// the next tick. A tick can move LogPosition past the loaded position.
+// Returns the restored session.
+func requireRestoredSession(
+	t *testing.T,
+	agent *service.Agent,
+	rec *sessionRecorder,
+	actionPosition, sessionID int64,
+	dump func() string,
+) service.ClientSession {
+	t.Helper()
+
+	require.Equal(t, actionPosition, agent.LogPosition(), "log position:\n%s", dump())
+	restored, ok := agent.ClientSession(sessionID)
+	require.True(t, ok, "restored session %d:\n%s", sessionID, dump())
+	require.Equal(t, sessionID, restored.ID(), dump())
+	require.False(t, rec.holdsOpen(sessionID), "restored session open:\n%s", dump())
+	return restored
+}
+
 // TestClusterService_restartedMemberServiceConsumes asserts a fresh service
 // container on a restarted follower replays the committed log, then consumes
 // a live message.
@@ -923,28 +944,15 @@ func TestClusterService_restartedMemberServiceConsumesFromSnapshot(t *testing.T)
 	)
 
 	_, actionPosition := requestSnapshotAction(
-		t, sc, leader, transport, session, "snapshot",
+		t, sc, leader, &transferPump{transport: transport, session: session}, "snapshot",
 	)
 	requireServiceAwaitTick(
 		t, sc,
 		"snapshot on every member",
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
-			for i, m := range set.Modules() {
-				result, ok := m.Agent().LastSnapshotTake()
-				if !ok {
-					return false
-				}
-				if result.Err != nil {
-					require.NoError(t, result.Err,
-						"snapshot member %d:\n%s", m.ThisMemberID(), sc.dump())
-				}
-				if result.LogPosition != actionPosition || result.RecordingID < 0 {
-					return false
-				}
-				requireNoServiceFailure(t, sc, i, " during snapshot")
-			}
-			return true
+			requireNoServiceFailures(t, sc, " during snapshot")
+			return snapshotTakenOnEveryMember(t, set, actionPosition, sc.dump)
 		}),
 	)
 
@@ -962,11 +970,7 @@ func TestClusterService_restartedMemberServiceConsumesFromSnapshot(t *testing.T)
 	restartServiceMember(t, sc, followerIndex, nil)
 
 	restarted := sc.members[followerIndex]
-	require.Equal(t, actionPosition, restarted.agent.LogPosition(), sc.dump())
-	restored, ok := restarted.agent.ClientSession(sessionID)
-	require.True(t, ok, "restored session %d:\n%s", sessionID, sc.dump())
-	require.Equal(t, sessionID, restored.ID(), sc.dump())
-	require.False(t, restarted.rec.holdsOpen(sessionID), sc.dump())
+	requireRestoredSession(t, restarted.agent, restarted.rec, actionPosition, sessionID, sc.dump)
 
 	third := []byte(serviceThirdPayload)
 	offerServiceMessage(t, sc, session, third)
