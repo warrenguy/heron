@@ -43,13 +43,32 @@ func (a *Agent) handleSessionCloseEvent(fields codecs.SessionCloseEventFields) {
 	a.removeSessionWithResources(session)
 }
 
+// markOpenSessionsClosing marks every open session closing with TIMEOUT.
+//
+// Behaviour: does not append SessionCloseEvent. [Agent.sessionCloseWork]
+// appends it. Skips the mark when canAppendLog is false, so a session cannot
+// stick in closing.
+//
+// Concurrency: invoker-only. Startup leader [Agent.ElectionComplete] only.
+func (a *Agent) markOpenSessionsClosing() {
+	if !a.canAppendLog() {
+		return
+	}
+	for _, session := range a.sessions.all {
+		if session.state != sessionOpen {
+			continue
+		}
+		a.sessions.markClosing(session.id, clusterwire.CloseReason_TIMEOUT)
+	}
+}
+
 // rebindOpenSessions marks every open session new-leader-pending and starts
 // an egress add when no publication and no in-flight add exist.
 //
 // Behaviour: refreshes lastActivityNs to nowNs. Pre-open and closing sessions
 // stay untouched. Does not send NewLeaderEvent.
 //
-// Concurrency: invoker-only. Leader ElectionComplete only.
+// Concurrency: invoker-only. Leader [Agent.ElectionComplete] only.
 func (a *Agent) rebindOpenSessions(nowNs int64) {
 	for _, session := range a.sessions.all {
 		if session.state != sessionOpen {

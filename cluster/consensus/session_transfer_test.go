@@ -331,6 +331,109 @@ func TestElectionComplete_leaderRebindsOpenSessions(t *testing.T) {
 	require.Equal(t, int64(nullValue), closing.egressAddCorrelationID)
 }
 
+func TestElectionComplete_startupLeaderClosesOpenSessions(t *testing.T) {
+	publisher, logPub := boundLogPublisher(t)
+	adder := neverReadyEgressAdder()
+	a := leaderWithEgress(t, publisher, 0, 2, adder)
+	a.SetIngressEndpoints("0=127.0.0.1:9000")
+
+	const acceptNs int64 = 10
+	openA := seedLearnedOpen(t, a, 1, acceptNs, 64)
+	a.sessions.markNewLeaderPending(openA)
+	openB := seedLearnedOpen(t, a, 2, acceptNs, 80)
+	preOpen := addPending(a.sessions, validConnectFields(3), acceptNs)
+	closing := seedLearnedOpen(t, a, 4, acceptNs, 96)
+	require.True(t, a.sessions.markClosing(closing.id, clusterwire.CloseReason_CLIENT_ACTION))
+	withAdd := seedLearnedOpen(t, a, 5, acceptNs, 112)
+	require.NoError(t, a.startSessionEgress(withAdd))
+	corr := withAdd.egressAddCorrelationID
+	withPub := seedLearnedOpen(t, a, 6, acceptNs, 128)
+	pub := attachEgressPub(t, withPub, true)
+	egressBefore := pub.Position()
+	require.Len(t, adder.offers, 1)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 0, 1, true))
+	logBefore := logPub.Position()
+
+	const completeNs int64 = 999
+	a.ElectionComplete(completeNs)
+
+	for _, session := range []*clientSession{openA, openB, withAdd, withPub} {
+		require.Equal(t, sessionClosing, session.state)
+		require.Equal(t, clusterwire.CloseReason_TIMEOUT, session.closeReason)
+		require.False(t, session.newLeaderEventPending)
+		require.Equal(t, acceptNs, session.lastActivityNs)
+	}
+	require.Equal(t, int64(nullValue), openA.egressAddCorrelationID)
+	require.Nil(t, openA.egressPublication)
+	require.Equal(t, corr, withAdd.egressAddCorrelationID)
+	require.Same(t, pub, withPub.egressPublication)
+
+	require.Equal(t, sessionPending, preOpen.state)
+	require.False(t, preOpen.newLeaderEventPending)
+	require.Equal(t, acceptNs, preOpen.lastActivityNs)
+	require.Equal(t, int64(nullValue), preOpen.egressAddCorrelationID)
+
+	require.Equal(t, sessionClosing, closing.state)
+	require.Equal(t, clusterwire.CloseReason_CLIENT_ACTION, closing.closeReason)
+	require.False(t, closing.newLeaderEventPending)
+	require.Equal(t, int64(nullValue), closing.egressAddCorrelationID)
+
+	require.Len(t, adder.offers, 1)
+	require.Equal(t, 0, a.newLeaderEventWork())
+	require.Equal(t, egressBefore, pub.Position())
+	require.Equal(t, logBefore, logPub.Position())
+	requireSessionIDs(t, a, openA.id, openB.id, preOpen.id, closing.id, withAdd.id, withPub.id)
+	require.Equal(t, completeNs-a.leaderHeartbeatIntervalNs, a.timeOfLastLogUpdateNs)
+
+	// The next sweep appends each close in walk order and removes the session.
+	require.Positive(t, a.sessionCloseWork(completeNs))
+	requireSessionIDs(t, a, preOpen.id)
+	type logClose struct {
+		id     int64
+		reason clusterwire.CloseReason
+	}
+	var closes []logClose
+	forEachTermWire(t, logPub, 16, func(w []byte) bool {
+		if fields, ok := codecs.TryDecodeSessionCloseEventAt(w, 0); ok {
+			closes = append(closes, logClose{fields.ClusterSessionID, fields.CloseReason})
+		}
+		return false
+	})
+	require.Equal(t, []logClose{
+		{openA.id, clusterwire.CloseReason_TIMEOUT},
+		{openB.id, clusterwire.CloseReason_TIMEOUT},
+		{closing.id, clusterwire.CloseReason_CLIENT_ACTION},
+		{withAdd.id, clusterwire.CloseReason_TIMEOUT},
+		{withPub.id, clusterwire.CloseReason_TIMEOUT},
+	}, closes)
+	require.Equal(t, []int64{corr}, adder.cancels)
+	require.Equal(t, []string{clusterwire.CloseReason_TIMEOUT.String()}, closedEventDetails(t, pub))
+}
+
+func TestElectionComplete_startupLeaderWithoutLogKeepsOpenSessions(t *testing.T) {
+	a := leaderWithEgress(t, nil, 0, 1, neverReadyEgressAdder())
+	s := seedLearnedOpen(t, a, 1, 10, 8)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 0, 1, true))
+	a.ElectionComplete(50)
+
+	require.Equal(t, sessionOpen, s.state)
+	require.False(t, s.newLeaderEventPending)
+}
+
+func TestElectionComplete_laterJoinRebindsOpenSessions(t *testing.T) {
+	a := leaderWithEgress(t, nil, 0, 1, neverReadyEgressAdder())
+	s := seedLearnedOpen(t, a, 1, 10, 8)
+
+	require.NoError(t, a.JoinLogAsLeader(1, 0, 1, true))
+	require.NoError(t, a.JoinLogAsLeader(2, 8, 1, false))
+	a.ElectionComplete(50)
+
+	require.Equal(t, sessionOpen, s.state)
+	require.True(t, s.newLeaderEventPending)
+}
+
 func TestElectionComplete_leaderKeepsExistingEgress(t *testing.T) {
 	adder := neverReadyEgressAdder()
 	a := NewAgent(AgentConfig{Role: RoleLeader, ThisMemberID: 1})
@@ -359,8 +462,11 @@ func TestElectionComplete_followerTouchesNoSessionState(t *testing.T) {
 	a.SetEgressPublicationAdder(neverReadyEgressAdder())
 	s := seedLearnedOpen(t, a, 4, 20, 32)
 	before := *s
+	a.isLeaderStartup = true
 
-	a.ElectionComplete(500)
+	const completeNs int64 = 500
+	a.ElectionComplete(completeNs)
+	require.Equal(t, completeNs, a.timeOfLastLogUpdateNs)
 	require.Equal(t, before.lastActivityNs, s.lastActivityNs)
 	require.False(t, s.newLeaderEventPending)
 	require.Equal(t, int64(nullValue), s.egressAddCorrelationID)
