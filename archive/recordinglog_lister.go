@@ -26,6 +26,17 @@ func LogRecordingExtentsFromDescriptor(
 	}
 }
 
+// RecordingLister is the archive call [NewLister] wraps. [*Client]
+// satisfies the interface.
+type RecordingLister interface {
+	ListRecording(
+		ctx context.Context,
+		recordingID int64,
+	) (codecs.RecordingDescriptorFields, error)
+}
+
+var _ RecordingLister = (*Client)(nil)
+
 type archiveLister struct {
 	listFn func(recordingID int64) (codecs.RecordingDescriptorFields, error)
 }
@@ -48,13 +59,13 @@ func (a archiveLister) ListRecording(recordingID int64) (recordinglog.LogRecordi
 	return LogRecordingExtentsFromDescriptor(fields), nil
 }
 
-// NewLister wraps Client.ListRecording for recordinglog.PlanRecovery.
+// NewLister wraps client.ListRecording for recordinglog.PlanRecovery.
 //
 // client must be non-nil. ctx bounds every subsequent ListRecording call made through
 // the returned lister; the closure retains ctx beyond this constructor call.
 func NewLister(
 	ctx context.Context,
-	client *Client,
+	client RecordingLister,
 ) recordinglog.ArchiveLister {
 	if client == nil {
 		panic("archive: NewLister: client must be non-nil")
