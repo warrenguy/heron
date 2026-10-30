@@ -15,7 +15,12 @@ var (
 	// Typical callers: fixtures, in-mem benches.
 	ErrClientNotBound = errors.New("aeron: client not bound")
 
-	ErrClientClosed             = errors.New("aeron: client is closed")
+	ErrClientClosed = errors.New("aeron: client is closed")
+
+	// ErrReentrantCall reports a client call that needs clientLock. The
+	// handler makes the call on the goroutine that already holds clientLock.
+	ErrReentrantCall = errors.New("aeron: reentrant client call from a handler")
+
 	ErrClientNotReady           = errors.New("aeron: client is not ready")
 	ErrConductorTerminating     = errors.New("aeron: conductor is terminating")
 	ErrPendingAlreadyRegistered = errors.New("aeron: correlation already pending")

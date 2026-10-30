@@ -190,6 +190,10 @@ func (conductor *Conductor) SetErrorHandlerForTest(handler func(error)) {
 	setErrorHandlerHook(conductor, handler)
 }
 
+func (conductor *Conductor) SetHandlerScopeForTest(scope HandlerScope) {
+	conductor.config.HandlerScope = scope
+}
+
 func (conductor *Conductor) EventsAdapterForTest() *DriverEventsAdapter {
 	return eventsAdapterHook(conductor)
 }

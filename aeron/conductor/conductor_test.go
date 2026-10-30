@@ -1,6 +1,8 @@
 package conductor_test
 
 import (
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -441,6 +443,7 @@ func TestConductor_terminateWithError_retireFailure_reportsThenTerminates(t *tes
 		errRetireSubscription,
 	)
 	conductorInstance := newConductorForTest(t, config)
+	scope := installCountingHandlerScope(conductorInstance)
 	pub := insertRealPublicationForCloseTest(t, conductorInstance)
 	sub := insertRealSubscriptionForCloseTest(t, conductorInstance)
 	beforeTypeIDs := testutil.CommittedRecordTypeIDs(conductorInstance.DriverProxyForTest().Ring())
@@ -461,6 +464,7 @@ func TestConductor_terminateWithError_retireFailure_reportsThenTerminates(t *tes
 	require.ErrorIs(t, (*gotErrors)[1], errRetireSubscription)
 	require.ErrorIs(t, (*gotErrors)[2], conductor.ErrClientTimeout)
 	assertForceClosedResources(t, conductorInstance, pub, sub, beforeTypeIDs)
+	requireHandlerScope(t, scope, 1, 1)
 }
 
 func TestConductor_serviceIntervalExceeded(t *testing.T) {
@@ -1471,4 +1475,387 @@ func TestNewConductor_rejectsNegativeCloseLingerNs(t *testing.T) {
 	require.Nil(t, conductorInstance)
 	require.ErrorIs(t, err, conductor.ErrNegativeCloseLingerNs)
 	require.EqualError(t, err, "conductor: CloseLingerNs must not be negative")
+}
+
+type countingHandlerScope struct {
+	depth  int
+	enters int
+	exits  int
+	nested int
+}
+
+func (scope *countingHandlerScope) EnterHandler() bool {
+	if scope.depth != 0 {
+		scope.nested++
+		return false
+	}
+	scope.depth++
+	scope.enters++
+	return true
+}
+
+func (scope *countingHandlerScope) ExitHandler() {
+	scope.exits++
+	scope.depth--
+}
+
+func requireHandlerScope(t *testing.T, scope *countingHandlerScope, enters, nested int) {
+	t.Helper()
+
+	require.Equal(t, enters, scope.enters)
+	require.Equal(t, nested, scope.nested)
+	require.Equal(t, enters, scope.exits)
+	require.Zero(t, scope.depth)
+}
+
+func installCountingHandlerScope(conductorInstance *conductor.Conductor) *countingHandlerScope {
+	scope := &countingHandlerScope{}
+	conductorInstance.SetHandlerScopeForTest(scope)
+	return scope
+}
+
+func newHandlerScopeImageConductor(
+	t *testing.T,
+	lifecycle *recordingImageLifecycle,
+	errorHandler func(error),
+	trigger func(*testing.T, *conductor.Conductor),
+) (*conductor.Conductor, *countingHandlerScope) {
+	t.Helper()
+
+	conductorInstance := newConductorWithRecordingLifecycle(t, lifecycle, errorHandler)
+	scope := installCountingHandlerScope(conductorInstance)
+	registerGoldenImageSubscription(conductorInstance)
+	seedGoldenAvailableLogBuffers(t, conductorInstance)
+	trigger(t, conductorInstance)
+	return conductorInstance, scope
+}
+
+func newHandlerScopeImageLogConductor(
+	t *testing.T,
+	mediaDriverDir string,
+	logFileName string,
+) (*conductor.Conductor, *countingHandlerScope, *[]error) {
+	t.Helper()
+
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	errorHandler, gotErrors := collectConductorErrors()
+	config := conductorTestConfig(t, errorHandler, fixedClocks{})
+	config.ImageLifecycle = lifecycle
+	config.MediaDriverDir = mediaDriverDir
+	conductorInstance := newConductorForTest(t, config)
+	scope := installCountingHandlerScope(conductorInstance)
+	registerGoldenImageSubscription(conductorInstance)
+
+	event := goldenAvailableImageEvent
+	event.LogFileName = logFileName
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(event),
+	)
+	return conductorInstance, scope, gotErrors
+}
+
+func newHandlerScopeResourceConductor(
+	t *testing.T,
+	lifecycle conductor.ResourceLifecycle,
+) (*conductor.Conductor, *countingHandlerScope, *[]error) {
+	t.Helper()
+
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorWithResourceLifecycleForTest(t, lifecycle)
+	conductorInstance.SetErrorHandlerForTest(errorHandler)
+	return conductorInstance, installCountingHandlerScope(conductorInstance), gotErrors
+}
+
+func TestConductor_handlerScope_invokerPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "availableImageHandler", run: testHandlerScopeAvailableImage},
+		{name: "unavailableImageHandler", run: testHandlerScopeUnavailableImage},
+		{name: "imageHandlerPanicReported", run: testHandlerScopeImagePanicReported},
+		{name: "imageHandlerPanicErrorHandlerPanics", run: testHandlerScopeImagePanicErrorHandlerPanics},
+		{name: "logOutsideMediaDriverDir", run: testHandlerScopeLogOutsideDir},
+		{name: "missingLogFile", run: testHandlerScopeMissingLogFile},
+		{name: "publicationErrorTwoMatches", run: testHandlerScopePublicationErrorTwoMatches},
+		{name: "terminateWithErrorNoResources", run: testHandlerScopeTerminateNoResources},
+		{name: "rollbackAddPendingRetireError", run: testHandlerScopeRollbackRetire},
+		{name: "closeAllResourcesRetireError", run: testHandlerScopeCloseAllRetire},
+		{name: "closeAllResourcesOfferError", run: testHandlerScopeCloseAllOffer},
+		{name: "closePublicationRetireError", run: testHandlerScopeClosePublicationRetire},
+		{name: "closePublicationOfferError", run: testHandlerScopeClosePublicationOffer},
+		{name: "closeSubscriptionRetireError", run: testHandlerScopeCloseSubscriptionRetire},
+		{name: "closeSubscriptionOfferError", run: testHandlerScopeCloseSubscriptionOffer},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func testHandlerScopeAvailableImage(t *testing.T) {
+	var calls int
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	lifecycle.availableImageHandler = func(conductor.ImageHandle) { calls++ }
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance, scope := newHandlerScopeImageConductor(
+		t,
+		lifecycle,
+		errorHandler,
+		triggerGoldenAvailableImage,
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Equal(t, 1, calls)
+	require.Empty(t, *gotErrors)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeUnavailableImage(t *testing.T) {
+	var calls int
+	lifecycle := &recordingImageLifecycle{
+		addImageOK:         true,
+		removedLogFileName: goldenAvailableImageEvent.LogFileName,
+	}
+	lifecycle.unavailableImageHandler = func(conductor.ImageHandle) { calls++ }
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance, scope := newHandlerScopeImageConductor(
+		t,
+		lifecycle,
+		errorHandler,
+		triggerGoldenUnavailableImage,
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Equal(t, 1, calls)
+	require.Empty(t, *gotErrors)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeImagePanicReported(t *testing.T) {
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+		panic(errors.New("handler boom"))
+	}
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance, scope := newHandlerScopeImageConductor(
+		t,
+		lifecycle,
+		errorHandler,
+		triggerGoldenAvailableImage,
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 1)
+	require.EqualError(t, (*gotErrors)[0], "handler boom")
+	requireHandlerScope(t, scope, 1, 1)
+}
+
+func testHandlerScopeImagePanicErrorHandlerPanics(t *testing.T) {
+	lifecycle := &recordingImageLifecycle{addImageOK: true}
+	lifecycle.availableImageHandler = func(conductor.ImageHandle) {
+		panic(errors.New("handler boom"))
+	}
+	conductorInstance, scope := newHandlerScopeImageConductor(
+		t,
+		lifecycle,
+		func(error) {
+			panic("error handler boom")
+		},
+		triggerGoldenAvailableImage,
+	)
+
+	require.Panics(t, func() {
+		_ = conductorInstance.DoWork()
+	})
+	requireHandlerScope(t, scope, 1, 1)
+}
+
+func testHandlerScopeLogOutsideDir(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeImageLogConductor(
+		t,
+		t.TempDir(),
+		filepath.Join(t.TempDir(), "image.log"),
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrLogFileOutsideMediaDriverDir)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeMissingLogFile(t *testing.T) {
+	dir := t.TempDir()
+	conductorInstance, scope, gotErrors := newHandlerScopeImageLogConductor(
+		t,
+		dir,
+		filepath.Join(dir, "missing.log"),
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrLogBufferMapFailed)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopePublicationErrorTwoMatches(t *testing.T) {
+	var calls int
+	errorHandler, gotErrors := collectConductorErrors()
+	config := conductorTestConfig(t, errorHandler, fixedClocks{})
+	config.PublicationErrorFrameHandler = func(conductor.PublicationError) { calls++ }
+	conductorInstance := newConductorForTest(t, config)
+	scope := installCountingHandlerScope(conductorInstance)
+	frameID := goldenPublicationErrorEvent.RegistrationID
+	conductorInstance.InsertPublicationForTest(
+		10,
+		stubPublication{registrationID: 10, originalRegistrationID: frameID},
+	)
+	conductorInstance.InsertPublicationForTest(
+		11,
+		stubPublication{registrationID: 11, originalRegistrationID: frameID},
+	)
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnPublicationError,
+		conductor.PublicationErrorBytes(goldenPublicationErrorEvent),
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Equal(t, 2, calls)
+	require.Empty(t, *gotErrors)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeTerminateNoResources(t *testing.T) {
+	errorHandler, gotErrors := collectConductorErrors()
+	conductorInstance := newConductorForTest(t, conductorTestConfig(t, errorHandler, fixedClocks{}))
+	scope := installCountingHandlerScope(conductorInstance)
+	transmitConductorEvent(
+		t,
+		conductorInstance.EventsAdapterForTest(),
+		conductor.OnClientTimeout,
+		testutil.ClientTimeoutPayload(conductorTestClientID),
+	)
+
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.True(t, conductorInstance.IsTerminating())
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrClientTimeout)
+	requireHandlerScope(t, scope, 1, 1)
+}
+
+func testHandlerScopeRollbackRetire(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{
+			retirePublicationErr: errRetirePublication,
+		},
+	)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.RollbackAddPendingResourcesForTest(conductor.PendingRegistration{
+		Kind:          conductor.PendingKindAddPublication,
+		CorrelationID: 42,
+	})
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], errRetirePublication)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeCloseAllRetire(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{
+			retirePublicationErr: errRetirePublication,
+		},
+	)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.CloseAllResources()
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], errRetirePublication)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeCloseAllOffer(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{},
+	)
+	seedFullDriverRingForCloseTest(t, conductorInstance)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	conductorInstance.CloseAllResources()
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrRingInsufficientCapacity)
+	requireHandlerScope(t, scope, 1, 0)
+}
+
+func testHandlerScopeClosePublicationRetire(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{
+			retirePublicationErr: errRetirePublication,
+		},
+	)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	require.NoError(t, conductorInstance.ClosePublication(stubPublication{registrationID: 42}))
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], errRetirePublication)
+	requireHandlerScope(t, scope, 0, 0)
+}
+
+func testHandlerScopeClosePublicationOffer(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{},
+	)
+	seedFullDriverRingForCloseTest(t, conductorInstance)
+	conductorInstance.InsertPublicationForTest(42, stubPublication{registrationID: 42})
+	require.NoError(t, conductorInstance.ClosePublication(stubPublication{registrationID: 42}))
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrRingInsufficientCapacity)
+	requireHandlerScope(t, scope, 0, 0)
+}
+
+func testHandlerScopeCloseSubscriptionRetire(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{
+			retireSubscriptionErr: errRetireSubscription,
+		},
+	)
+	sub := &stubResourceSubscription{registrationID: 22}
+	conductorInstance.InsertSubscriptionForTest(22, sub)
+	require.NoError(t, conductorInstance.CloseSubscription(sub))
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], errRetireSubscription)
+	requireHandlerScope(t, scope, 0, 0)
+}
+
+func testHandlerScopeCloseSubscriptionOffer(t *testing.T) {
+	conductorInstance, scope, gotErrors := newHandlerScopeResourceConductor(
+		t,
+		&recordingResourceLifecycle{},
+	)
+	seedFullDriverRingForCloseTest(t, conductorInstance)
+	sub := &stubResourceSubscription{registrationID: 22}
+	conductorInstance.InsertSubscriptionForTest(22, sub)
+	require.NoError(t, conductorInstance.CloseSubscription(sub))
+
+	require.Len(t, *gotErrors, 1)
+	require.ErrorIs(t, (*gotErrors)[0], conductor.ErrRingInsufficientCapacity)
+	requireHandlerScope(t, scope, 0, 0)
 }

@@ -105,7 +105,7 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 		}
 		return nil
 	})
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }
 
 func (conductor *Conductor) handleUnavailableImage(
@@ -136,22 +136,29 @@ func (conductor *Conductor) handleUnavailableImage(
 		}
 		return nil
 	})
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }
 
 func (conductor *Conductor) invokeImageHandler(handler func()) {
-	// Image handlers suspend the mutation-scope write lock so PublicationByRegID
-	// and SubscriptionByRegID always take RLock and reentrant DoWork can acquire
-	// a fresh write lock for map mutations. Handlers must not assume exclusive map
-	// access: other goroutines may read or write resource maps during the suspend
-	// window. While inCallback is set, nested user handlers are skipped; the
-	// driver event is still consumed during reentrant DoWork and is not replayed.
-	// Java ClientConductor still delivers nested available/unavailable handlers.
+	// Image handlers suspend the write lock so lookups and resource Close
+	// can lock resourceMu. Other goroutines may read or write the resource
+	// maps during the suspend window. A handler must not assume
+	// exclusive map access.
+	//
+	// A Client.DoWork call from the handler returns before another service
+	// tick. The call does not enter the conductor. inCallback still skips
+	// nested image handlers if doWorkLocked runs again. Java ClientConductor
+	// still delivers nested available and unavailable handlers.
 	if conductor.inCallback {
 		return
 	}
 	conductor.inCallback = true
 	savedDepth := conductor.suspendResourceWriteLock()
+	entered := conductor.enterHandler()
+
+	// Defer exitHandler first so it runs last. The panic report stays in
+	// scope. An ErrorHandler panic still exits the scope.
+	defer conductor.exitHandler(entered)
 	defer func() {
 		conductor.reportHandlerPanic(recover(), "image handler")
 		conductor.resumeResourceWriteLock(savedDepth)
@@ -171,5 +178,5 @@ func (conductor *Conductor) reportHandlerPanic(recovered any, label string) {
 	if !ok {
 		err = fmt.Errorf("conductor: %s panic: %v", label, recovered)
 	}
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }

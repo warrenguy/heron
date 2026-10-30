@@ -1,7 +1,10 @@
 package aeron
 
 import (
+	"context"
+	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,6 +218,17 @@ func deliverUnavailableImageToClientSubscription(
 ) {
 	tb.Helper()
 
+	transmitUnavailableImageToClientSubscription(tb, adapter, correlationID)
+	require.Equal(tb, 1, client.DoWork())
+}
+
+func transmitUnavailableImageToClientSubscription(
+	tb testing.TB,
+	adapter *conductor.DriverEventsAdapter,
+	correlationID int64,
+) {
+	tb.Helper()
+
 	unavailable := conductorImageLifecycleGoldenUnavailableImage
 	unavailable.SubscriptionRegistrationID = correlationID
 	transmitConductorImageLifecycleEvent(
@@ -223,7 +237,6 @@ func deliverUnavailableImageToClientSubscription(
 		conductor.OnUnavailableImage,
 		conductor.UnavailableImageBytes(unavailable),
 	)
-	require.Equal(tb, 1, client.DoWork())
 }
 
 func TestClient_ConfigAvailableImageHandler_invoked(t *testing.T) {
@@ -257,45 +270,545 @@ func TestClient_ConfigAvailableImageHandler_invoked(t *testing.T) {
 	requireAvailableImageHandlerIdentity(t, sub, attachedImage)
 }
 
-func TestClient_ErrorHandler_subscriptionLookupOnImageError(t *testing.T) {
-	t.Parallel()
+type handlerCallEnv struct {
+	t             *testing.T
+	client        *Client
+	fixture       *testutil.ConductorFixture
+	correlationID int64
+	logPath       string
+	gotErrors     []error
+}
 
-	_, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
+// logDir selects AeronDir:
+//   - true: the directory that holds the log file
+//   - false: another temp directory. The log path sits outside
+//     the media driver directory.
+func startImageHandlerCall(
+	t *testing.T,
+	logDir bool,
+	cfg func(env *handlerCallEnv) Config,
+) *handlerCallEnv {
+	t.Helper()
 
-	var (
-		client        *Client
-		correlationID int64
-		gotErrors     []error
-		subAtReport   *Subscription
-	)
-	cfg := Config{
-		AeronDir: t.TempDir(),
-		ErrorHandler: func(err error) {
-			gotErrors = append(gotErrors, err)
-			subAtReport, _ = client.Subscription(correlationID)
-		},
+	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
+	env := &handlerCallEnv{t: t, logPath: logPath}
+	config := cfg(env)
+	if logDir {
+		config.AeronDir = dir
+	} else {
+		config.AeronDir = t.TempDir()
 	}
-	client, fixture := newClientAddFixtureWithConfig(t, cfg)
+	env.client, env.fixture = newClientAddFixtureWithConfig(t, config)
 
 	var err error
-	correlationID, err = client.OfferAddSubscription(
+	env.correlationID, err = env.client.OfferAddSubscription(
 		conductorImageLifecycleGoldenAvailableImage.StreamID,
 		clientAddChannel,
 	)
 	require.NoError(t, err)
+	return env
+}
 
-	transmitAvailableImageToClientSubscription(t, fixture, logPath, correlationID)
+func (env *handlerCallEnv) transmitAvailable() {
+	env.t.Helper()
+
+	transmitAvailableImageToClientSubscription(
+		env.t,
+		env.fixture,
+		env.logPath,
+		env.correlationID,
+	)
+}
+
+func (env *handlerCallEnv) doWork() int {
+	env.t.Helper()
 
 	var workCount int
-	testutil.RequireReturnsWithin(t, 2*time.Second, func() {
-		workCount = client.DoWork()
+	testutil.RequireReturnsWithin(env.t, clientConcurrentResultTimeout, func() {
+		workCount = env.client.DoWork()
 	})
+	return workCount
+}
+
+func (env *handlerCallEnv) deliverAvailable() {
+	env.t.Helper()
+
+	env.transmitAvailable()
+	require.Equal(env.t, 1, env.doWork())
+}
+
+func (env *handlerCallEnv) requireOneReentrant() {
+	env.t.Helper()
+
+	require.Len(env.t, env.gotErrors, 1)
+	require.ErrorIs(env.t, env.gotErrors[0], ErrReentrantCall)
+}
+
+func (env *handlerCallEnv) requirePending(want bool) {
+	env.t.Helper()
+
+	_, pending := env.fixture.Conductor.PendingResult(env.correlationID)
+	require.Equal(env.t, want, pending)
+}
+
+func (env *handlerCallEnv) boundSubscription() *Subscription {
+	env.t.Helper()
+
+	sub, ok := env.client.Subscription(env.correlationID)
+	require.True(env.t, ok)
+	BindClientForTest(sub, env.client)
+	return sub
+}
+
+func handlerCallErrorHandler(env *handlerCallEnv) func(error) {
+	return func(err error) {
+		env.gotErrors = append(env.gotErrors, err)
+	}
+}
+
+func startAvailableImageHandlerCall(
+	t *testing.T,
+	handler func(*handlerCallEnv),
+) *handlerCallEnv {
+	t.Helper()
+
+	return startImageHandlerCall(t, true, func(env *handlerCallEnv) Config {
+		return Config{
+			ErrorHandler: handlerCallErrorHandler(env),
+			AvailableImageHandler: func(*Image) {
+				handler(env)
+			},
+		}
+	})
+}
+
+func TestClient_handlerCallsBackIntoClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "availableImageHandlerCancelPending",
+			run:  testAvailableImageHandlerCancelPending,
+		},
+		{
+			name: "errorHandlerSubscriptionLookupOnImageError",
+			run:  testErrorHandlerSubscriptionLookupOnImageError,
+		},
+		{
+			name: "unavailableImageHandlerCancelPending",
+			run:  testUnavailableImageHandlerCancelPending,
+		},
+		{
+			name: "availableImageHandlerAddDestination",
+			run:  testAvailableImageHandlerAddDestination,
+		},
+		{
+			name: "errorHandlerCancelPending",
+			run:  testErrorHandlerCancelPending,
+		},
+		{
+			name: "availableImageHandlerDoWork",
+			run:  testAvailableImageHandlerDoWork,
+		},
+		{
+			name: "availableImageHandlerIsTerminating",
+			run:  testAvailableImageHandlerIsTerminating,
+		},
+		{
+			name: "availableImageHandlerClose",
+			run:  testAvailableImageHandlerClose,
+		},
+		{
+			name: "availableImageHandlerCounterClose",
+			run:  testAvailableImageHandlerCounterClose,
+		},
+		{
+			name: "availableImageHandlerClosedCounterClose",
+			run:  testAvailableImageHandlerClosedCounterClose,
+		},
+		{
+			name: "availableImageHandlerAddSubscription",
+			run:  testAvailableImageHandlerAddSubscription,
+		},
+		{
+			name: "availableImageHandlerWaitUntilImageCount",
+			run:  testAvailableImageHandlerWaitUntilImageCount,
+		},
+		{
+			name: "availableImageHandlerRunDuringClientWork",
+			run:  testAvailableImageHandlerRunDuringClientWork,
+		},
+		{
+			name: "availableImageHandlerOfferWithRetry",
+			run:  testAvailableImageHandlerOfferWithRetry,
+		},
+		{
+			name: "availableImageHandlerLookupAndClose",
+			run:  testAvailableImageHandlerLookupAndClose,
+		},
+		{
+			name: "closeErrorHandlerDoWork",
+			run:  testCloseErrorHandlerDoWork,
+		},
+		{
+			name: "availableImageHandlerDoWorkAfterConcurrentClose",
+			run:  testAvailableImageHandlerDoWorkAfterConcurrentClose,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func testAvailableImageHandlerCancelPending(t *testing.T) {
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		env.client.CancelPending(env.correlationID)
+	})
+	env.deliverAvailable()
+	env.requireOneReentrant()
+	env.requirePending(true)
+}
+
+func testErrorHandlerSubscriptionLookupOnImageError(t *testing.T) {
+	var subAtReport *Subscription
+	env := startImageHandlerCall(t, false, func(env *handlerCallEnv) Config {
+		return Config{
+			ErrorHandler: func(err error) {
+				env.gotErrors = append(env.gotErrors, err)
+				subAtReport, _ = env.client.Subscription(env.correlationID)
+			},
+		}
+	})
+	env.deliverAvailable()
+	require.Len(t, env.gotErrors, 1)
+	require.ErrorIs(t, env.gotErrors[0], conductor.ErrLogFileOutsideMediaDriverDir)
+	require.NotNil(t, subAtReport)
+	require.Equal(t, env.correlationID, subAtReport.RegistrationID())
+}
+
+func testUnavailableImageHandlerCancelPending(t *testing.T) {
+	env := startImageHandlerCall(t, true, func(env *handlerCallEnv) Config {
+		return Config{
+			ErrorHandler: handlerCallErrorHandler(env),
+			UnavailableImageHandler: func(*Image) {
+				env.client.CancelPending(env.correlationID)
+			},
+		}
+	})
+	env.deliverAvailable()
+	transmitUnavailableImageToClientSubscription(
+		t,
+		env.fixture.Conductor.EventsAdapterForTest(),
+		env.correlationID,
+	)
+
+	require.Equal(t, 1, env.doWork())
+	env.requireOneReentrant()
+	env.requirePending(true)
+}
+
+func testAvailableImageHandlerAddDestination(t *testing.T) {
+	var (
+		sub    *Subscription
+		addErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(*handlerCallEnv) {
+		addErr = sub.AddDestination(clientAddChannel)
+	})
+	sub = env.boundSubscription()
+	env.deliverAvailable()
+	require.ErrorIs(t, addErr, ErrReentrantCall)
+	require.Empty(t, env.gotErrors)
+	env.requirePending(true)
+}
+
+func testErrorHandlerCancelPending(t *testing.T) {
+	env := startImageHandlerCall(t, false, func(env *handlerCallEnv) Config {
+		return Config{
+			ErrorHandler: func(err error) {
+				env.gotErrors = append(env.gotErrors, err)
+				env.client.CancelPending(env.correlationID)
+			},
+		}
+	})
+	env.deliverAvailable()
+	require.Len(t, env.gotErrors, 2)
+	require.ErrorIs(t, env.gotErrors[0], conductor.ErrLogFileOutsideMediaDriverDir)
+	require.ErrorIs(t, env.gotErrors[1], ErrReentrantCall)
+	env.requirePending(true)
+}
+
+func testAvailableImageHandlerDoWork(t *testing.T) {
+	var inner int
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		inner = env.client.DoWork()
+	})
+	env.deliverAvailable()
+	require.Zero(t, inner)
+	env.requireOneReentrant()
+}
+
+func testAvailableImageHandlerIsTerminating(t *testing.T) {
+	var terminating bool
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		terminating = env.client.IsTerminating()
+	})
+	env.deliverAvailable()
+	require.False(t, terminating)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerClose(t *testing.T) {
+	var closeErr error
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		closeErr = env.client.Close()
+	})
+	env.deliverAvailable()
+	require.ErrorIs(t, closeErr, ErrReentrantCall)
+	require.False(t, ClientIsClosedForTest(env.client))
+	require.Empty(t, env.gotErrors)
+	require.NoError(t, env.client.Close())
+	require.True(t, ClientIsClosedForTest(env.client))
+}
+
+func testAvailableImageHandlerCounterClose(t *testing.T) {
+	var (
+		counter  *Counter
+		closeErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		closeErr = counter.Close()
+	})
+	counter = &Counter{
+		client:         env.client,
+		counterID:      1,
+		registrationID: 99,
+	}
+	env.deliverAvailable()
+	require.ErrorIs(t, closeErr, ErrReentrantCall)
+	require.False(t, counter.closed.Load())
+	require.Empty(t, env.gotErrors)
+	require.NoError(t, counter.Close())
+	require.True(t, counter.closed.Load())
+}
+
+func testAvailableImageHandlerClosedCounterClose(t *testing.T) {
+	var (
+		counter  *Counter
+		closeErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		closeErr = counter.Close()
+	})
+	counter = &Counter{
+		client:         env.client,
+		counterID:      1,
+		registrationID: 99,
+	}
+	counter.closed.Store(true)
+	env.deliverAvailable()
+	require.NoError(t, closeErr)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerAddSubscription(t *testing.T) {
+	var (
+		added  *Subscription
+		addErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		added, addErr = env.client.AddSubscription(clientAddStreamID, clientAddChannel)
+	})
+	env.deliverAvailable()
+	require.Nil(t, added)
+	require.ErrorIs(t, addErr, ErrReentrantCall)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerWaitUntilImageCount(t *testing.T) {
+	var (
+		sub     *Subscription
+		waitErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(*handlerCallEnv) {
+		waitErr = sub.WaitUntilImageCount(context.Background(), 2)
+	})
+	sub = env.boundSubscription()
+	env.deliverAvailable()
+	require.ErrorIs(t, waitErr, ErrReentrantCall)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerRunDuringClientWork(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	var (
+		started bool
+		runErr  error
+	)
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		runErr = env.client.RunDuringClientWork(context.Background(), func() error {
+			started = true
+			<-release
+			return nil
+		})
+	})
+	env.deliverAvailable()
+	require.ErrorIs(t, runErr, ErrReentrantCall)
+	require.False(t, started)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerOfferWithRetry(t *testing.T) {
+	var (
+		pub      *Publication
+		position int64
+		offerErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(*handlerCallEnv) {
+		position, offerErr = pub.OfferWithRetry(context.Background(), []byte{0x01})
+	})
+	pub = &Publication{client: env.client}
+	env.deliverAvailable()
+	require.Zero(t, position)
+	require.ErrorIs(t, offerErr, ErrReentrantCall)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerLookupAndClose(t *testing.T) {
+	var (
+		publicationFound bool
+		exclusiveFound   bool
+		sub              *Subscription
+		closeErr         error
+	)
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		_, publicationFound = env.client.Publication(env.correlationID)
+		_, exclusiveFound = env.client.ExclusivePublication(env.correlationID)
+		var ok bool
+		sub, ok = env.client.Subscription(env.correlationID)
+		if ok {
+			closeErr = sub.Close()
+		}
+	})
+	env.deliverAvailable()
+	require.False(t, publicationFound)
+	require.False(t, exclusiveFound)
+	require.NotNil(t, sub)
+	require.NoError(t, closeErr)
+	require.True(t, sub.IsClosed())
+	require.Empty(t, env.gotErrors)
+}
+
+func testCloseErrorHandlerDoWork(t *testing.T) {
+	var (
+		client    *Client
+		gotErrors []error
+		inner     int
+		called    bool
+	)
+	client, fixture := newClientAddFixtureWithConfig(t, Config{
+		ErrorHandler: func(err error) {
+			gotErrors = append(gotErrors, err)
+			if called || client == nil {
+				return
+			}
+			called = true
+			inner = client.DoWork()
+		},
+	})
+	InsertPublicationForTest(fixture.Conductor, 11)
+
+	require.NoError(t, client.Close())
+	require.Zero(t, inner)
+	require.True(t, called)
+	require.Equal(t, 1, reentrantErrorCount(gotErrors))
+	require.GreaterOrEqual(t, len(gotErrors), 2)
+
+	before := len(gotErrors)
+	require.Zero(t, client.DoWork())
+	require.Len(t, gotErrors, before)
+}
+
+func testAvailableImageHandlerDoWorkAfterConcurrentClose(t *testing.T) {
+	entered := make(chan struct{})
+	closedSet := make(chan struct{})
+	release := make(chan struct{})
+	didWork := make(chan struct{})
+	signalClosed := sync.OnceFunc(func() { close(closedSet) })
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(signalClosed)
+	t.Cleanup(releaseHandler)
+
+	var inner int
+	env := startAvailableImageHandlerCall(t, func(env *handlerCallEnv) {
+		close(entered)
+		<-closedSet
+		inner = env.client.DoWork()
+		close(didWork)
+		<-release
+	})
+	env.transmitAvailable()
+
+	workDone := make(chan int, 1)
+	go func() {
+		workDone <- env.client.DoWork()
+	}()
+
+	receiveAddResult(t, entered, clientConcurrentResultTimeout, "handler did not enter")
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- env.client.Close()
+	}()
+
+	require.Eventually(
+		t,
+		func() bool { return ClientIsClosedForTest(env.client) },
+		clientConcurrentResultTimeout,
+		time.Millisecond,
+		"Close did not set closed",
+	)
+	signalClosed()
+
+	receiveAddResult(t, didWork, clientConcurrentResultTimeout, "handler DoWork did not return")
+	require.Zero(t, inner)
+	env.requireOneReentrant()
+	releaseHandler()
+
+	workCount := receiveAddResult(t, workDone, clientConcurrentResultTimeout, "DoWork did not return")
+	closeErr := receiveCloseResult(
+		t,
+		env.client,
+		closeDone,
+		clientConcurrentResultTimeout,
+		"Close did not return",
+	)
+	require.NoError(t, closeErr)
 
 	require.Equal(t, 1, workCount)
-	require.Len(t, gotErrors, 1)
-	require.ErrorIs(t, gotErrors[0], conductor.ErrLogFileOutsideMediaDriverDir)
-	require.NotNil(t, subAtReport)
-	require.Equal(t, correlationID, subAtReport.RegistrationID())
+	require.True(t, ClientIsClosedForTest(env.client))
+	before := reentrantErrorCount(env.gotErrors)
+	require.Zero(t, env.client.DoWork())
+	require.Equal(t, before, reentrantErrorCount(env.gotErrors))
+}
+
+func reentrantErrorCount(errs []error) int {
+	count := 0
+	for _, err := range errs {
+		if errors.Is(err, ErrReentrantCall) {
+			count++
+		}
+	}
+	return count
 }
 
 func TestClient_ConfigUnavailableImageHandler_invoked(t *testing.T) {

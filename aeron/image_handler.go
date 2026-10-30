@@ -9,14 +9,7 @@ package aeron
 // without clientLock, consistent with their existing godoc. Other goroutines may
 // read or mutate conductor resource maps during the suspend window.
 //
-// Handlers must not block and must not call Client.DoWork, Close, Add*,
-// OfferAdd*, PollAdd*, NextAvailableSessionID, IsTerminating, or Counter.Close
-// on the same Client. Calling Client.DoWork from a handler deadlocks because
-// the invoker goroutine already holds clientLock inside doWorkLocked.
-//
-// The conductor may process additional driver events internally during the
-// callback when the write lock is suspended; callers must not attempt to drive
-// that explicitly via Client APIs listed above.
+// Client calls from the handler follow the [Client] handler rule.
 //
 // Nested available or unavailable image handlers are not delivered while a
 // handler is already running; the driver event is still consumed. This differs

@@ -35,7 +35,7 @@ func (conductor *Conductor) retirePublication(publication PublicationHandle) boo
 			err:     conductor.retirePublicationLocked(pub, registrationID),
 		}
 	})
-	invokeErrorHandler(conductor.config.ErrorHandler, result.err)
+	conductor.reportCloseError(result.err)
 	return result.retired
 }
 
@@ -50,7 +50,7 @@ func (conductor *Conductor) offerDriverCommand(offer func(correlationID int64) e
 		return
 	}
 	correlationID := conductor.driverProxy.NextCorrelationID()
-	invokeErrorHandler(conductor.config.ErrorHandler, offer(correlationID))
+	conductor.reportCloseError(offer(correlationID))
 }
 
 func (conductor *Conductor) offerRemovePublication(registrationID int64) {
@@ -116,7 +116,7 @@ func (conductor *Conductor) retireSubscription(subscription SubscriptionHandle) 
 			err:     conductor.retireSubscriptionLocked(sub, registrationID),
 		}
 	})
-	invokeErrorHandler(conductor.config.ErrorHandler, result.err)
+	conductor.reportCloseError(result.err)
 	return result.retired
 }
 
@@ -147,7 +147,12 @@ func (conductor *Conductor) retireSubscriptionLocked(
 }
 
 // CloseAllResources closes all publications, then all subscriptions.
+// Close errors reach ErrorHandler inside HandlerScope. Production callers
+// hold clientLock.
 func (conductor *Conductor) CloseAllResources() {
+	entered := conductor.enterHandler()
+	defer conductor.exitHandler(entered)
+
 	for _, publication := range conductor.snapshotPublications() {
 		_ = conductor.ClosePublication(publication)
 	}

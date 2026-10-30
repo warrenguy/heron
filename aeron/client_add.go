@@ -302,7 +302,9 @@ func (client *Client) awaitAdd(
 	if client == nil {
 		return conductor.PendingRegistration{}, ErrClientNotReady
 	}
-	client.lockClient()
+	if err := client.lockClient(); err != nil {
+		return conductor.PendingRegistration{}, err
+	}
 	defer client.unlockClient()
 
 	if err := client.requireReadyWithConductor(); err != nil {

@@ -983,7 +983,9 @@ func (client *Client) AwaitPendingPollOneTickForTest(
 	skipDoWork bool,
 	afterPollPending func(),
 ) (conductor.PendingRegistration, bool, error) {
-	client.lockClient()
+	if err := client.lockClient(); err != nil {
+		return conductor.PendingRegistration{}, false, err
+	}
 	defer client.unlockClient()
 
 	return client.awaitPendingPollTickForTest(
@@ -1281,7 +1283,7 @@ func NewClientForTestWithDriverProxy(
 	driverTimeout time.Duration,
 	idleSleepDuration time.Duration,
 ) *Client {
-	return &Client{
+	client := &Client{
 		clientID:                clientID,
 		conductor:               conductorInstance,
 		driverProxy:             driverProxy,
@@ -1291,6 +1293,10 @@ func NewClientForTestWithDriverProxy(
 		publicationOfferTimeout: defaultPollTimeout,
 		idleSleepDuration:       idleSleepDuration,
 	}
+	if conductorInstance != nil {
+		conductorInstance.SetHandlerScopeForTest(&client.handlerScope)
+	}
+	return client
 }
 
 func NewSubscriptionForTest(

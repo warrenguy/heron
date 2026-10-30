@@ -46,10 +46,16 @@ type Config struct {
 	// PollTimeout bounds resource WaitUntil* and receive poll helpers, plus
 	// [Client.RunDuringClientWork].
 	//
+	// A ctx deadline before the timeout bounds the wait instead. A helper
+	// returns its typed timeout error while ctx is live. [PreferContextError]
+	// returns ctx.Err() once ctx is done. The helpers may allocate. Keep them
+	// off hot paths.
+	//
 	// Zero uses DefaultPollTimeout after Normalize.
 	PollTimeout time.Duration
 
-	// PublicationOfferTimeout bounds OfferWithRetry helpers.
+	// PublicationOfferTimeout bounds OfferWithRetry helpers. The PollTimeout
+	// ctx and allocation rules apply.
 	//
 	// Zero uses PollTimeout after Normalize.
 	PublicationOfferTimeout time.Duration

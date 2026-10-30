@@ -67,6 +67,18 @@ type EpochClock func() int64
 
 type NanoClock func() int64
 
+// HandlerScope marks the user handler calls that the conductor makes
+// on the invoker goroutine.
+type HandlerScope interface {
+	// EnterHandler opens the scope for the caller when none is open. A
+	// nested call returns false.
+	EnterHandler() bool
+
+	// ExitHandler clears the scope. Call ExitHandler only when EnterHandler
+	// returns true.
+	ExitHandler()
+}
+
 type Config struct {
 	ClientID int64
 	// DriverTimeout is compared against epoch-millisecond driver heartbeats;
@@ -82,6 +94,8 @@ type Config struct {
 	// The conductor calls it without holding a resource lock. A retire error
 	// arrives after the conductor closes the handle and removes its map entry.
 	ErrorHandler func(error)
+	// HandlerScope is optional. Nil skips the scope.
+	HandlerScope HandlerScope
 	// SubscriberErrorHandler is optional; nil swallows subscriber-side errors.
 	SubscriberErrorHandler func(error)
 	// ImageLifecycle is optional; nil drops image attach/detach events.
@@ -93,11 +107,11 @@ type Config struct {
 	MediaDriverDir string
 	// CloseLingerNs schedules log unmap after publication or image close.
 	CloseLingerNs int64
-	// PublicationErrorFrameHandler is optional; nil drops every publication
-	// error frame. The conductor calls it once per publication whose
-	// OriginalRegistrationID equals the frame RegistrationID. The call holds
-	// no resource lock, so the handler may close publications. The handler
-	// must not call a Client method that takes clientLock.
+	// PublicationErrorFrameHandler is optional. Nil drops every publication
+	// error frame. The conductor calls the handler once per publication
+	// whose OriginalRegistrationID equals the frame RegistrationID. The call
+	// does not hold a resource lock. The handler may close publications.
+	// A Client method that needs clientLock returns ErrReentrantCall.
 	PublicationErrorFrameHandler PublicationErrorHandler
 }
 
@@ -282,7 +296,7 @@ func (conductor *Conductor) handleBroadcastReceiveError(err error) {
 		return
 	}
 	conductor.livenessProbeRequested = true
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }
 
 // consumeLivenessProbe applies a heartbeat-counter probe after Receive returns.
@@ -734,7 +748,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 		}
 		return nil
 	})
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }
 
 func (conductor *Conductor) bindPublicationOnInsert(publication PublicationHandle) error {
@@ -784,6 +798,13 @@ func (conductor *Conductor) handlePublicationError(event PublicationError) {
 			event.RegistrationID,
 		)
 	})
+	if matchCount == 0 {
+		return
+	}
+
+	// One scope covers every match.
+	entered := conductor.enterHandler()
+	defer conductor.exitHandler(entered)
 
 	// Call the handler outside the read lock. A handler that closes a
 	// publication takes resourceMu.
@@ -817,11 +838,14 @@ func (conductor *Conductor) invokePublicationErrorFrameHandler(
 // Concurrency: invoker-only. Callers run inside service. Must not hold
 // resourceMu.
 func (conductor *Conductor) terminateWithError(err error) {
+	entered := conductor.enterHandler()
+	defer conductor.exitHandler(entered)
+
 	conductor.terminating = true
 	conductor.terminationCause = err
 	conductor.ClearPending()
 	conductor.forceCloseResources()
-	invokeErrorHandler(conductor.config.ErrorHandler, err)
+	conductor.ReportError(err)
 }
 
 func newPublicationForPendingKind(
@@ -848,10 +872,37 @@ func newPublicationForPendingKind(
 	return nil, fmt.Errorf("conductor: pending kind %v is not a publication kind", kind)
 }
 
-// invokeErrorHandler passes err to handler. A nil handler or nil err is a
-// no-op.
-func invokeErrorHandler(handler func(error), err error) {
-	if handler != nil && err != nil {
-		handler(err)
+// ReportError calls ErrorHandler inside HandlerScope. Production callers
+// hold clientLock. Production callers do not hold resourceMu.
+func (conductor *Conductor) ReportError(err error) {
+	if err == nil || conductor.config.ErrorHandler == nil {
+		return
+	}
+	entered := conductor.enterHandler()
+	defer conductor.exitHandler(entered)
+	conductor.config.ErrorHandler(err)
+}
+
+// reportCloseError does not enter HandlerScope. Publication,
+// ExclusivePublication, and Subscription Close do not hold clientLock.
+// A scope on those Close calls would store the wrong goroutine id.
+func (conductor *Conductor) reportCloseError(err error) {
+	if err == nil || conductor.config.ErrorHandler == nil {
+		return
+	}
+	conductor.config.ErrorHandler(err)
+}
+
+func (conductor *Conductor) enterHandler() bool {
+	scope := conductor.config.HandlerScope
+	if scope == nil {
+		return false
+	}
+	return scope.EnterHandler()
+}
+
+func (conductor *Conductor) exitHandler(entered bool) {
+	if entered {
+		conductor.config.HandlerScope.ExitHandler()
 	}
 }

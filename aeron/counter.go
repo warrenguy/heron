@@ -45,6 +45,7 @@ type Counter struct {
 //   - the conductor is terminating: ErrConductorTerminating
 //   - the conductor terminates during the wait: *DriverTimeoutError or the
 //     termination cause
+//   - the caller is inside a handler: ErrReentrantCall
 //
 // On error: no Counter and no pending entry.
 func (client *Client) AddCounter(
@@ -89,8 +90,10 @@ func (counter *Counter) RegistrationID() int64 {
 
 // Close offers REMOVE_COUNTER once. Close does not wait for the driver answer.
 //
-// Behaviour: Close is idempotent. The Counter is closed after the first call,
-// even when the offer fails.
+// Behaviour: Close is idempotent. The first call that passes the
+// reentrancy check closes the Counter. A call from a handler on an open
+// Counter returns [ErrReentrantCall]. The handler call does not close the
+// Counter. An offer failure leaves the Counter closed.
 //
 // Concurrency: Close holds clientLock for the offer. Close is safe beside
 // Client.Close.
@@ -98,16 +101,24 @@ func (counter *Counter) RegistrationID() int64 {
 // Returns:
 //   - nil after the offer, or without an offer for a closed client, a missing
 //     driver proxy or a terminating conductor
+//   - [ErrReentrantCall] when the caller is inside a handler and the
+//     Counter is open. The call does not close the Counter.
 //   - "aeron: remove counter: %w" when the offer fails, such as a full ring
 func (counter *Counter) Close() error {
-	if counter == nil || !counter.closed.CompareAndSwap(false, true) {
+	if counter == nil || counter.closed.Load() {
 		return nil
 	}
 	client := counter.client
+	if err := client.checkReentrant(); err != nil {
+		return err
+	}
+	if !counter.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	if client == nil {
 		return nil
 	}
-	client.lockClient()
+	client.clientLock.Lock()
 	defer client.unlockClient()
 
 	driverProxy := client.driverProxy
