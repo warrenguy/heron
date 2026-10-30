@@ -442,6 +442,10 @@ func TestClient_handlerCallsBackIntoClient(t *testing.T) {
 			run:  testAvailableImageHandlerRunDuringClientWork,
 		},
 		{
+			name: "availableImageHandlerOfferWithRetry",
+			run:  testAvailableImageHandlerOfferWithRetry,
+		},
+		{
 			name: "availableImageHandlerLookupAndClose",
 			run:  testAvailableImageHandlerLookupAndClose,
 		},
@@ -660,6 +664,22 @@ func testAvailableImageHandlerRunDuringClientWork(t *testing.T) {
 	env.deliverAvailable()
 	require.ErrorIs(t, runErr, ErrReentrantCall)
 	require.False(t, started)
+	require.Empty(t, env.gotErrors)
+}
+
+func testAvailableImageHandlerOfferWithRetry(t *testing.T) {
+	var (
+		pub      *Publication
+		position int64
+		offerErr error
+	)
+	env := startAvailableImageHandlerCall(t, func(*handlerCallEnv) {
+		position, offerErr = pub.OfferWithRetry(context.Background(), []byte{0x01})
+	})
+	pub = &Publication{client: env.client}
+	env.deliverAvailable()
+	require.Zero(t, position)
+	require.ErrorIs(t, offerErr, ErrReentrantCall)
 	require.Empty(t, env.gotErrors)
 }
 
