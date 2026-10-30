@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -30,15 +31,19 @@ func openInDir(t *testing.T, content []byte, createNew bool) (*recordinglog.Log,
 	return log, path
 }
 
-// openWithEntries encodes entries to a fresh recording.log, opens it, registers
-// Close, and returns the open Log with the file path for Reload comparisons.
-func openWithEntries(t *testing.T, entries ...recordinglog.Entry) (*recordinglog.Log, string) {
-	t.Helper()
+func encodeEntries(entries ...recordinglog.Entry) []byte {
 	content := make([]byte, 0, len(entries)*int(recordinglog.RecordAlignment))
 	for _, e := range entries {
 		content = append(content, recordinglog.EncodeEntry(e)...)
 	}
-	return openInDir(t, content, false)
+	return content
+}
+
+// openWithEntries encodes entries to a fresh recording.log, opens it, registers
+// Close, and returns the open Log with the file path for Reload comparisons.
+func openWithEntries(t *testing.T, entries ...recordinglog.Entry) (*recordinglog.Log, string) {
+	t.Helper()
+	return openInDir(t, encodeEntries(entries...), false)
 }
 
 func requireReloadMatchesLog(tb testing.TB, path string, log *recordinglog.Log) {
@@ -1324,4 +1329,609 @@ func openFDCount(t *testing.T, path string) int {
 		}
 	}
 	return count
+}
+
+func openTwoSnapshotGroups(t *testing.T) (*recordinglog.Log, string) {
+	t.Helper()
+	log, path := newLog(t)
+	require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+	require.NoError(t, log.AppendSnapshot(10, 0, 0, 100, 2000, 0))
+	require.NoError(t, log.AppendSnapshot(
+		11, 0, 0, 100, 2000, recordinglog.ConsensusModuleServiceID,
+	))
+	require.NoError(t, log.AppendTerm(1, 1, 100, 3000))
+	require.NoError(t, log.AppendSnapshot(12, 1, 100, 250, 4000, 0))
+	require.NoError(t, log.AppendSnapshot(
+		13, 1, 100, 250, 4000, recordinglog.ConsensusModuleServiceID,
+	))
+	return log, path
+}
+
+func entryByRecordingID(
+	t *testing.T,
+	entries []recordinglog.Entry,
+	recordingID int64,
+) recordinglog.Entry {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.RecordingID == recordingID {
+			return entry
+		}
+	}
+	t.Fatalf("recording %d not found", recordingID)
+	return recordinglog.Entry{}
+}
+
+func requireRecordingsValid(
+	t *testing.T,
+	entries []recordinglog.Entry,
+	valid bool,
+	recordingIDs ...int64,
+) {
+	t.Helper()
+	for _, recordingID := range recordingIDs {
+		require.Equal(
+			t,
+			valid,
+			entryByRecordingID(t, entries, recordingID).Valid,
+			"recording %d",
+			recordingID,
+		)
+	}
+}
+
+func TestLog_InvalidateEntriesBefore(t *testing.T) {
+	t.Parallel()
+
+	t.Run("two groups, bound at the newest", func(t *testing.T) {
+		t.Parallel()
+		log, path := openTwoSnapshotGroups(t)
+
+		marked, err := log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		entries := log.Entries()
+		requireRecordingsValid(t, entries, false, 10, 11)
+		requireRecordingsValid(t, entries, true, 12, 13)
+		require.True(t, findTerm(t, entries, 0).Valid)
+		require.True(t, findTerm(t, entries, 1).Valid)
+		requireReloadMatchesLog(t, path, log)
+	})
+
+	t.Run("bound above every row", func(t *testing.T) {
+		t.Parallel()
+		log, _ := openTwoSnapshotGroups(t)
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		entries := log.Entries()
+		requireRecordingsValid(t, entries, false, 10, 11)
+		requireRecordingsValid(t, entries, true, 12, 13)
+	})
+
+	t.Run("rows above the newest group", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(10, 0, 0, 100, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(
+			11, 0, 0, 100, 2000, recordinglog.ConsensusModuleServiceID,
+		))
+		require.NoError(t, log.AppendSnapshot(20, 0, 0, 400, 5000, 1))
+		require.NoError(t, log.AppendSnapshot(21, 0, 0, 400, 5000, 0))
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		entries := log.Entries()
+		requireRecordingsValid(t, entries, true, 10, 11)
+		requireRecordingsValid(t, entries, false, 20, 21)
+	})
+
+	t.Run("duplicate at the newest key", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(10, 0, 0, 50, 1500, 0))
+		require.NoError(t, log.AppendSnapshot(
+			11, 0, 0, 50, 1500, recordinglog.ConsensusModuleServiceID,
+		))
+		require.NoError(t, log.AppendSnapshot(12, 0, 0, 100, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(13, 0, 0, 100, 2100, 0))
+		require.NoError(t, log.AppendSnapshot(
+			14, 0, 0, 100, 2200, recordinglog.ConsensusModuleServiceID,
+		))
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		entries := log.Entries()
+		requireRecordingsValid(t, entries, false, 10, 11)
+		requireRecordingsValid(t, entries, true, 12, 13, 14)
+	})
+
+	t.Run("term and standby rows", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendStandbySnapshot(
+			8, 0, 0, 40, 1100, 0, "aeron:udp?endpoint=standby:8020",
+		))
+		require.NoError(t, log.AppendSnapshot(9, 0, 0, 40, 1200, 0))
+		require.NoError(t, log.AppendSnapshot(
+			10, 0, 0, 80, 1300, recordinglog.ConsensusModuleServiceID,
+		))
+		require.NoError(t, log.AppendTerm(1, 1, 80, 1400))
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+
+		entries := log.Entries()
+		require.True(t, findTerm(t, entries, 0).Valid)
+		uncommitted := findTerm(t, entries, 1)
+		require.True(t, uncommitted.Valid)
+		require.Equal(t, recordinglog.NullPosition, uncommitted.LogPosition)
+		standby := entryByRecordingID(t, entries, 8)
+		require.True(t, standby.Valid)
+		require.Equal(t, recordinglog.EntryTypeStandbySnapshot, standby.Type)
+		require.False(t, entryByRecordingID(t, entries, 9).Valid)
+		require.True(t, entryByRecordingID(t, entries, 10).Valid)
+	})
+
+	t.Run("no module row", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(2, 0, 0, 10, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(3, 0, 0, 30, 3000, 1))
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		entries := log.Entries()
+		require.True(t, findTerm(t, entries, 0).Valid)
+		requireRecordingsValid(t, entries, false, 2, 3)
+	})
+
+	t.Run("bound zero", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(2, 0, 0, 0, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(
+			3, 0, 0, 100, 3000, recordinglog.ConsensusModuleServiceID,
+		))
+
+		marked, err := log.InvalidateEntriesBefore(0)
+		require.NoError(t, err)
+		require.Equal(t, 0, marked)
+
+		requireRecordingsValid(t, log.Entries(), true, 2, 3)
+	})
+
+	t.Run("second call", func(t *testing.T) {
+		t.Parallel()
+		log, _ := openTwoSnapshotGroups(t)
+
+		marked, err := log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+		afterFirst := slices.Clone(log.Entries())
+
+		marked, err = log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		require.Equal(t, 0, marked)
+		require.Equal(t, afterFirst, log.Entries())
+	})
+
+	t.Run("restore after mark", func(t *testing.T) {
+		t.Parallel()
+		log, _ := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(10, 0, 0, 100, 2000, 0))
+		next := log.NextEntryIndex()
+		slot := entryByRecordingID(t, log.Entries(), 10)
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+		require.False(t, entryByRecordingID(t, log.Entries(), 10).Valid)
+
+		require.NoError(t, log.AppendSnapshot(99, 0, 0, 100, 3000, 0))
+		require.Equal(t, next, log.NextEntryIndex())
+		require.Len(t, log.Entries(), 2)
+
+		restored := entryByRecordingID(t, log.Entries(), 99)
+		require.True(t, restored.Valid)
+		require.Equal(t, slot.Index, restored.Index)
+		require.Equal(t, slot.Position, restored.Position)
+		require.Equal(t, int64(3000), restored.Timestamp)
+	})
+}
+
+// compactedEntries returns the valid entries renumbered as Compact writes
+// them, and the file bytes that hold them.
+func compactedEntries(entries []recordinglog.Entry) ([]recordinglog.Entry, []byte) {
+	want := make([]recordinglog.Entry, 0, len(entries))
+	var file []byte
+	for _, entry := range entries {
+		if !entry.Valid {
+			continue
+		}
+		entry.Index = int32(len(want))
+		entry.Position = int64(len(file))
+		file = append(file, recordinglog.EncodeEntry(entry)...)
+		want = append(want, entry)
+	}
+	return want, file
+}
+
+func recordingLogBackup(dir string) string {
+	return filepath.Join(dir, recordinglog.RecordingLogBackupFileName)
+}
+
+func recordingLogTemp(dir string) string {
+	return filepath.Join(dir, recordinglog.RecordingLogTempFileName)
+}
+
+func openTermAndSnapshot(t *testing.T) (*recordinglog.Log, string) {
+	t.Helper()
+	log, path := newLog(t)
+	require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+	require.NoError(t, log.AppendSnapshot(2, 0, 0, 10, 2000, 0))
+	return log, path
+}
+
+func openUnsortedLog(t *testing.T) (*recordinglog.Log, string) {
+	t.Helper()
+	log, path := newLog(t)
+	require.NoError(t, log.AppendTerm(1, 5, 500, 1000))
+	require.NoError(t, log.AppendSnapshot(2, 5, 500, 600, 2000, 0))
+	require.NoError(t, log.AppendTerm(1, 3, 100, 500))
+	require.NoError(t, log.AppendSnapshot(
+		3, 3, 100, 200, 600, recordinglog.ConsensusModuleServiceID,
+	))
+	return log, path
+}
+
+func reopenLog(t *testing.T, dir string) *recordinglog.Log {
+	t.Helper()
+	log, err := recordinglog.Open(dir, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, log.Close()) })
+	return log
+}
+
+func requireFileEqual(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func requireFileAbsent(t *testing.T, path string) {
+	t.Helper()
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// requireCompacted checks that log and its file hold the valid entries of
+// before, renumbered. It returns the expected entries.
+func requireCompacted(
+	t *testing.T,
+	log *recordinglog.Log,
+	path string,
+	before []recordinglog.Entry,
+) []recordinglog.Entry {
+	t.Helper()
+	want, file := compactedEntries(before)
+	require.Equal(t, want, log.Entries())
+	require.Equal(t, int32(len(want)), log.NextEntryIndex())
+	requireReloadMatchesLog(t, path, log)
+	requireFileEqual(t, path, file)
+	return want
+}
+
+func requireCompactFailsUnchanged(t *testing.T, log *recordinglog.Log, path, errContains string) {
+	t.Helper()
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	entries := slices.Clone(log.Entries())
+	next := log.NextEntryIndex()
+
+	_, err = log.Compact()
+	require.ErrorContains(t, err, errContains)
+	requireFileEqual(t, path, before)
+	require.Equal(t, entries, log.Entries())
+	require.Equal(t, next, log.NextEntryIndex())
+}
+
+func TestLog_Compact(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drops invalid and renumbers", func(t *testing.T) {
+		t.Parallel()
+		log, path := openTwoSnapshotGroups(t)
+		marked, err := log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+		before := slices.Clone(log.Entries())
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 2, dropped)
+		requireCompacted(t, log, path, before)
+	})
+
+	t.Run("drops removed slots", func(t *testing.T) {
+		t.Parallel()
+		fixture, err := os.ReadFile(filepath.Join("testdata", "null-slot.recordinglog"))
+		require.NoError(t, err)
+		log, path := openInDir(t, fixture, false)
+		require.Len(t, log.Entries(), 2)
+		require.Equal(t, int32(3), log.NextEntryIndex())
+		before := slices.Clone(log.Entries())
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 0, dropped)
+		requireCompacted(t, log, path, before)
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, int64(2*recordinglog.RecordAlignment), info.Size())
+	})
+
+	t.Run("backup", func(t *testing.T) {
+		t.Parallel()
+		log, path := openTermAndSnapshot(t)
+		require.NoError(t, log.Close())
+
+		dir := filepath.Dir(path)
+		log = reopenLog(t, dir)
+
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+		prior, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NotEmpty(t, prior)
+
+		_, err = log.Compact()
+		require.NoError(t, err)
+
+		requireFileEqual(t, recordingLogBackup(dir), prior)
+		info, err := os.Stat(recordingLogBackup(dir))
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	})
+
+	t.Run("no-op", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(2, 0, 0, 10, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(
+			3, 0, 0, 10, 2000, recordinglog.ConsensusModuleServiceID,
+		))
+		dir := filepath.Dir(path)
+		backupPath := recordingLogBackup(dir)
+		require.NoError(t, os.WriteFile(backupPath, []byte("keep-me"), 0o600))
+		stamp := time.Unix(1_700_000_000, 0)
+		require.NoError(t, os.Chtimes(path, stamp, stamp))
+		require.NoError(t, os.Chtimes(backupPath, stamp, stamp))
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 0, dropped)
+
+		requireFileEqual(t, path, before)
+		requireFileEqual(t, backupPath, []byte("keep-me"))
+		for _, stamped := range []string{path, backupPath} {
+			info, err := os.Stat(stamped)
+			require.NoError(t, err)
+			require.True(t, info.ModTime().Equal(stamp))
+		}
+	})
+
+	t.Run("unsorted file order", func(t *testing.T) {
+		t.Parallel()
+		log, path := openUnsortedLog(t)
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+		require.False(t, entryByRecordingID(t, log.Entries(), 2).Valid)
+		before := slices.Clone(log.Entries())
+		require.Greater(t, before[0].Index, before[len(before)-1].Index)
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 1, dropped)
+		requireCompacted(t, log, path, before)
+		require.True(t, slices.IsSortedFunc(log.Entries(), recordinglog.CompareEntries))
+	})
+
+	t.Run("unsorted all valid", func(t *testing.T) {
+		t.Parallel()
+		log, path := openUnsortedLog(t)
+		comparatorOrder := encodeEntries(log.Entries()...)
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NotEqual(t, comparatorOrder, before)
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 0, dropped)
+		requireFileEqual(t, path, before)
+	})
+
+	t.Run("two rewrites in a row", func(t *testing.T) {
+		t.Parallel()
+		log, path := openTwoSnapshotGroups(t)
+		dir := filepath.Dir(path)
+		marked, err := log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+		_, err = log.Compact()
+		require.NoError(t, err)
+
+		invalidated, err := log.InvalidateLatestSnapshot()
+		require.NoError(t, err)
+		require.True(t, invalidated)
+		prior, err := os.ReadFile(path)
+		require.NoError(t, err)
+		before := slices.Clone(log.Entries())
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 2, dropped)
+		want := requireCompacted(t, log, path, before)
+
+		requireFileEqual(t, recordingLogBackup(dir), prior)
+		requireFileAbsent(t, recordingLogTemp(dir))
+
+		require.NoError(t, log.Close())
+		reopened := reopenLog(t, dir)
+		require.Equal(t, want, reopened.Entries())
+	})
+
+	t.Run("append after compact", func(t *testing.T) {
+		t.Parallel()
+		log, path := openTwoSnapshotGroups(t)
+		_, err := log.InvalidateEntriesBefore(250)
+		require.NoError(t, err)
+		_, err = log.Compact()
+		require.NoError(t, err)
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		end := info.Size()
+		next := log.NextEntryIndex()
+
+		require.NoError(t, log.AppendTerm(1, 2, 250, 5000))
+		term := findTerm(t, log.Entries(), 2)
+		require.Equal(t, next, term.Index)
+		require.Equal(t, end, term.Position)
+
+		require.NoError(t, log.AppendSnapshot(40, 2, 250, 400, 6000, 0))
+		snap := entryByRecordingID(t, log.Entries(), 40)
+		require.Equal(t, next+1, snap.Index)
+		require.Equal(t, end+int64(len(recordinglog.EncodeEntry(term))), snap.Position)
+		requireReloadMatchesLog(t, path, log)
+	})
+
+	t.Run("restore list empty", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(10, 0, 0, 100, 2000, 0))
+		require.NoError(t, log.AppendTerm(1, 1, 100, 3000))
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+		_, err = log.Compact()
+		require.NoError(t, err)
+		next := log.NextEntryIndex()
+
+		require.NoError(t, log.AppendSnapshot(77, 0, 0, 100, 2000, 0))
+		require.Equal(t, next+1, log.NextEntryIndex())
+		added := entryByRecordingID(t, log.Entries(), 77)
+		require.Equal(t, next, added.Index)
+		require.True(t, added.Valid)
+		requireReloadMatchesLog(t, path, log)
+	})
+
+	t.Run("every entry invalid", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendSnapshot(2, 0, 0, 10, 2000, 0))
+		require.NoError(t, log.AppendSnapshot(3, 0, 0, 30, 3000, 1))
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 2, marked)
+
+		dropped, err := log.Compact()
+		require.NoError(t, err)
+		require.Equal(t, 2, dropped)
+		require.Empty(t, log.Entries())
+		require.Equal(t, int32(0), log.NextEntryIndex())
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), info.Size())
+
+		require.NoError(t, log.Close())
+		reopened := reopenLog(t, filepath.Dir(path))
+		require.Empty(t, reopened.Entries())
+		require.Equal(t, int32(0), reopened.NextEntryIndex())
+	})
+
+	t.Run("leftover temporary file", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendSnapshot(2, 0, 0, 10, 2000, 0))
+		marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+		require.NoError(t, err)
+		require.Equal(t, 1, marked)
+		dir := filepath.Dir(path)
+		require.NoError(t, os.WriteFile(recordingLogTemp(dir), []byte("stale-bytes"), 0o600))
+
+		_, err = log.Compact()
+		require.NoError(t, err)
+		written, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Empty(t, written)
+		requireFileAbsent(t, recordingLogTemp(dir))
+	})
+
+	for _, tc := range []struct {
+		name        string
+		block       func(dir string) string
+		errContains string
+		tempAbsent  bool
+	}{
+		{name: "temporary file blocked", block: recordingLogTemp, errContains: "temporary file"},
+		{name: "backup blocked", block: recordingLogBackup, errContains: "backup", tempAbsent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			log, path := openTermAndSnapshot(t)
+			marked, err := log.InvalidateEntriesBefore(math.MaxInt64)
+			require.NoError(t, err)
+			require.Equal(t, 1, marked)
+			dir := filepath.Dir(path)
+			require.NoError(t, os.Mkdir(tc.block(dir), 0o700))
+
+			requireCompactFailsUnchanged(t, log, path, tc.errContains)
+			if tc.tempAbsent {
+				requireFileAbsent(t, recordingLogTemp(dir))
+			}
+			require.NoError(t, log.AppendTerm(1, 1, 10, 3000))
+		})
+	}
+
+	t.Run("closed log", func(t *testing.T) {
+		t.Parallel()
+		log, path := newLog(t)
+		require.NoError(t, log.AppendTerm(1, 0, 0, 1000))
+		require.NoError(t, log.AppendSnapshot(
+			2, 0, 0, 10, 2000, recordinglog.ConsensusModuleServiceID,
+		))
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, log.Close())
+
+		dropped, err := log.Compact()
+		require.ErrorIs(t, err, os.ErrClosed)
+		require.Equal(t, 0, dropped)
+		requireFileEqual(t, path, before)
+	})
 }

@@ -47,6 +47,36 @@ func loadManifest(t *testing.T) manifest {
 	return m
 }
 
+func manifestEntries(t *testing.T, file string) []manifestEntry {
+	t.Helper()
+
+	m := loadManifest(t)
+	for _, fixture := range m.Fixtures {
+		if fixture.File == file {
+			require.NotEmpty(t, fixture.Entries, "fixture %q has no entries", file)
+			return fixture.Entries
+		}
+	}
+	t.Fatalf("manifest missing fixture %q", file)
+	return nil
+}
+
+func manifestToEntry(entry manifestEntry) recordinglog.Entry {
+	return recordinglog.Entry{
+		RecordingID:         entry.RecordingID,
+		LeadershipTermID:    entry.LeadershipTermID,
+		TermBaseLogPosition: entry.TermBaseLogPosition,
+		LogPosition:         entry.LogPosition,
+		Timestamp:           entry.Timestamp,
+		ServiceID:           entry.ServiceID,
+		Type:                entry.Type,
+		ArchiveEndpoint:     entry.ArchiveEndpoint,
+		Valid:               entry.Valid,
+		Position:            entry.Position,
+		Index:               entry.Index,
+	}
+}
+
 // TestReload_goldenFixtures decodes committed recording.log fixtures against fixtures.json.
 func TestReload_goldenFixtures(t *testing.T) {
 	t.Parallel()
@@ -64,19 +94,7 @@ func TestReload_goldenFixtures(t *testing.T) {
 
 			want := make([]recordinglog.Entry, len(fixture.Entries))
 			for i, e := range fixture.Entries {
-				want[i] = recordinglog.Entry{
-					RecordingID:         e.RecordingID,
-					LeadershipTermID:    e.LeadershipTermID,
-					TermBaseLogPosition: e.TermBaseLogPosition,
-					LogPosition:         e.LogPosition,
-					Timestamp:           e.Timestamp,
-					ServiceID:           e.ServiceID,
-					Type:                e.Type,
-					ArchiveEndpoint:     e.ArchiveEndpoint,
-					Valid:               e.Valid,
-					Position:            e.Position,
-					Index:               e.Index,
-				}
+				want[i] = manifestToEntry(e)
 			}
 
 			require.Equal(t, want, entries)
@@ -144,18 +162,7 @@ func TestWriter_byteIdenticalToGolden(t *testing.T) {
 
 	const reproducible = "mixed-entries.recordinglog"
 
-	m := loadManifest(t)
-	var entries []manifestEntry
-	var found bool
-	for _, f := range m.Fixtures {
-		if f.File == reproducible {
-			entries = f.Entries
-			found = true
-			break
-		}
-	}
-	require.True(t, found, "manifest missing fixture %q", reproducible)
-	require.NotEmpty(t, entries, "fixture %q has no entries", reproducible)
+	entries := manifestEntries(t, reproducible)
 
 	golden, err := os.ReadFile(filepath.Join("testdata", reproducible))
 	require.NoError(t, err)
@@ -249,4 +256,46 @@ func TestPlanRecovery_fixtureExpectations(t *testing.T) {
 			require.Equal(t, tc.logLeadershipTermID, plan.Log.Term.LeadershipTermID)
 		})
 	}
+}
+
+func TestCompact_javaTiebreakFixture(t *testing.T) {
+	t.Parallel()
+
+	const goldenFile = "tiebreaks.recordinglog"
+	rows := manifestEntries(t, goldenFile)
+
+	golden, err := os.ReadFile(filepath.Join("testdata", goldenFile))
+	require.NoError(t, err)
+	log, path := openInDir(t, golden, false)
+
+	dropped, err := log.Compact()
+	require.NoError(t, err)
+	require.Equal(t, 1, dropped)
+
+	var kept []recordinglog.Entry
+	var sourceIndexes []int32
+	for _, row := range rows {
+		if !row.Valid {
+			require.Equal(t, int32(8), row.Index)
+			require.Equal(t, recordinglog.EntryTypeTerm, row.Type)
+			continue
+		}
+		sourceIndexes = append(sourceIndexes, row.Index)
+		kept = append(kept, manifestToEntry(row))
+	}
+	want, file := compactedEntries(kept)
+	require.Equal(t, []int32{0, 5, 4, 3, 2, 6, 1, 9, 7}, sourceIndexes)
+	require.Equal(t, want, log.Entries())
+	requireReloadMatchesLog(t, path, log)
+	requireFileEqual(t, path, file)
+
+	plan, err := log.PlanRecovery(
+		fakeArchiveForEntries(log.Entries()),
+		recoveryPlanConfig(0),
+	)
+	require.NoError(t, err)
+	require.Len(t, plan.Snapshots, 1)
+	require.NotNil(t, plan.Log)
+	require.Equal(t, int64(1), plan.Log.Term.RecordingID)
+	require.Equal(t, int64(1), plan.Log.Term.LeadershipTermID)
 }

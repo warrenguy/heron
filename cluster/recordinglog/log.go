@@ -18,15 +18,16 @@ const recordingLogFileName = "recording.log"
 
 // Log is a mutable handle over a recording.log file.
 //
-// It owns the open file, an in-memory cache of decoded entries in comparator
-// order, and the index maps the write paths consult. Reads of the cache go
-// through Entries; durability is an explicit Force step.
+// Log owns the open file. The cache stores decoded entries in comparator
+// order.
 //
-// Log is single-writer: one handle owns the file and there is no internal
-// locking. Concurrent use is a caller bug. Close releases the file handle;
-// further operations fail.
+// Log is single-writer. Log does not take a lock. Concurrent use is a
+// caller bug.
 type Log struct {
-	file                    *os.File
+	file *os.File
+	// dir is the directory passed to Open. Compact joins recording.log
+	// paths from dir, not from the open file name.
+	dir                     string
 	entries                 []Entry
 	indexByLeadershipTermID map[int64]int32
 	invalidSnapshots        []int32
@@ -62,6 +63,7 @@ func Open(dir string, createNew bool) (*Log, error) {
 
 	l := &Log{
 		file:                    file,
+		dir:                     dir,
 		indexByLeadershipTermID: make(map[int64]int32),
 		termRecordingID:         nullValue,
 	}
@@ -78,8 +80,13 @@ func Open(dir string, createNew bool) (*Log, error) {
 	return l, nil
 }
 
+// readWholeFile reads from offset 0. It does not move the file offset.
+func (l *Log) readWholeFile() ([]byte, error) {
+	return io.ReadAll(io.NewSectionReader(l.file, 0, math.MaxInt64))
+}
+
 func (l *Log) reload() error {
-	buf, err := io.ReadAll(l.file)
+	buf, err := l.readWholeFile()
 	if err != nil {
 		return err
 	}
@@ -90,7 +97,21 @@ func (l *Log) reload() error {
 	}
 	sortEntries(entries)
 
+	indexByLeadershipTermID := make(map[int64]int32)
+	var invalidSnapshots []int32
+	for i := range entries {
+		entry := entries[i]
+		switch {
+		case isValidTerm(entry):
+			indexByLeadershipTermID[entry.LeadershipTermID] = int32(i)
+		case !entry.Valid && isSnapshotType(entry.Type):
+			invalidSnapshots = append(invalidSnapshots, int32(i))
+		}
+	}
+
 	l.entries = entries
+	l.indexByLeadershipTermID = indexByLeadershipTermID
+	l.invalidSnapshots = invalidSnapshots
 	l.nextEntryIndex = nextOrdinal
 	// writeOffset seeds the next append from aligned file length, matching the
 	// reference writer rather than decoder consumed bytes. A torn tail ignored on
@@ -98,16 +119,6 @@ func (l *Log) reload() error {
 	// decode validation on truncated files.
 	l.writeOffset = int64(atomicbuffer.Align(len(buf), recordAlignment))
 	l.termRecordingID = termRecordingID
-
-	for i := range entries {
-		entry := entries[i]
-		switch {
-		case isValidTerm(entry):
-			l.indexByLeadershipTermID[entry.LeadershipTermID] = int32(i)
-		case !entry.Valid && isSnapshotType(entry.Type):
-			l.invalidSnapshots = append(l.invalidSnapshots, int32(i))
-		}
-	}
 
 	return nil
 }
@@ -326,7 +337,7 @@ func (l *Log) append(entry Entry) (int32, error) {
 	entry.Position = writeOffset
 
 	encoded := encodeEntry(entry)
-	if err := l.writeAt(encoded, writeOffset); err != nil {
+	if err := writeAt(l.file, encoded, writeOffset); err != nil {
 		return 0, err
 	}
 
@@ -366,13 +377,13 @@ func (l *Log) commitLogPositionAt(index int32, logPosition int64) error {
 // writeFieldAt writes exactly len(b) bytes at the absolute file offset
 // position+offset, the single-field path the in-place mutators use.
 func (l *Log) writeFieldAt(position int64, offset int, b []byte) error {
-	return l.writeAt(b, position+int64(offset))
+	return writeAt(l.file, b, position+int64(offset))
 }
 
 // writeAt writes b at the absolute file offset position and returns
 // ErrShortWrite when fewer than len(b) bytes persist.
-func (l *Log) writeAt(b []byte, position int64) error {
-	n, err := l.file.WriteAt(b, position)
+func writeAt(file *os.File, b []byte, position int64) error {
+	n, err := file.WriteAt(b, position)
 	if err != nil {
 		return err
 	}
@@ -401,6 +412,56 @@ func (l *Log) CommitLogPosition(leadershipTermID, logPosition int64) error {
 		return ErrUnknownLeadershipTermID
 	}
 	return l.commitLogPositionAt(index, logPosition)
+}
+
+// InvalidateEntriesBefore marks each valid EntryTypeSnapshot entry below
+// logPosition invalid in place.
+//
+// PlanRecovery anchors on the last valid consensus-module snapshot in
+// comparator order. This call does not mark valid snapshots with that
+// LeadershipTermID and LogPosition.
+//
+// Returns the count of entries this call marked. A failed write returns
+// the WriteAt error or ErrShortWrite.
+//
+// Marks already written stay invalid when a later write fails. Call Force
+// to make the marks durable.
+func (l *Log) InvalidateEntriesBefore(logPosition int64) (int, error) {
+	if logPosition <= 0 {
+		return 0, nil
+	}
+
+	protectedTerm, protectedPosition, hasProtected := protectedSnapshotKey(l.entries)
+	marked := 0
+	for i, entry := range l.entries {
+		if !isValidSnapshot(entry) {
+			continue
+		}
+		if entry.LogPosition >= logPosition {
+			continue
+		}
+		atProtectedKey := hasProtected &&
+			entry.LeadershipTermID == protectedTerm &&
+			entry.LogPosition == protectedPosition
+		if atProtectedKey {
+			continue
+		}
+		//nolint:gosec // G115: ErrTooManyEntries caps the cache length at MaxInt32, so i fits
+		if err := l.invalidateEntry(int32(i)); err != nil {
+			return marked, err
+		}
+		marked++
+	}
+	return marked, nil
+}
+
+func protectedSnapshotKey(entries []Entry) (termID, logPosition int64, ok bool) {
+	for _, entry := range slices.Backward(entries) {
+		if isValidConsensusModuleSnapshot(entry) {
+			return entry.LeadershipTermID, entry.LogPosition, true
+		}
+	}
+	return 0, 0, false
 }
 
 // InvalidateLatestSnapshot marks the newest consensus-module snapshot group
@@ -506,7 +567,7 @@ func (l *Log) restoreInvalidSnapshot(entry Entry) (bool, error) {
 		entry.Valid = true
 		entry.ArchiveEndpoint = existing.ArchiveEndpoint
 		encoded := encodeEntry(entry)
-		if err := l.writeAt(encoded, existing.Position); err != nil {
+		if err := writeAt(l.file, encoded, existing.Position); err != nil {
 			return false, err
 		}
 
