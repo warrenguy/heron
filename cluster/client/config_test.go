@@ -230,6 +230,14 @@ func TestValidateConfig_errors(t *testing.T) {
 			wantErr: "cluster client: invalid egress channel: not-a-channel",
 		},
 		{
+			name: "response mode egress",
+			mutate: func(cfg *client.Config) {
+				cfg.EgressChannel = "aeron:udp?control-mode=response|control=localhost:10002"
+			},
+			wantErr: "cluster client: EgressChannel control-mode=response not supported: " +
+				"aeron:udp?control-mode=response|control=localhost:10002",
+		},
+		{
 			name:    "ipc ingress with endpoints",
 			mutate:  withIngressChannelAndEndpoints("aeron:ipc", testIngressEndpointsMap),
 			wantErr: errPassthroughIngressWithMap,

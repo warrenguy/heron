@@ -83,33 +83,55 @@ type applyUDPRejoinFalseWantCase struct {
 }
 
 func TestValidateClusterEgressChannel(t *testing.T) {
+	const responseModeErr = "cluster client: EgressChannel control-mode=response not supported: "
 	for _, tc := range []struct {
 		name    string
 		channel string
+		wantErr string
 	}{
 		{name: "ipc", channel: "aeron:ipc"},
 		{name: "ipcx", channel: "aeron:ipcx?alias=egress"},
 		{name: "udp", channel: "aeron:udp?endpoint=localhost:0"},
 		{name: "spy udp", channel: "aeron-spy:aeron:udp?endpoint=localhost:0"},
+		{
+			name:    "control-mode inside another param",
+			channel: "aeron:udp?endpoint=localhost:0|alias=control-mode=response",
+		},
+		{
+			name:    "unknown media",
+			channel: "aeron:unknown",
+			wantErr: "cluster client: unknown egress response channel not supported; use ipc, ipcx, or udp",
+		},
+		{
+			name:    "invalid channel",
+			channel: "not-a-channel",
+			wantErr: "cluster client: invalid egress channel: not-a-channel",
+		},
+		{
+			name:    "udp response mode",
+			channel: "aeron:udp?control-mode=response|control=localhost:10002",
+			wantErr: responseModeErr + "aeron:udp?control-mode=response|control=localhost:10002",
+		},
+		{
+			name:    "ipc response mode",
+			channel: "aeron:ipc?control-mode=response",
+			wantErr: responseModeErr + "aeron:ipc?control-mode=response",
+		},
+		{
+			name:    "spy udp response mode",
+			channel: "aeron-spy:aeron:udp?control-mode=response|control=localhost:10002",
+			wantErr: responseModeErr + "aeron-spy:aeron:udp?control-mode=response|control=localhost:10002",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, validateClusterEgressChannel(tc.channel))
+			err := validateClusterEgressChannel(tc.channel)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.wantErr)
 		})
 	}
-
-	t.Run("unknown media", func(t *testing.T) {
-		err := validateClusterEgressChannel("aeron:unknown")
-		require.EqualError(
-			t, err,
-			"cluster client: unknown egress response channel not supported; use ipc, ipcx, or udp",
-		)
-	})
-
-	t.Run("invalid channel", func(t *testing.T) {
-		const channel = "not-a-channel"
-		err := validateClusterEgressChannel(channel)
-		require.EqualError(t, err, "cluster client: invalid egress channel: "+channel)
-	})
 }
 
 func TestApplyUDPRejoinFalse(t *testing.T) {
