@@ -15,7 +15,8 @@ import (
 
 const clusterLockFileName = "cluster.lock"
 
-// DirectoryLockWait caps how long [OpenRecovery] retries for cluster.lock.
+// DirectoryLockWait caps how long [OpenRecovery] and [RetainLatestSnapshot]
+// retry a held cluster.lock.
 //
 // Own release uses [releaseClusterLock]: unlock then close. That path does not
 // need this wait. The cap bounds a hold this process cannot free:
@@ -24,7 +25,7 @@ const clusterLockFileName = "cluster.lock"
 //     exec, or unfinished close)
 //
 // A second OpenRecovery against a live holder fails with wrapped EWOULDBLOCK
-// once DirectoryLockWait elapses.
+// once DirectoryLockWait elapses. [RetainLatestSnapshot] fails the same way.
 const DirectoryLockWait = 250 * time.Millisecond
 
 const (
@@ -42,16 +43,8 @@ const (
 // cluster.lock descriptor. path is the cluster.lock path for testhooks
 // lock-blocked hooks. Production builds ignore path.
 //
-// Behaviour:
-//   - Takes LOCK_EX|LOCK_NB. Returns nil on the first success.
-//   - Retries on EWOULDBLOCK only. Every other errno returns at once.
-//   - Calls trackDirectoryLockBlocked(path) on each EWOULDBLOCK before the
-//     next attempt.
-//   - Spins for directoryLockSpin, then sleeps directoryLockPoll between
-//     attempts.
-//   - Returns the last EWOULDBLOCK once DirectoryLockWait elapses.
-//
-// Never blocks without a bound. The caller owns the descriptor either way.
+// The call retries EWOULDBLOCK until DirectoryLockWait elapses. Any other
+// errno returns at once. The caller owns the descriptor either way.
 func lockClusterDirectory(fd int, path string) error {
 	start := time.Now()
 	for {
@@ -76,9 +69,8 @@ func lockClusterDirectory(fd int, path string) error {
 
 // releaseClusterLock unlocks cluster.lock with LOCK_UN, then closes the file.
 //
-// [Recovery.Close] and the [OpenRecovery] fail path call this after the
-// descriptor is open. LOCK_UN on a descriptor that never took the lock is a
-// no-op success.
+// Call with an open descriptor. LOCK_UN on a descriptor that never took
+// the lock is a no-op success.
 //
 // When unlock succeeds, the exclusive hold is gone before this function returns.
 // flock is open-file-description scoped. Close alone leaves the hold until the
@@ -97,6 +89,30 @@ func releaseClusterLock(lockFile *os.File) error {
 	}
 	_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 	return lockFile.Close()
+}
+
+// openClusterLock opens cluster.lock under dir and takes the exclusive
+// advisory lock. The call does not create dir.
+//
+// On success the caller owns the file. Release the file with
+// [releaseClusterLock]. The call closes the descriptor when flock fails.
+func openClusterLock(dir string) (*os.File, error) {
+	// O_CLOEXEC so an exec'd child cannot keep the descriptor.
+	path := filepath.Join(dir, clusterLockFileName)
+	fd, err := unix.Open(
+		path,
+		unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC,
+		0o600,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
+	}
+	lockFile := os.NewFile(uintptr(fd), path)
+	if err := lockClusterDirectory(fd, path); err != nil {
+		_ = releaseClusterLock(lockFile)
+		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
+	}
+	return lockFile, nil
 }
 
 // RecoveryDeps are the inputs [OpenRecovery] needs.
@@ -187,18 +203,6 @@ type Recovery struct {
 
 // OpenRecovery opens durable member state for one cluster directory.
 //
-// Open order:
-//  1. Validate Config
-//  2. create the cluster directory
-//  3. take an exclusive lock on cluster.lock
-//  4. open the recording log
-//  5. refuse a non-empty log without a lister
-//  6. stop the term recording when the log names one and a stopper exists
-//  7. plan recovery
-//  8. check the snapshot group
-//  9. seed the election configuration
-//  10. open the node state file
-//
 // Directory mode is 0700 when created. An existing directory keeps its mode.
 // OpenRecovery does not chmod a directory it did not create. The lock file and
 // both data files use mode 0600.
@@ -221,17 +225,8 @@ type Recovery struct {
 // four recovery fields written from the plan. All other fields pass through,
 // including timeouts and member-id fields Config.Normalize builds.
 //
-// Returns an error when:
-//   - Config fails Validate
-//   - directory cannot be created
-//   - lock cannot be taken
-//   - either data file cannot be opened
-//   - non-empty recording log without a lister
-//   - the term recording stop fails. An unknown recording id wraps
-//     recordinglog.ErrUnknownRecordingID
-//   - planning fails
-//   - the snapshot group lacks a service snapshot
-//   - the plan holds a snapshot and no log term
+// OpenRecovery refuses a snapshot group that lacks a service snapshot or a
+// log term.
 //
 // On error nothing stays open. The lock is released. The returned value is nil.
 func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
@@ -244,19 +239,10 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 		return nil, fmt.Errorf("cluster: create cluster dir %s: %w", dir, err)
 	}
 
-	// Exclusive advisory lock for the life of Recovery. See [releaseClusterLock]
-	// and [DirectoryLockWait]. O_CLOEXEC so an exec'd child cannot keep the
-	// descriptor.
-	path := filepath.Join(dir, clusterLockFileName)
-	fd, err := unix.Open(
-		path,
-		unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC,
-		0o600,
-	)
+	lockFile, err := openClusterLock(dir)
 	if err != nil {
-		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
+		return nil, err
 	}
-	lockFile := os.NewFile(uintptr(fd), path)
 
 	// On success Recovery owns the handles. Until then error paths unwind opened
 	// handles in reverse open order.
@@ -266,10 +252,6 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 			_ = releaseClusterLock(lockFile)
 		}
 	}()
-
-	if err := lockClusterDirectory(fd, path); err != nil {
-		return nil, fmt.Errorf("cluster: lock cluster dir %s: %w", dir, err)
-	}
 
 	recordingLog, err := recordinglog.Open(dir, true)
 	if err != nil {
@@ -320,12 +302,12 @@ func OpenRecovery(deps RecoveryDeps) (*Recovery, error) {
 				head.LogPosition,
 			)
 		}
-		if id, missing := missingServiceSnapshot(plan, deps.Config.ServiceCount); missing {
+		if ids := missingServiceSnapshots(plan, deps.Config.ServiceCount); len(ids) > 0 {
 			return nil, fmt.Errorf(
 				"cluster: recovery plan snapshot group at log position %d in term %d lacks service %d",
 				head.LogPosition,
 				head.LeadershipTermID,
-				id,
+				ids[0],
 			)
 		}
 	}
@@ -381,23 +363,21 @@ func (r *Recovery) ElectionConfig() election.ElectionConfig {
 	return r.electionConfig
 }
 
-// missingServiceSnapshot returns the lowest service id, from 0 through
-// serviceCount-1, that does not have a row after the module snapshot.
-// The module row is plan.Snapshots[0]. The planner keeps the later rows
-// unique, in range and in service id order.
-//
-// Returns 0, false when every id has a row.
-func missingServiceSnapshot(plan recordinglog.RecoveryPlan, serviceCount int) (int, bool) {
+// missingServiceSnapshots returns, in ascending order, each service id from
+// 0 through serviceCount-1 that does not have a row after the module
+// snapshot. The module row is plan.Snapshots[0]. The planner keeps the later
+// rows unique, in range and in service id order.
+func missingServiceSnapshots(plan recordinglog.RecoveryPlan, serviceCount int) []int32 {
 	services := plan.Snapshots[1:]
-	for id, row := range services {
-		if int(row.ServiceID) != id {
-			return id, true
+	var missing []int32
+	for id := range serviceCount {
+		if len(services) > 0 && int(services[0].ServiceID) == id {
+			services = services[1:]
+			continue
 		}
+		missing = append(missing, int32(id))
 	}
-	if len(services) < serviceCount {
-		return len(services), true
-	}
-	return 0, false
+	return missing
 }
 
 // RecordingLog returns the open recording log.
