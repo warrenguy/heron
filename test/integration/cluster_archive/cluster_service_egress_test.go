@@ -13,6 +13,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/service"
@@ -84,6 +85,124 @@ func formatEgressState(egress *egressRecorder, session *client.AeronCluster) str
 	return b.String()
 }
 
+func requireSessionOpenWithLeaderEgress(
+	t *testing.T,
+	sc serviceCluster,
+	pump *transferPump,
+	leader *cluster.ConsensusModule,
+	sessionID int64,
+) {
+	t.Helper()
+
+	leaderIndex := int(leader.ThisMemberID())
+	requireServiceAwaitTick(
+		t, sc,
+		"session open committed",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			if leader.Agent().OpenSessionCount() != 1 {
+				return false
+			}
+			for i, mem := range sc.members {
+				if !mem.rec.holdsOpen(sessionID) || mem.agent.PendingResponsePublicationAdds() != 0 {
+					return false
+				}
+				want := 0
+				if i == leaderIndex {
+					want = 1
+				}
+				if mem.agent.ResponsePublicationCount() != want {
+					return false
+				}
+			}
+			return true
+		}),
+	)
+}
+
+// requireFirstEcho offers payload and waits until every service holds it
+// after the session open. The client must hold that one echo. Returns the
+// echo.
+func requireFirstEcho(
+	t *testing.T,
+	sc serviceCluster,
+	pump *transferPump,
+	egress *egressRecorder,
+	session *client.AeronCluster,
+	label string,
+	payload []byte,
+	leadershipTermID int64,
+) egressEcho {
+	t.Helper()
+
+	sessionID := session.ClusterSessionID()
+	egressDetail := func() string { return formatEgressState(egress, session) }
+	offerTransferSessionMessage(t, sc.set, pump, payload, sc.dump)
+	requireServiceAwaitTick(
+		t, sc,
+		label,
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			for _, mem := range sc.members {
+				if !mem.rec.holdsMessagesAfterOpen(sessionID, payload) {
+					return false
+				}
+			}
+			return len(egress.echoes) != 0
+		}),
+		egressDetail,
+	)
+	echo := egressEcho{sessionID: sessionID, leadershipTermID: leadershipTermID, payload: payload}
+	require.Equal(t, []egressEcho{echo}, egress.echoes,
+		"%s:\n%s\n%s", label, egressDetail(), sc.dump())
+	return echo
+}
+
+// stopLeaderAndAwaitEgress stops the leader at leaderIndex once every
+// service reaches commit. It waits for re-election, session recovery, and
+// egress reconnect. Returns the new leader, the surviving follower index,
+// and the service log floors at the stop.
+func stopLeaderAndAwaitEgress(
+	t *testing.T,
+	sc serviceCluster,
+	pump *transferPump,
+	session *client.AeronCluster,
+	leaderIndex int,
+	preTerm int64,
+) (
+	newLeader *cluster.ConsensusModule,
+	followerIndex int,
+	logFloors []int64,
+) {
+	t.Helper()
+
+	set := sc.set
+	requireServicesAtCommit(t, sc, pump)
+	preCommit := set.Module(leaderIndex).CommitPosition()
+	logFloors = snapshotServiceLogPositions(sc)
+
+	require.NoError(t, set.StopMember(leaderIndex))
+	require.Nil(t, set.Module(leaderIndex))
+	closeServiceTransferContainer(t, sc, leaderIndex)
+	newLeader = requireTransferSessionRecovery(
+		t, sc, pump, session, leaderIndex, preTerm, preCommit, logFloors,
+	)
+	newIndex := int(newLeader.ThisMemberID())
+	followerIndex = firstNonLeaderIndex(set, newLeader.ThisMemberID())
+	require.GreaterOrEqual(t, followerIndex, 0, "no surviving follower:\n%s", sc.dump())
+
+	requireServiceAwaitTick(
+		t, sc,
+		"egress reconnect",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
+			return serviceEgressReconnected(sc, newIndex, followerIndex)
+		}),
+	)
+	return newLeader, followerIndex, logFloors
+}
+
 // serviceEgressReconnected reports whether egress settled after a leader
 // change:
 //   - the service at newIndex is a bound leader with no pending join and
@@ -138,51 +257,12 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 	egressDetail := func() string { return formatEgressState(egress, session) }
 
 	// Phase: session open committed. Only the leader holds a publication.
-	requireServiceAwaitTick(
-		t, sc,
-		"session open committed",
-		durableWorkBound,
-		pump.sessionPump(func() bool {
-			if leader.Agent().OpenSessionCount() != 1 {
-				return false
-			}
-			for i, mem := range sc.members {
-				if !mem.rec.holdsOpen(sessionID) || mem.agent.PendingResponsePublicationAdds() != 0 {
-					return false
-				}
-				want := 0
-				if i == leaderIndex {
-					want = 1
-				}
-				if mem.agent.ResponsePublicationCount() != want {
-					return false
-				}
-			}
-			return true
-		}),
-	)
+	requireSessionOpenWithLeaderEgress(t, sc, pump, leader, sessionID)
 
 	// Phase: echo before stop.
 	first := []byte(serviceMessagePayload)
 	preTerm := leader.LeadershipTermID()
-	offerTransferSessionMessage(t, set, pump, first, sc.dump)
-	requireServiceAwaitTick(
-		t, sc,
-		"echo before stop",
-		durableWorkBound,
-		pump.sessionPump(func() bool {
-			for _, mem := range sc.members {
-				if !mem.rec.holdsMessagesAfterOpen(sessionID, first) {
-					return false
-				}
-			}
-			return len(egress.echoes) != 0
-		}),
-		egressDetail,
-	)
-	firstEcho := egressEcho{sessionID: sessionID, leadershipTermID: preTerm, payload: first}
-	require.Equal(t, []egressEcho{firstEcho}, egress.echoes,
-		"echoes before stop:\n%s\n%s", egressDetail(), sc.dump())
+	firstEcho := requireFirstEcho(t, sc, pump, egress, session, "echo before stop", first, preTerm)
 	require.Equal(t, preTerm, session.LeadershipTermID(), sc.dump())
 	for i, mem := range sc.members {
 		if i == leaderIndex {
@@ -196,35 +276,12 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 			"follower echo results index %d:\n%s", i, sc.dump())
 	}
 
-	// Phase: services at commit.
-	requireServicesAtCommit(t, sc, pump)
-	preCommit := leader.CommitPosition()
-	logFloors := snapshotServiceLogPositions(sc)
-
-	// Phase: stop the leader.
-	require.NoError(t, set.StopMember(leaderIndex))
-	require.Nil(t, set.Module(leaderIndex))
-	closeServiceTransferContainer(t, sc, leaderIndex)
-
-	// Phase: re-elect and recover the session.
-	newLeader := requireTransferSessionRecovery(
-		t, sc, pump, session, leaderIndex, preTerm, preCommit, logFloors,
+	// Phase: stop the leader, recover the session, and reconnect egress.
+	newLeader, followerIndex, logFloors := stopLeaderAndAwaitEgress(
+		t, sc, pump, session, leaderIndex, preTerm,
 	)
 	newIndex := int(newLeader.ThisMemberID())
-	followerIndex := firstNonLeaderIndex(set, newLeader.ThisMemberID())
-	require.GreaterOrEqual(t, followerIndex, 0, "no surviving follower:\n%s", sc.dump())
 	survivors := []int{newIndex, followerIndex}
-
-	// Phase: egress reconnect.
-	requireServiceAwaitTick(
-		t, sc,
-		"egress reconnect",
-		durableWorkBound,
-		pump.sessionPump(func() bool {
-			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
-			return serviceEgressReconnected(sc, newIndex, followerIndex)
-		}),
-	)
 
 	// Phase: echo after leader change.
 	second := []byte(serviceSecondPayload)
@@ -287,4 +344,165 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 			"service sessions after close index %d:\n%s", i, sc.dump())
 		requireNoServiceFailure(t, sc, i, " after close")
 	}
+}
+
+// TestClusterServiceEgress_restoredSessionsReplyAcrossLeaderStop asserts
+// sessions that followers restored from a snapshot reply after the leader
+// stops.
+func TestClusterServiceEgress_restoredSessionsReplyAcrossLeaderStop(t *testing.T) {
+	t.Parallel()
+
+	sc := startServiceCluster(
+		t,
+		harness.ClusterServiceRestoredEgressPortBase,
+		harness.ClusterServiceRestoredEgressLogEndpoint,
+		amendServiceTransferMember,
+	)
+	set := sc.set
+	for _, mem := range sc.members {
+		mem.rec.echo = true
+	}
+	requireServicesJoined(t, sc)
+	leader := requireSingleLeader(t, set, "")
+	leaderIndex := int(leader.ThisMemberID())
+
+	egress := &egressRecorder{}
+	pump, session := openTransferSession(
+		t, sc, leader,
+		harness.ClientEgressPort(harness.ClusterServiceRestoredEgressPortBase),
+		egress.handler(),
+	)
+	sessionID := session.ClusterSessionID()
+	egressDetail := func() string { return formatEgressState(egress, session) }
+
+	requireSessionOpenWithLeaderEgress(t, sc, pump, leader, sessionID)
+
+	first := []byte(serviceMessagePayload)
+	preTerm := leader.LeadershipTermID()
+	firstEcho := requireFirstEcho(t, sc, pump, egress, session, "echo before snapshot", first, preTerm)
+
+	_, actionPosition := requestSnapshotAction(t, sc, leader, pump, "snapshot")
+	requireServiceAwaitTick(
+		t, sc,
+		"snapshot on every member",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			requireNoServiceFailures(t, sc, " during snapshot")
+			return snapshotTakenOnEveryMember(t, set, actionPosition, sc.dump)
+		}),
+	)
+
+	requireServiceAwaitTick(
+		t, sc,
+		"members at snapshot",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			return membersReachCommit(set, actionPosition) &&
+				survivorsAppendAtLeast(set, nil, actionPosition)
+		}),
+	)
+
+	followers := nonLeaderIndices(set, leader.ThisMemberID())
+	require.Len(t, followers, 2, "followers:\n%s", sc.dump())
+	for _, followerIndex := range followers {
+		restartServiceMember(t, sc, followerIndex, nil)
+		sc.members[followerIndex].rec.echo = true
+
+		agent := sc.members[followerIndex].agent
+		requireRestoredSession(
+			t, agent, sc.members[followerIndex].rec, actionPosition, sessionID, sc.dump,
+		)
+
+		requireServiceAwaitTick(
+			t, sc,
+			"restarted follower settled",
+			durableWorkBound,
+			pump.sessionPump(func() bool {
+				requireNoServiceFailure(t, sc, followerIndex, " during restart")
+				module := set.Module(followerIndex)
+				if !module.ElectionComplete() || module.Role() != codecs.RoleFollower {
+					return false
+				}
+				if module.Agent().PendingServiceAckWaits() != 0 {
+					return false
+				}
+				if !agent.IsLogBound() || agent.HasPendingJoin() {
+					return false
+				}
+				return agent.LogPosition() >= leader.CommitPosition()
+			}),
+		)
+	}
+
+	// The original leader still leads at the pre-snapshot term. ElectionCount
+	// 2 on a follower stalls the later re-election wait.
+	still := requireSingleLeader(t, set, "before stop")
+	require.Equal(t, leader.ThisMemberID(), still.ThisMemberID(), sc.dump())
+	require.Equal(t, preTerm, still.LeadershipTermID(), sc.dump())
+	for _, followerIndex := range followers {
+		module := set.Module(followerIndex)
+		require.Equal(
+			t,
+			int64(1),
+			module.Agent().ElectionCount(),
+			"member %d ElectionCount before stop:\n%s",
+			module.ThisMemberID(),
+			sc.dump(),
+		)
+	}
+
+	newLeader, otherIndex, logFloors := stopLeaderAndAwaitEgress(
+		t, sc, pump, session, leaderIndex, preTerm,
+	)
+	newIndex := int(newLeader.ThisMemberID())
+
+	second := []byte(serviceSecondPayload)
+	offerTransferSessionMessage(t, set, pump, second, sc.dump)
+	requireServiceAwaitTick(
+		t, sc,
+		"echo after leader stop",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
+			for _, index := range []int{newIndex, otherIndex} {
+				rec := sc.members[index].rec
+				corrupt := len(rec.opens) != 0 || len(rec.closes) != 0 ||
+					len(rec.messages) > 1 ||
+					len(rec.messages) == 1 && !rec.messagesAre(sessionID, [][]byte{second})
+				if corrupt {
+					require.FailNow(
+						t,
+						"restored recorder sequence corrupted",
+						"member=%d opens=%v closes=%v messages=%v:\n%s\n%s",
+						set.Module(index).ThisMemberID(),
+						rec.opens,
+						rec.closes,
+						rec.messages,
+						egressDetail(),
+						sc.dump(),
+					)
+				}
+				if !rec.holdsMessages(sessionID, second) {
+					return false
+				}
+			}
+			return len(egress.echoes) >= 2
+		}),
+		egressDetail,
+	)
+
+	newTerm := newLeader.LeadershipTermID()
+	require.Greater(t, newTerm, preTerm, sc.dump())
+	require.Equal(t, newTerm, session.LeadershipTermID(), sc.dump())
+	secondEcho := egressEcho{sessionID: sessionID, leadershipTermID: newTerm, payload: second}
+	require.Equal(t, []egressEcho{firstEcho, secondEcho}, egress.echoes,
+		"echoes after leader stop:\n%s\n%s", egressDetail(), sc.dump())
+
+	newResults := sc.members[newIndex].rec.echoResults
+	require.Len(t, newResults, 1, "new leader echo results:\n%s", sc.dump())
+	require.Positive(t, newResults[0], "new leader echo result:\n%s", sc.dump())
+
+	otherResults := sc.members[otherIndex].rec.echoResults
+	require.Equal(t, []int64{service.MockedOffer}, otherResults,
+		"follower echo results:\n%s", sc.dump())
 }

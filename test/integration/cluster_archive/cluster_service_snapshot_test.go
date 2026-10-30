@@ -77,7 +77,10 @@ var _ service.TakeSnapshotHandler = (*snapshotRecorder)(nil)
 
 func (s *snapshotRecorder) TakeSnapshot(publication *aeron.ExclusivePublication) error {
 	s.takes++
-	payload := []byte(snapshotServicePayload)
+	return offerSnapshotPayload(publication, []byte(snapshotServicePayload))
+}
+
+func offerSnapshotPayload(publication *aeron.ExclusivePublication, payload []byte) error {
 	deadline := time.Now().Add(snapshotOfferBound)
 	for {
 		result := publication.Offer(payload)
@@ -146,8 +149,7 @@ func requestSnapshotAction(
 	t *testing.T,
 	sc serviceCluster,
 	leader *cluster.ConsensusModule,
-	transport *aeron.Client,
-	session *client.AeronCluster,
+	pump *transferPump,
 	label string,
 ) (
 	nowNs int64,
@@ -168,7 +170,7 @@ func requestSnapshotAction(
 		t, sc,
 		label,
 		durableWorkBound,
-		sessionPump(transport, session, func() bool {
+		pump.sessionPump(func() bool {
 			return !leader.Agent().HasPendingSnapshotAction()
 		}),
 	)
@@ -233,12 +235,25 @@ func requireSnapshotGroups(
 ) {
 	t.Helper()
 
-	recordingLog := leader.RecordingLog()
-	require.NotNil(t, recordingLog, "recording log:\n%s", sc.dump())
+	requireSnapshotGroupsInLog(t, leader.RecordingLog(), sc.dump, takes...)
+}
+
+// requireSnapshotGroupsInLog asserts recordingLog holds one snapshot
+// group per take, in take order. A group holds the service rows from
+// the highest service id down to 0. The module row follows.
+func requireSnapshotGroupsInLog(
+	t *testing.T,
+	recordingLog *recordinglog.Log,
+	dump func() string,
+	takes ...consensus.SnapshotTakeResult,
+) {
+	t.Helper()
+
+	require.NotNil(t, recordingLog, "recording log:\n%s", dump())
 	var want []recordinglog.Entry
 	for _, take := range takes {
 		term := recordingLog.FindTermEntry(take.LeadershipTermID)
-		require.NotNil(t, term, "term entry %d:\n%s", take.LeadershipTermID, sc.dump())
+		require.NotNil(t, term, "term entry %d:\n%s", take.LeadershipTermID, dump())
 		row := recordinglog.Entry{
 			LeadershipTermID:    take.LeadershipTermID,
 			TermBaseLogPosition: term.TermBaseLogPosition,
@@ -266,7 +281,37 @@ func requireSnapshotGroups(
 		entry.Index = 0
 		got = append(got, entry)
 	}
-	require.Equal(t, want, got, "snapshot entries:\n%s", sc.dump())
+	require.Equal(t, want, got, "snapshot entries:\n%s", dump())
+}
+
+// snapshotTakenOnEveryMember reports whether every live member
+// resolved its snapshot take at actionPosition. A take error fails
+// the test.
+func snapshotTakenOnEveryMember(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	actionPosition int64,
+	dump func() string,
+) bool {
+	t.Helper()
+
+	for _, m := range set.Modules() {
+		if m == nil {
+			continue
+		}
+		result, ok := m.Agent().LastSnapshotTake()
+		if !ok {
+			return false
+		}
+		if result.Err != nil {
+			require.NoError(t, result.Err,
+				"snapshot member %d:\n%s", m.ThisMemberID(), dump())
+		}
+		if result.LogPosition != actionPosition || result.RecordingID < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // replayRecordingPayloads replays desc on the member driver. Returns one
@@ -409,6 +454,15 @@ func (s *snapshotLoadRecorder) Start(cluster service.Cluster) error {
 
 func (s *snapshotLoadRecorder) LoadSnapshot(image *aeron.Image) error {
 	s.order = append(s.order, "load")
+	payload, err := readSnapshotPayload(image)
+	if err != nil {
+		return err
+	}
+	s.loaded = append(s.loaded, string(payload))
+	return nil
+}
+
+func readSnapshotPayload(image *aeron.Image) ([]byte, error) {
 	var payload []byte
 	read := pollUntil(snapshotOfferBound, func() bool {
 		image.Poll(func(buffer atomicbuffer.AtomicBuffer, offset, length int, _ *aeron.Header) {
@@ -417,10 +471,9 @@ func (s *snapshotLoadRecorder) LoadSnapshot(image *aeron.Image) error {
 		return payload != nil
 	})
 	if !read {
-		return errors.New("read snapshot payload: timed out")
+		return nil, errors.New("read snapshot payload: timed out")
 	}
-	s.loaded = append(s.loaded, string(payload))
-	return nil
+	return payload, nil
 }
 
 // openLoadContainer opens a second container on module with Recovery set.
