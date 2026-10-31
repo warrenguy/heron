@@ -1,0 +1,19 @@
+# Overlay: Go appointed leader. Java member 1 restarts from its snapshot.
+# Use with: docker compose -f compose.yaml -f compose.go-leader.yaml \
+#   -f compose.go-leader-snapshot.yaml
+
+services:
+  go:
+    command:
+      [
+        "-test.timeout=300s",
+        "-test.run",
+        "^TestClusterMixedGoLeaderSnapshotRestart$$",
+      ]
+    environment:
+      HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE: "0"
+      HERON_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE: "1"
+
+  cluster-1:
+    environment:
+      HERON_CLUSTER_RESTART_FILE: "/dev/shm/heron-mixed/restart-member-1"

@@ -8,6 +8,7 @@ import io.aeron.exceptions.AeronException;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +27,7 @@ public final class ClusterNode
     static final String ENV_APPOINTED_LEADER_ID = "HERON_CLUSTER_APPOINTED_LEADER_ID";
     static final String ENV_EXTERNAL_SERVICE = "HERON_CLUSTER_EXTERNAL_SERVICE";
     static final String ENV_STOP_FILE = "HERON_CLUSTER_STOP_FILE";
+    static final String ENV_RESTART_FILE = "HERON_CLUSTER_RESTART_FILE";
 
     static final long STOP_FILE_POLL_INTERVAL_MS = 50;
 
@@ -38,6 +40,7 @@ public final class ClusterNode
         final int appointedLeaderId;
         final boolean externalService;
         final Path stopFile;
+        final Path restartFile;
 
         LauncherSettings(
             final int memberId,
@@ -46,7 +49,8 @@ public final class ClusterNode
             final boolean mixed,
             final int appointedLeaderId,
             final boolean externalService,
-            final Path stopFile)
+            final Path stopFile,
+            final Path restartFile)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
@@ -55,6 +59,7 @@ public final class ClusterNode
             this.appointedLeaderId = appointedLeaderId;
             this.externalService = externalService;
             this.stopFile = stopFile;
+            this.restartFile = restartFile;
         }
     }
 
@@ -309,7 +314,8 @@ public final class ClusterNode
             System.getenv(ENV_MIXED),
             System.getenv(ENV_APPOINTED_LEADER_ID),
             System.getenv(ENV_EXTERNAL_SERVICE),
-            System.getenv(ENV_STOP_FILE));
+            System.getenv(ENV_STOP_FILE),
+            System.getenv(ENV_RESTART_FILE));
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -368,6 +374,27 @@ public final class ClusterNode
         final String externalServiceEnv,
         final String stopFileEnv)
     {
+        return launcherSettingsFromEnv(
+            memberIdEnv,
+            memberCountEnv,
+            hostnamesEnv,
+            mixedEnv,
+            appointedLeaderIdEnv,
+            externalServiceEnv,
+            stopFileEnv,
+            null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv,
+        final String appointedLeaderIdEnv,
+        final String externalServiceEnv,
+        final String stopFileEnv,
+        final String restartFileEnv)
+    {
         final boolean mixed = "1".equals(mixedEnv);
         final boolean externalService = "1".equals(externalServiceEnv);
         final int memberCount = parseIntEnv(
@@ -390,33 +417,35 @@ public final class ClusterNode
             mixed,
             appointedLeaderId,
             externalService,
-            parseStopFile(stopFileEnv));
+            parseOptionalFile(stopFileEnv),
+            parseOptionalFile(restartFileEnv));
     }
 
-    private static Path parseStopFile(final String stopFileEnv)
+    private static Path parseOptionalFile(final String fileEnv)
     {
-        if (stopFileEnv == null || stopFileEnv.isBlank())
+        if (fileEnv == null || fileEnv.isBlank())
         {
             return null;
         }
-        return Path.of(stopFileEnv.trim());
+        return Path.of(fileEnv.trim());
     }
 
-    // An interrupt before the file appears ends the watcher without onStop.
-    static Thread startStopFileWatcher(
-        final Path stopFile,
-        final Runnable onStop,
+    // An interrupt before the file appears ends the watcher without onFile.
+    static Thread startFileWatcher(
+        final Path file,
+        final Runnable onFile,
+        final String threadName,
         final long pollIntervalMs)
     {
-        Objects.requireNonNull(stopFile, "stopFile");
-        Objects.requireNonNull(onStop, "onStop");
+        Objects.requireNonNull(file, "file");
+        Objects.requireNonNull(onFile, "onFile");
         final Thread thread = new Thread(() ->
         {
             while (!Thread.currentThread().isInterrupted())
             {
-                if (Files.exists(stopFile))
+                if (Files.exists(file))
                 {
-                    onStop.run();
+                    onFile.run();
                     return;
                 }
                 try
@@ -428,10 +457,36 @@ public final class ClusterNode
                     return;
                 }
             }
-        }, "heron-cluster-stop-file");
+        }, threadName);
         thread.setDaemon(true);
         thread.start();
         return thread;
+    }
+
+    // A failed delete does not set restartRequested. The process stops instead
+    // of relaunching at once.
+    static Runnable restartFileAction(
+        final int memberId,
+        final Path restartFile,
+        final AtomicBoolean restartRequested,
+        final Runnable signal)
+    {
+        return () ->
+        {
+            try
+            {
+                Files.deleteIfExists(restartFile);
+                restartRequested.set(true);
+                System.out.println(
+                    "heron: cluster node restart requested memberId=" + memberId);
+            }
+            catch (final IOException ex)
+            {
+                System.err.println(
+                    "heron: cluster node restart file delete failed: " + ex.getMessage());
+            }
+            signal.run();
+        };
     }
 
     /**
@@ -527,8 +582,18 @@ public final class ClusterNode
         runCluster(aeronDir, launcherSettingsFromProcessEnv());
     }
 
-    @SuppressWarnings("try")
+    // A restart file hit relaunches the node on the same directories.
     static void runCluster(final String aeronDir, final LauncherSettings settings)
+    {
+        while (launchCluster(aeronDir, settings))
+        {
+            System.out.println("heron: cluster node restarting memberId=" + settings.memberId);
+        }
+    }
+
+    // Returns true when the restart file ended the launch.
+    @SuppressWarnings("try")
+    private static boolean launchCluster(final String aeronDir, final LauncherSettings settings)
     {
         Objects.requireNonNull(aeronDir, "AERON_DIR required");
         final ClusterConfig clusterConfig = ClusterConfig.create(
@@ -563,6 +628,9 @@ public final class ClusterNode
             System.exit(1);
         });
 
+        final AtomicBoolean restartRequested = new AtomicBoolean(false);
+        Thread stopWatcher = null;
+        Thread restartWatcher = null;
         try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
             ClusteredMediaDriver _ = ClusteredMediaDriver.launch(
                 clusterConfig.mediaDriverContext().terminationHook(barrier::signalAll),
@@ -576,7 +644,7 @@ public final class ClusterNode
             System.out.println("heron: cluster node ready memberId=" + settings.memberId);
             if (settings.stopFile != null)
             {
-                startStopFileWatcher(
+                stopWatcher = startFileWatcher(
                     settings.stopFile,
                     () ->
                     {
@@ -584,9 +652,35 @@ public final class ClusterNode
                             "heron: cluster node stop requested memberId=" + settings.memberId);
                         barrier.signalAll();
                     },
+                    "heron-cluster-stop-file",
+                    STOP_FILE_POLL_INTERVAL_MS);
+            }
+            if (settings.restartFile != null)
+            {
+                restartWatcher = startFileWatcher(
+                    settings.restartFile,
+                    restartFileAction(
+                        settings.memberId,
+                        settings.restartFile,
+                        restartRequested,
+                        barrier::signalAll),
+                    "heron-cluster-restart-file",
                     STOP_FILE_POLL_INTERVAL_MS);
             }
             barrier.await();
         }
+        finally
+        {
+            // A watcher from this launch must not signal the next barrier.
+            if (stopWatcher != null)
+            {
+                stopWatcher.interrupt();
+            }
+            if (restartWatcher != null)
+            {
+                restartWatcher.interrupt();
+            }
+        }
+        return restartRequested.get();
     }
 }

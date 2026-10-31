@@ -112,6 +112,12 @@ public final class ClusterConstants {
     public static final String SERVICE_PROBE_KEY_ROLE = "role";
     public static final String SERVICE_PROBE_KEY_MEMBER_ID = "memberId";
 
+    // Snapshot load file name under each member baseDir. EchoService writes the
+    // file when onStart receives a snapshot image.
+    //
+    // Hand-sync with clusterjava.SnapshotProbeFilename.
+    public static final String SNAPSHOT_PROBE_FILENAME = "snapshot-probe";
+
     // Log channel when a Java member is appointed. Unicast only. No interface, ttl,
     // or endpoint. Topology derives per-member log endpoints. Same as Go
     // MixedLogChannelUnicast / DefaultLogChannel.

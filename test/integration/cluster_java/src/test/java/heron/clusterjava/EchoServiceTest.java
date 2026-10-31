@@ -85,6 +85,34 @@ class EchoServiceTest {
     }
 
     @Test
+    void formatSnapshotProbe_keyValueLine() {
+        assertEquals("logPosition=128\n", EchoService.formatSnapshotProbe(128L));
+    }
+
+    @Test
+    void writeSnapshotProbe_writesLogPositionUnderBaseDir(@TempDir final Path tempDir) throws IOException {
+        final EchoService service = startedWithClusterDir(tempDir, 1, Cluster.Role.FOLLOWER);
+
+        service.writeSnapshotProbe(4096L);
+
+        final Path probe = tempDir.resolve(ClusterConstants.SNAPSHOT_PROBE_FILENAME);
+        assertTrue(Files.isRegularFile(probe), "probe file missing: " + probe);
+        assertFalse(Files.exists(tempDir.resolve(ClusterConstants.SNAPSHOT_PROBE_FILENAME + ".tmp")));
+        assertEquals("logPosition=4096\n", Files.readString(probe, StandardCharsets.US_ASCII));
+    }
+
+    @Test
+    void onStart_skipsSnapshotProbeWithoutImage(@TempDir final Path tempDir) throws IOException {
+        final ProbeCluster cluster = newProbeCluster(tempDir, 1, Cluster.Role.FOLLOWER, 4096L);
+        assertEquals(4096L, cluster.logPosition());
+
+        final EchoService service = new EchoService();
+        service.onStart(cluster, null);
+
+        assertFalse(Files.exists(tempDir.resolve(ClusterConstants.SNAPSHOT_PROBE_FILENAME)));
+    }
+
+    @Test
     void onNewLeadershipTermEvent_writesProbeUnderBaseDir(@TempDir final Path tempDir)
         throws IOException
     {
@@ -210,17 +238,25 @@ class EchoServiceTest {
         final int memberId,
         final Cluster.Role role) throws IOException
     {
+        final EchoService service = new EchoService();
+        service.onStart(newProbeCluster(tempDir, memberId, role, 0L), null);
+        return service;
+    }
+
+    private static ProbeCluster newProbeCluster(
+        final Path tempDir,
+        final int memberId,
+        final Cluster.Role role,
+        final long logPosition) throws IOException
+    {
         final Path clusterDir = tempDir.resolve(ClusterConfig.CLUSTER_SUB_DIR);
         Files.createDirectories(clusterDir);
-        final EchoService service = new EchoService();
-        service.onStart(
-            ProbeCluster.withClusterDir(
-                NoOpIdleStrategy.INSTANCE,
-                memberId,
-                role,
-                clusterDir.toFile()),
-            null);
-        return service;
+        return ProbeCluster.withClusterDir(
+            NoOpIdleStrategy.INSTANCE,
+            memberId,
+            role,
+            clusterDir.toFile(),
+            logPosition);
     }
 
     private static Cluster clusterWithIdleStrategy(final IdleStrategy idleStrategy) {
@@ -229,14 +265,13 @@ class EchoServiceTest {
 
     /**
      * Minimal {@link Cluster} for EchoService unit tests.
-     *
-     * <p>Holds idle strategy, member id, role, and optional service context.
      */
     private static final class ProbeCluster implements Cluster {
         private final IdleStrategy idleStrategy;
         private final int memberId;
         private final Role role;
         private final ClusteredServiceContainer.Context context;
+        private final long logPosition;
 
         private static ProbeCluster withClusterDir(
             final IdleStrategy idleStrategy,
@@ -244,11 +279,22 @@ class EchoServiceTest {
             final Role role,
             final java.io.File clusterDir)
         {
+            return withClusterDir(idleStrategy, memberId, role, clusterDir, 0L);
+        }
+
+        private static ProbeCluster withClusterDir(
+            final IdleStrategy idleStrategy,
+            final int memberId,
+            final Role role,
+            final java.io.File clusterDir,
+            final long logPosition)
+        {
             return new ProbeCluster(
                 idleStrategy,
                 memberId,
                 role,
-                new ClusteredServiceContainer.Context().clusterDir(clusterDir));
+                new ClusteredServiceContainer.Context().clusterDir(clusterDir),
+                logPosition);
         }
 
         private static ProbeCluster withContext(
@@ -257,7 +303,7 @@ class EchoServiceTest {
             final Role role,
             final ClusteredServiceContainer.Context context)
         {
-            return new ProbeCluster(idleStrategy, memberId, role, context);
+            return new ProbeCluster(idleStrategy, memberId, role, context, 0L);
         }
 
         private static ProbeCluster withoutContext(
@@ -265,19 +311,21 @@ class EchoServiceTest {
             final int memberId,
             final Role role)
         {
-            return new ProbeCluster(idleStrategy, memberId, role, null);
+            return new ProbeCluster(idleStrategy, memberId, role, null, 0L);
         }
 
         private ProbeCluster(
             final IdleStrategy idleStrategy,
             final int memberId,
             final Role role,
-            final ClusteredServiceContainer.Context context)
+            final ClusteredServiceContainer.Context context,
+            final long logPosition)
         {
             this.idleStrategy = idleStrategy;
             this.memberId = memberId;
             this.role = role;
             this.context = context;
+            this.logPosition = logPosition;
         }
 
         @Override
@@ -297,7 +345,7 @@ class EchoServiceTest {
 
         @Override
         public long logPosition() {
-            return 0L;
+            return logPosition;
         }
 
         @Override

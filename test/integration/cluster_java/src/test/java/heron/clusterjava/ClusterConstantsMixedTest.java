@@ -183,7 +183,11 @@ class ClusterConstantsMixedTest {
             Arguments.of(
                 "SERVICE_PROBE_KEY_MEMBER_ID",
                 "memberId",
-                ClusterConstants.SERVICE_PROBE_KEY_MEMBER_ID)
+                ClusterConstants.SERVICE_PROBE_KEY_MEMBER_ID),
+            Arguments.of(
+                "SNAPSHOT_PROBE_FILENAME",
+                "snapshot-probe",
+                ClusterConstants.SNAPSHOT_PROBE_FILENAME)
         );
     }
 }
