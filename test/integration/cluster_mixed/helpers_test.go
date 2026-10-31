@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,17 @@ func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
 		Config: cfg,
 	})
 	require.NoError(t, err)
+	return newMixedMemberFixture(t, driver, module)
+}
+
+// Returns the member before the first tick.
+func newMixedMemberFixture(
+	t *testing.T,
+	driver *harness.MediaDriver,
+	module *cluster.ConsensusModule,
+) *mixedMemberFixture {
+	t.Helper()
+
 	require.NotNil(t, module)
 	harness.CleanupClose(t, "mixed go consensus module", module.Close)
 
@@ -609,9 +621,15 @@ func awaitGoRecordingReaches(
 	)
 }
 
-// induceSessionMessage opens a cluster client against the two Java ingress
-// endpoints, offers one message, and closes the session. Payload is unasserted.
-func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
+// Connects to the two Java ingress endpoints. Returns a CONNECTED session.
+//
+// Ownership: the caller closes the session. session.Close does not close the
+// transport client.
+func connectMixedSession(
+	t *testing.T,
+	f *mixedMemberFixture,
+	handler client.EgressHandler,
+) (*client.AeronCluster, *aeron.Client, *atomic.Bool) {
 	t.Helper()
 
 	// Induction client uses its own transport client on the shared
@@ -634,9 +652,7 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 		AeronDir:         f.driver.Dir,
 		Aeron:            aeronClient,
 		MessageTimeout:   clusterjava.MixedConnectBudget,
-
-		// Empty handlers silent no-op all egress events.
-		EgressHandler: &client.EgressHandlers{},
+		EgressHandler:    handler,
 	}
 
 	ac, err := client.NewAsyncConnect(t.Context(), cfg)
@@ -680,6 +696,15 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 
 	session, err := client.NewAeronCluster(result)
 	require.NoError(t, err)
+	require.Equal(t, client.SessionStateConnected, session.SessionState())
+	return session, aeronClient, hadClientError
+}
+
+// Does not assert the payload.
+func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
+	t.Helper()
+
+	session, aeronClient, hadClientError := connectMixedSession(t, f, &client.EgressHandlers{})
 
 	// Close before fixture cleanup so the session does not outlive the cluster.
 	defer func() {
@@ -687,9 +712,26 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 			t.Errorf("close induction session: %v", closeErr)
 		}
 	}()
-	require.Equal(t, client.SessionStateConnected, session.SessionState())
 
 	payload := []byte("heron-mixed-induce")
+	offerMixedIngress(t, f, aeronClient, session, hadClientError, "induction", func() int64 {
+		return session.Offer(payload)
+	})
+}
+
+// offerMixedIngress runs the duty cycle and retries offer until it returns a
+// positive position. label names the offer in failure and log lines.
+func offerMixedIngress(
+	t *testing.T,
+	f *mixedMemberFixture,
+	aeronClient *aeron.Client,
+	session *client.AeronCluster,
+	hadClientError *atomic.Bool,
+	label string,
+	offer func() int64,
+) {
+	t.Helper()
+
 	offerStart := time.Now()
 	offerCtx, cancel := context.WithTimeout(t.Context(), harness.ConnectedPollTimeout)
 	defer cancel()
@@ -701,21 +743,22 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 		func() int64 {
 			f.tick()
 			aeronClient.DoWork()
-			require.False(t, hadClientError.Load(), "transport error during induction offer")
-			return session.Offer(payload)
+			require.False(t, hadClientError.Load(), "transport error during %s offer", label)
+			return offer()
 		},
 	)
 	if offerErr != nil {
 		t.Fatalf(
-			"induction offer failed: %v sessionState=%v hadClientError=%v elapsed=%s",
+			"%s offer failed: %v sessionState=%v hadClientError=%v elapsed=%s",
+			label,
 			offerErr,
 			session.SessionState(),
 			hadClientError.Load(),
 			time.Since(offerStart),
 		)
 	}
-	require.Positive(t, pos, "induction offer position")
-	t.Logf("induction offer elapsed=%s position=%d", time.Since(offerStart), pos)
+	require.Positive(t, pos, "%s offer position", label)
+	t.Logf("%s offer elapsed=%s position=%d", label, time.Since(offerStart), pos)
 }
 
 // awaitNotifiedCommitAdvance waits for NotifiedCommitPosition to rise above
@@ -995,10 +1038,11 @@ func appendJavaMemberCounters(b *strings.Builder, memberID int, c *harness.Drive
 	state, stateOK := c.Value(consensus.ClusterConsensusModuleStateCounterTypeID)
 	commit, commitOK := c.Value(consensus.ClusterCommitPositionCounterTypeID)
 	election, electionOK := c.Value(consensus.ClusterElectionStateCounterTypeID)
+	snapshot, snapshotOK := c.Value(consensus.ClusterSnapshotCounterTypeID)
 	fmt.Fprintf(
 		b,
 		"javaMember=%d stateOK=%v state=%d roleOK=%v role=%d termOK=%v term=%d "+
-			"commitOK=%v commit=%d electionOK=%v election=%d\n",
+			"commitOK=%v commit=%d electionOK=%v election=%d snapshotOK=%v snapshot=%d\n",
 		memberID,
 		stateOK,
 		state,
@@ -1010,6 +1054,8 @@ func appendJavaMemberCounters(b *strings.Builder, memberID int, c *harness.Drive
 		commit,
 		electionOK,
 		election,
+		snapshotOK,
+		snapshot,
 	)
 }
 

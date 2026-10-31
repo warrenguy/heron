@@ -79,6 +79,36 @@ func TestMixedHarnessConstants(t *testing.T) {
 			got:  clusterjava.MixedComposeSkipHintExLeaderRejoin,
 			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-ex-leader-rejoin",
 		},
+		{
+			name: "MixedComposeJavaLeaderSnapshotEnvKey",
+			got:  clusterjava.MixedComposeJavaLeaderSnapshotEnvKey,
+			want: "HERON_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE",
+		},
+		{
+			name: "MixedComposeGoLeaderSnapshotEnvKey",
+			got:  clusterjava.MixedComposeGoLeaderSnapshotEnvKey,
+			want: "HERON_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE",
+		},
+		{
+			name: "MixedSmokeNameJavaLeaderSnapshot",
+			got:  clusterjava.MixedSmokeNameJavaLeaderSnapshot,
+			want: "TestClusterMixedJavaLeaderSnapshotRestart",
+		},
+		{
+			name: "MixedSmokeNameGoLeaderSnapshot",
+			got:  clusterjava.MixedSmokeNameGoLeaderSnapshot,
+			want: "TestClusterMixedGoLeaderSnapshotRestart",
+		},
+		{
+			name: "MixedComposeSkipHintJavaLeaderSnapshot",
+			got:  clusterjava.MixedComposeSkipHintJavaLeaderSnapshot,
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-java-leader-snapshot",
+		},
+		{
+			name: "MixedComposeSkipHintGoLeaderSnapshot",
+			got:  clusterjava.MixedComposeSkipHintGoLeaderSnapshot,
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader-snapshot",
+		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},
 		{name: "MixedGoMemberID", got: clusterjava.MixedGoMemberID, want: int32(2)},
@@ -106,6 +136,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "MixedStopPathMember1",
 			got:  clusterjava.MixedStopPathMember1,
 			want: "/dev/shm/heron-mixed/stop-member-1",
+		},
+		{
+			name: "MixedRestartPathMember1",
+			got:  clusterjava.MixedRestartPathMember1,
+			want: "/dev/shm/heron-mixed/restart-member-1",
 		},
 		{
 			name: "MixedIngressEndpoints",
@@ -153,6 +188,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "ServiceProbeFilename",
 			got:  clusterjava.ServiceProbeFilename,
 			want: "service-probe",
+		},
+		{
+			name: "SnapshotProbeFilename",
+			got:  clusterjava.SnapshotProbeFilename,
+			want: "snapshot-probe",
 		},
 		{
 			name: "ServiceProbeKeyTerm",
@@ -347,6 +387,36 @@ func TestMixedRequiredSmoke(t *testing.T) {
 			},
 			wantName: clusterjava.MixedSmokeNameGoLeader,
 		},
+		{
+			name: "javaLeaderSnapshotOne",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderSnapshotEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeaderSnapshot,
+		},
+		{
+			name: "goLeaderSnapshotOne",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderSnapshotEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderSnapshot,
+		},
+		{
+			name: "javaLeaderSnapshotWithBaseZero",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey:         "0",
+				clusterjava.MixedComposeJavaLeaderSnapshotEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeaderSnapshot,
+		},
+		{
+			name: "goLeaderSnapshotWithBaseZero",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey:         "0",
+				clusterjava.MixedComposeGoLeaderSnapshotEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderSnapshot,
+		},
 	}
 
 	for _, tt := range tests {
@@ -448,6 +518,7 @@ func TestMixedReadyPath_outsideAeronDirs(t *testing.T) {
 	for _, path := range []string{
 		clusterjava.MixedReadyPath,
 		clusterjava.MixedStopPathMember1,
+		clusterjava.MixedRestartPathMember1,
 	} {
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember0))
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember1))
@@ -600,6 +671,98 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 		4*clusterjava.MixedCommitBudget
 	require.Equal(t, 270*time.Second, stackedExLeaderRejoin)
 	require.Less(t, stackedExLeaderRejoin, clusterjava.MixedTestTimeoutExLeaderRejoin)
+
+	stackedJavaLeaderSnapshot := clusterjava.MixedStartupBudget +
+		clusterjava.MixedElectionBudget +
+		2*clusterjava.MixedConnectBudget +
+		2*harness.ConnectedPollTimeout +
+		7*clusterjava.MixedCommitBudget +
+		clusterjava.MixedRejoinBudget +
+		harness.JoinExternalCncReadyTimeout +
+		clusterjava.MixedLogRebindBudget
+	require.Equal(t, 295*time.Second, stackedJavaLeaderSnapshot)
+	require.Less(t, stackedJavaLeaderSnapshot, clusterjava.MixedTestTimeoutJavaLeaderSnapshot)
+
+	stackedGoLeaderSnapshot := 3*clusterjava.MixedStartupBudget +
+		2*clusterjava.MixedElectionBudget +
+		5*clusterjava.MixedCommitBudget +
+		clusterjava.MixedRejoinBudget
+	require.Equal(t, 260*time.Second, stackedGoLeaderSnapshot)
+	require.Less(t, stackedGoLeaderSnapshot, clusterjava.MixedTestTimeoutGoLeaderSnapshot)
+}
+
+func TestSnapshotProbePath_underMemberBaseDir(t *testing.T) {
+	require.Equal(t, "/tmp/heron-cluster-0/snapshot-probe", clusterjava.SnapshotProbePath(0))
+	require.Equal(t, "/tmp/heron-cluster-1/snapshot-probe", clusterjava.SnapshotProbePath(1))
+}
+
+func TestParseSnapshotProbe_valid(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want clusterjava.SnapshotProbe
+	}{
+		{
+			name: "positivePosition",
+			data: "logPosition=64\n",
+			want: clusterjava.SnapshotProbe{LogPosition: 64},
+		},
+		{
+			name: "zeroWithBlankLines",
+			data: "\n  logPosition=0  \n",
+			want: clusterjava.SnapshotProbe{LogPosition: 0},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probe, err := clusterjava.ParseSnapshotProbe([]byte(tt.data))
+			require.NoError(t, err)
+			require.Equal(t, tt.want, probe)
+		})
+	}
+}
+
+func TestParseSnapshotProbe_rejectMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantSub string
+	}{
+		{name: "emptyBody", data: "", wantSub: "missing key"},
+		{name: "blankOnly", data: "\n  \n", wantSub: "missing key"},
+		{
+			name:    "unknownKey",
+			data:    "term=1\n",
+			wantSub: "unknown key",
+		},
+		{
+			name:    "duplicateLogPosition",
+			data:    "logPosition=1\nlogPosition=2\n",
+			wantSub: "duplicate key",
+		},
+		{
+			name:    "nonInteger",
+			data:    "logPosition=nope\n",
+			wantSub: "logPosition",
+		},
+		{
+			name:    "missingEquals",
+			data:    "not-a-pair\n",
+			wantSub: "key=value",
+		},
+		{
+			name:    "emptyKey",
+			data:    "=1\n",
+			wantSub: "key=value",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterjava.ParseSnapshotProbe([]byte(tt.data))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantSub)
+		})
+	}
 }
 
 func TestServiceProbePath_underMemberBaseDir(t *testing.T) {

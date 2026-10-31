@@ -45,7 +45,7 @@ class EchoService implements ClusteredService
     static final String OFFER_EXHAUSTED_MESSAGE =
         "heron: EchoService offer exhausted after " + SEND_ATTEMPTS + " attempts";
     static final String SERVICE_PROBE_WRITE_FAILED_PREFIX =
-        "heron: EchoService service-probe write failed: ";
+        probeWriteFailedPrefix(ClusterConstants.SERVICE_PROBE_FILENAME);
 
     private IdleStrategy idleStrategy;
     private Cluster cluster;
@@ -54,6 +54,10 @@ class EchoService implements ClusteredService
     {
         this.cluster = cluster;
         this.idleStrategy = cluster.idleStrategy();
+        if (snapshotImage != null)
+        {
+            writeSnapshotProbe(cluster.logPosition());
+        }
     }
 
     public void onSessionOpen(final ClientSession session, final long timestamp)
@@ -135,14 +139,35 @@ class EchoService implements ClusteredService
 
         final String roleName = cluster.role() == null ? "null" : cluster.role().name();
         final String content = formatServiceProbe(term, logPosition, roleName, cluster.memberId());
-        final File dest = new File(baseDir, ClusterConstants.SERVICE_PROBE_FILENAME);
-        final File tmp = new File(baseDir, ClusterConstants.SERVICE_PROBE_FILENAME + ".tmp");
+        writeProbeFile(baseDir, ClusterConstants.SERVICE_PROBE_FILENAME, content);
+    }
+
+    void writeSnapshotProbe(final long logPosition)
+    {
+        final File baseDir = probeBaseDir();
+        if (baseDir == null)
+        {
+            return;
+        }
+
+        writeProbeFile(baseDir, ClusterConstants.SNAPSHOT_PROBE_FILENAME, formatSnapshotProbe(logPosition));
+    }
+
+    private static String probeWriteFailedPrefix(final String fileName)
+    {
+        return "heron: EchoService " + fileName + " write failed: ";
+    }
+
+    private static void writeProbeFile(final File baseDir, final String fileName, final String content)
+    {
+        final File dest = new File(baseDir, fileName);
+        final File tmp = new File(baseDir, fileName + ".tmp");
 
         try
         {
             if (!baseDir.exists() && !baseDir.mkdirs())
             {
-                System.err.println(SERVICE_PROBE_WRITE_FAILED_PREFIX + "mkdirs " + baseDir);
+                System.err.println(probeWriteFailedPrefix(fileName) + "mkdirs " + baseDir);
                 return;
             }
             Files.writeString(tmp.toPath(), content, StandardCharsets.US_ASCII);
@@ -163,12 +188,12 @@ class EchoService implements ClusteredService
             catch (final IOException ignored)
             {
             }
-            System.err.println(SERVICE_PROBE_WRITE_FAILED_PREFIX + ex.getMessage());
+            System.err.println(probeWriteFailedPrefix(fileName) + ex.getMessage());
         }
     }
 
     /**
-     * Member baseDir that holds the service-probe file.
+     * Member baseDir that holds the service-probe and snapshot-probe files.
      *
      * <p>Returns null when cluster is unset, context is null, or clusterDir is null.
      * clusterDir is null before {@link #onStart} when the context omits it.
@@ -201,5 +226,10 @@ class EchoService implements ClusteredService
             + ClusterConstants.SERVICE_PROBE_KEY_LOG_POSITION + "=" + logPosition + "\n"
             + ClusterConstants.SERVICE_PROBE_KEY_ROLE + "=" + role + "\n"
             + ClusterConstants.SERVICE_PROBE_KEY_MEMBER_ID + "=" + memberId + "\n";
+    }
+
+    static String formatSnapshotProbe(final long logPosition)
+    {
+        return ClusterConstants.SERVICE_PROBE_KEY_LOG_POSITION + "=" + logPosition + "\n";
     }
 }

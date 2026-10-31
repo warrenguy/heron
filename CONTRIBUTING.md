@@ -67,6 +67,8 @@ contract suites and Docker Compose smokes.
 | `smoke-cluster-mixed-java-leader` | `scripts/cluster-mixed-smoke.sh java-leader` | Compose image (built by make target) |
 | `smoke-cluster-mixed-go-leader` | `scripts/cluster-mixed-smoke.sh go-leader` | Compose image (built by make target) |
 | `smoke-cluster-mixed-ex-leader-rejoin` | `scripts/cluster-mixed-smoke.sh ex-leader-rejoin` | Compose image (built by make target) |
+| `smoke-cluster-mixed-java-leader-snapshot` | `scripts/cluster-mixed-smoke.sh java-leader-snapshot` | Compose image (built by make target) |
+| `smoke-cluster-mixed-go-leader-snapshot` | `scripts/cluster-mixed-smoke.sh go-leader-snapshot` | Compose image (built by make target) |
 | `smoke-cluster-java` | `scripts/cluster-java-smoke.sh` | Embedded (no image step) |
 | `smoke-cluster-mixed-service` | `scripts/cluster-mixed-service-smoke.sh` | Embedded (no image step) |
 

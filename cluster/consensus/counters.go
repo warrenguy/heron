@@ -12,6 +12,9 @@ const (
 	// ClusterCommitPositionCounterTypeID is the aeron counter type ID CLUSTER_COMMIT_POSITION_TYPE_ID.
 	ClusterCommitPositionCounterTypeID int32 = 203
 
+	// ClusterSnapshotCounterTypeID is the aeron counter type ID CLUSTER_SNAPSHOT_COUNTER_TYPE_ID.
+	ClusterSnapshotCounterTypeID int32 = 205
+
 	// ClusterElectionStateCounterTypeID is the aeron counter type ID CLUSTER_ELECTION_STATE_TYPE_ID.
 	// Counter value is the aeron cluster ElectionState code (0-17).
 	ClusterElectionStateCounterTypeID int32 = 207

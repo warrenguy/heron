@@ -20,7 +20,9 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -393,11 +395,68 @@ class ClusterNodeTest {
     }
 
     @Test
-    void startStopFileWatcher_runsOnStopOnceWhenFileAppears(@TempDir final Path dir) throws Exception {
+    void launcherSettingsFromEnv_restartFileParsesFromEnv() {
+        final ClusterNode.LauncherSettings unset = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, null, null);
+        assertNull(unset.restartFile);
+
+        final ClusterNode.LauncherSettings blank = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, null, "  ");
+        assertNull(blank.restartFile);
+
+        final ClusterNode.LauncherSettings set = ClusterNode.launcherSettingsFromEnv(
+            null, null, null, null, null, null, null, " /dev/shm/heron-mixed/restart-member-1 ");
+        assertEquals(Path.of("/dev/shm/heron-mixed/restart-member-1"), set.restartFile);
+    }
+
+    @Test
+    void restartFileAction_deletesFileThenRequestsRestart(@TempDir final Path dir) throws Exception {
+        final Path restart = dir.resolve("restart");
+        Files.writeString(restart, "restart\n");
+        final AtomicBoolean requested = new AtomicBoolean();
+        final AtomicInteger signals = new AtomicInteger();
+        final Runnable action = ClusterNode.restartFileAction(
+            7, restart, requested, signals::incrementAndGet);
+
+        final String stdout = captureStdout(action::run);
+
+        assertFalse(Files.exists(restart));
+        assertTrue(requested.get());
+        assertEquals(1, signals.get());
+        assertEquals(
+            "heron: cluster node restart requested memberId=7" + System.lineSeparator(),
+            stdout);
+    }
+
+    @Test
+    void restartFileAction_stopsWithoutRestartWhenDeleteFails(@TempDir final Path dir) throws Exception {
+        final Path restart = dir.resolve("restart-dir");
+        // Files.deleteIfExists removes an empty directory. A child file
+        // makes deleteIfExists fail.
+        Files.createDirectory(restart);
+        Files.createFile(restart.resolve("child"));
+        final AtomicBoolean requested = new AtomicBoolean();
+        final AtomicInteger signals = new AtomicInteger();
+        final Runnable action = ClusterNode.restartFileAction(
+            3, restart, requested, signals::incrementAndGet);
+
+        final String stderr = captureStderr(action::run);
+
+        assertTrue(Files.isDirectory(restart));
+        assertFalse(requested.get());
+        assertEquals(1, signals.get());
+        assertTrue(
+            stderr.contains("heron: cluster node restart file delete failed:"),
+            "stderr=" + stderr);
+    }
+
+    @Test
+    void startFileWatcher_runsOnFileOnceWhenFileAppears(@TempDir final Path dir) throws Exception {
         final Path stop = dir.resolve("stop");
         final AtomicInteger runs = new AtomicInteger();
-        final Thread watcher = ClusterNode.startStopFileWatcher(stop, runs::incrementAndGet, 5);
+        final Thread watcher = ClusterNode.startFileWatcher(stop, runs::incrementAndGet, "watcher-test", 5);
         try {
+            assertEquals("watcher-test", watcher.getName());
             Files.writeString(stop, "stop\n");
             watcher.join(1_000);
             assertFalse(watcher.isAlive());
@@ -408,10 +467,10 @@ class ClusterNodeTest {
     }
 
     @Test
-    void startStopFileWatcher_endsOnInterruptWithoutFile(@TempDir final Path dir) throws Exception {
+    void startFileWatcher_endsOnInterruptWithoutFile(@TempDir final Path dir) throws Exception {
         final Path stop = dir.resolve("stop");
         final AtomicInteger runs = new AtomicInteger();
-        final Thread watcher = ClusterNode.startStopFileWatcher(stop, runs::incrementAndGet, 5);
+        final Thread watcher = ClusterNode.startFileWatcher(stop, runs::incrementAndGet, "watcher-test", 5);
         try {
             Thread.sleep(50);
             assertEquals(0, runs.get());
@@ -630,9 +689,19 @@ class ClusterNodeTest {
     }
 
     static String captureStderr(final Executable action) {
-        final PrintStream originalErr = System.err;
+        return captureStream(action, System.err, System::setErr);
+    }
+
+    static String captureStdout(final Executable action) {
+        return captureStream(action, System.out, System::setOut);
+    }
+
+    private static String captureStream(
+        final Executable action,
+        final PrintStream original,
+        final Consumer<PrintStream> setStream) {
         final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        System.setErr(new PrintStream(buffer, true, StandardCharsets.UTF_8));
+        setStream.accept(new PrintStream(buffer, true, StandardCharsets.UTF_8));
         try {
             action.execute();
         } catch (final Throwable t) {
@@ -644,7 +713,7 @@ class ClusterNodeTest {
             }
             throw new AssertionError(t);
         } finally {
-            System.setErr(originalErr);
+            setStream.accept(original);
         }
         return buffer.toString(StandardCharsets.UTF_8);
     }

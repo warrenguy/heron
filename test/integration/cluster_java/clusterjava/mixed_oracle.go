@@ -43,6 +43,22 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameExLeaderRejoin = "TestClusterMixedGoExLeaderRejoin"
 
+	// MixedComposeJavaLeaderSnapshotEnvKey is set to "1" by the java-leader-snapshot overlay.
+	MixedComposeJavaLeaderSnapshotEnvKey = "HERON_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE"
+
+	// MixedComposeGoLeaderSnapshotEnvKey is set to "1" by the go-leader-snapshot overlay.
+	MixedComposeGoLeaderSnapshotEnvKey = "HERON_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE"
+
+	// MixedSmokeNameJavaLeaderSnapshot is the TestClusterMixedJavaLeaderSnapshotRestart function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameJavaLeaderSnapshot = "TestClusterMixedJavaLeaderSnapshotRestart"
+
+	// MixedSmokeNameGoLeaderSnapshot is the TestClusterMixedGoLeaderSnapshotRestart function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameGoLeaderSnapshot = "TestClusterMixedGoLeaderSnapshotRestart"
+
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-java-leader"
@@ -50,6 +66,10 @@ const (
 		"smoke-cluster-mixed-go-leader"
 	MixedComposeSkipHintExLeaderRejoin = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-ex-leader-rejoin"
+	MixedComposeSkipHintJavaLeaderSnapshot = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-java-leader-snapshot"
+	MixedComposeSkipHintGoLeaderSnapshot = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-go-leader-snapshot"
 
 	MixedMemberCount = 3
 	MixedGoMemberID  = int32(2)
@@ -76,6 +96,11 @@ const (
 	// outside every Aeron directory. A driver does not map the file. The
 	// ex-leader-rejoin overlay repeats this literal.
 	MixedStopPathMember1 = "/dev/shm/heron-mixed/stop-member-1"
+
+	// MixedRestartPathMember1 is the restart file for Java member 1. The path
+	// sits outside every Aeron directory. A driver does not map the file. The
+	// go-leader-snapshot overlay repeats this literal.
+	MixedRestartPathMember1 = "/dev/shm/heron-mixed/restart-member-1"
 )
 
 // Default bridge address literals for the 172.30.0.0/24 topology.
@@ -147,6 +172,12 @@ const (
 	ServiceProbeKeyLogPosition = "logPosition"
 	ServiceProbeKeyRole        = "role"
 	ServiceProbeKeyMemberID    = "memberId"
+
+	// SnapshotProbeFilename is the snapshot load file under each Java member
+	// baseDir. EchoService writes the file when onStart receives a snapshot image.
+	//
+	// Hand-sync with ClusterConstants.SNAPSHOT_PROBE_FILENAME.
+	SnapshotProbeFilename = "snapshot-probe"
 )
 
 const (
@@ -219,15 +250,30 @@ const (
 
 	MixedRejoinBudget = 30 * time.Second
 
+	// MixedLogRebindBudget is the deadline for starting a Go module reopen attempt.
+	// ConsensusModule.Close returns before the media driver releases the log
+	// socket. The test retries Open until the deadline. An attempt that starts
+	// before the deadline runs to completion.
+	MixedLogRebindBudget = 5 * time.Second
+
 	// MixedTestTimeoutExLeaderRejoin bounds the ex-leader-rejoin smoke. The
 	// wait stack inside the test is 270s.
 	MixedTestTimeoutExLeaderRejoin = 300 * time.Second
+
+	// MixedTestTimeoutJavaLeaderSnapshot bounds the java-leader-snapshot smoke. The
+	// wait stack inside the test is 295s.
+	MixedTestTimeoutJavaLeaderSnapshot = 300 * time.Second
+
+	// MixedTestTimeoutGoLeaderSnapshot bounds the go-leader-snapshot smoke. The
+	// wait stack inside the test is 260s.
+	MixedTestTimeoutGoLeaderSnapshot = 300 * time.Second
 )
 
 // MixedRequiredSmoke reports which mixed proof the current overlay requires.
 //
 // Behaviour: reads the overlay env keys in a fixed order: java-leader,
-// go-leader, then ex-leader-rejoin. A key set to "1" selects that overlay.
+// go-leader, ex-leader-rejoin, java-leader-snapshot, then
+// go-leader-snapshot. A key set to "1" selects that overlay.
 // Any other value, including unset, does not select an overlay. The caller
 // does not require a proof when the keys do not select an overlay. A
 // developer run outside compose leaves the keys unset. Several keys set to
@@ -248,6 +294,12 @@ func MixedRequiredSmoke(getEnv func(string) string) (string, bool) {
 	}
 	if getEnv(MixedComposeExLeaderRejoinEnvKey) == "1" {
 		return MixedSmokeNameExLeaderRejoin, true
+	}
+	if getEnv(MixedComposeJavaLeaderSnapshotEnvKey) == "1" {
+		return MixedSmokeNameJavaLeaderSnapshot, true
+	}
+	if getEnv(MixedComposeGoLeaderSnapshotEnvKey) == "1" {
+		return MixedSmokeNameGoLeaderSnapshot, true
 	}
 	return "", false
 }
@@ -452,6 +504,58 @@ func ParseServiceProbe(data []byte) (ServiceProbe, error) {
 		if !seen[key] {
 			return ServiceProbe{}, fmt.Errorf("service-probe missing key %q", key)
 		}
+	}
+	return probe, nil
+}
+
+// SnapshotProbe is one parsed EchoService snapshot-probe file.
+type SnapshotProbe struct {
+	LogPosition int64
+}
+
+// SnapshotProbePath returns the snapshot-probe path for memberID under MixedBaseDirPrefix.
+//
+// Ownership: the caller owns the returned string.
+func SnapshotProbePath(memberID int) string {
+	return MixedBaseDirPrefix + strconv.Itoa(memberID) + "/" + SnapshotProbeFilename
+}
+
+// ParseSnapshotProbe parses an EchoService snapshot-probe file. The file holds
+// one non-blank line, logPosition=<int>.
+//
+// Returns an error when:
+//   - logPosition is missing
+//   - a key is duplicate or unknown
+//   - logPosition is not an integer
+//   - a line is not key=value
+func ParseSnapshotProbe(data []byte) (SnapshotProbe, error) {
+	var probe SnapshotProbe
+	seen := false
+
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key == "" {
+			return SnapshotProbe{}, fmt.Errorf("snapshot-probe line %d: want key=value, got %q", i+1, line)
+		}
+		if key != ServiceProbeKeyLogPosition {
+			return SnapshotProbe{}, fmt.Errorf("snapshot-probe line %d: unknown key %q", i+1, key)
+		}
+		if seen {
+			return SnapshotProbe{}, fmt.Errorf("snapshot-probe duplicate key %q", key)
+		}
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return SnapshotProbe{}, fmt.Errorf("snapshot-probe logPosition: %w", err)
+		}
+		probe.LogPosition = n
+		seen = true
+	}
+	if !seen {
+		return SnapshotProbe{}, fmt.Errorf("snapshot-probe missing key %q", ServiceProbeKeyLogPosition)
 	}
 	return probe, nil
 }

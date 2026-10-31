@@ -32,9 +32,12 @@ const (
 	envFilePageSize        = "AERON_FILE_PAGE_SIZE"
 	envDir                 = "AERON_DIR"
 
-	joinExternalCncReadyTimeout = 10 * time.Second
-	shutdownExitTimeout         = 10 * time.Second
+	shutdownExitTimeout = 10 * time.Second
 )
+
+// JoinExternalCncReadyTimeout bounds the CnC ready wait after a driver launch
+// and in JoinExternal.
+const JoinExternalCncReadyTimeout = 10 * time.Second
 
 type DriverEnv map[string]string
 
@@ -286,7 +289,7 @@ func launchMediaDriver(
 	err := cnc.WaitCncReady(
 		context.Background(),
 		md.CncPath(),
-		joinExternalCncReadyTimeout,
+		JoinExternalCncReadyTimeout,
 	)
 	if err != nil {
 		md.Stop()
@@ -303,7 +306,7 @@ func launchMediaDriver(
 // client and driver term lengths aligned.
 func JoinExternal(t testing.TB, dir string) *MediaDriver {
 	t.Helper()
-	return JoinExternalTimeout(t, dir, joinExternalCncReadyTimeout)
+	return JoinExternalTimeout(t, dir, JoinExternalCncReadyTimeout)
 }
 
 // JoinExternalTimeout is JoinExternal with a custom CNC ready poll deadline.

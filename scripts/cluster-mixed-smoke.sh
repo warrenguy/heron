@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Mixed Go/Java cluster compose smoke. Exactly one overlay per run.
-# Requires the java-interop-aeronmd image. These make targets run
-# aeronmd-compose-image first: smoke-cluster-mixed-java-leader,
-# smoke-cluster-mixed-go-leader, smoke-cluster-mixed-ex-leader-rejoin.
+# Mixed Go/Java cluster compose smoke.
 #
 # Isolation per run:
 # - Compose project HERON_COMPOSE_PROJECT=heron-cluster-mixed-$$ with -p
@@ -16,9 +13,6 @@
 # overlap. run_smoke retries the next octet in range.
 #
 # force-recreate plus EXIT/INT/TERM traps clean this project only.
-#
-# Usage: cluster-mixed-smoke.sh <overlay>
-#   overlay: java-leader | go-leader | ex-leader-rejoin
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,13 +20,12 @@ COMPOSE_DIR="${ROOT}/test/integration/cluster_mixed/docker"
 COMPOSE_BASE="${COMPOSE_DIR}/compose.yaml"
 
 usage() {
-	echo "usage: $0 java-leader|go-leader|ex-leader-rejoin" >&2
+	echo "usage: $0 java-leader|go-leader|ex-leader-rejoin|java-leader-snapshot|go-leader-snapshot" >&2
 	exit 1
 }
 
 # Outer wall-clock cap for the compose run. The 130s default covers a 120s Go
-# -test.timeout plus teardown. ex-leader-rejoin raises it to 310s for its 300s
-# timeout.
+# -test.timeout plus teardown. 310s covers a 300s -test.timeout plus teardown.
 OUTER_TIMEOUT_S=130
 
 # Max subnet picks before compose up gives up. Each attempt walks one octet.
@@ -40,25 +33,43 @@ SUBNET_ATTEMPTS=5
 
 [[ "$#" -eq 1 ]] || usage
 
-# Third-octet range per overlay. Ranges are disjoint and skip octet 0.
-# A smoke must not land on another overlay's range or on 172.30.0.0/24.
-OCTET_SPAN=83
+# Ranges skip octet 0. A smoke must not use 172.30.0.0/24.
+OCTET_SPAN=50
 OVERLAY_ARG="$1"
+OVERLAY_FILES=()
 case "${OVERLAY_ARG}" in
 java-leader)
-	OVERLAY_FILE="${COMPOSE_DIR}/compose.java-leader.yaml"
+	OVERLAY_FILES=("${COMPOSE_DIR}/compose.java-leader.yaml")
 	SMOKE_NAME="TestClusterMixedJavaLeader"
 	OCTET_BASE=1
 	;;
 go-leader)
-	OVERLAY_FILE="${COMPOSE_DIR}/compose.go-leader.yaml"
+	OVERLAY_FILES=("${COMPOSE_DIR}/compose.go-leader.yaml")
 	SMOKE_NAME="TestClusterMixedGoLeader"
-	OCTET_BASE=84
+	OCTET_BASE=51
 	;;
 ex-leader-rejoin)
-	OVERLAY_FILE="${COMPOSE_DIR}/compose.ex-leader-rejoin.yaml"
+	OVERLAY_FILES=("${COMPOSE_DIR}/compose.ex-leader-rejoin.yaml")
 	SMOKE_NAME="TestClusterMixedGoExLeaderRejoin"
-	OCTET_BASE=167
+	OCTET_BASE=101
+	OUTER_TIMEOUT_S=310
+	;;
+java-leader-snapshot)
+	OVERLAY_FILES=(
+		"${COMPOSE_DIR}/compose.java-leader.yaml"
+		"${COMPOSE_DIR}/compose.java-leader-snapshot.yaml"
+	)
+	SMOKE_NAME="TestClusterMixedJavaLeaderSnapshotRestart"
+	OCTET_BASE=151
+	OUTER_TIMEOUT_S=310
+	;;
+go-leader-snapshot)
+	OVERLAY_FILES=(
+		"${COMPOSE_DIR}/compose.go-leader.yaml"
+		"${COMPOSE_DIR}/compose.go-leader-snapshot.yaml"
+	)
+	SMOKE_NAME="TestClusterMixedGoLeaderSnapshotRestart"
+	OCTET_BASE=201
 	OUTER_TIMEOUT_S=310
 	;;
 *)
@@ -86,8 +97,10 @@ COMPOSE_CMD=(
 	docker compose
 	-p "${HERON_COMPOSE_PROJECT}"
 	-f "${COMPOSE_BASE}"
-	-f "${OVERLAY_FILE}"
 )
+for overlay in "${OVERLAY_FILES[@]}"; do
+	COMPOSE_CMD+=(-f "${overlay}")
+done
 
 compose() {
 	"${COMPOSE_CMD[@]}" "$@"
