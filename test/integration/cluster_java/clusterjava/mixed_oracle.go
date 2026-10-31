@@ -250,8 +250,10 @@ const (
 
 	MixedRejoinBudget = 30 * time.Second
 
-	// MixedLogRebindBudget bounds the Go module reopen. ConsensusModule.Close
-	// returns before the media driver releases the log socket.
+	// MixedLogRebindBudget is the deadline for starting a Go module reopen attempt.
+	// ConsensusModule.Close returns before the media driver releases the log
+	// socket. The test retries Open until the deadline. An attempt that starts
+	// before the deadline runs to completion.
 	MixedLogRebindBudget = 5 * time.Second
 
 	// MixedTestTimeoutExLeaderRejoin bounds the ex-leader-rejoin smoke. The
