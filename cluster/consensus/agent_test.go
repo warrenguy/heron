@@ -55,6 +55,12 @@ func (r *orderRunner) DoWork(int64) int {
 
 func (r *orderRunner) HandleConsensusMessage([]byte, int) bool { return false }
 
+func (r *orderRunner) HandleReplayNewLeadershipTermEvent(
+	codecs.NewLeadershipTermEventFields,
+) error {
+	return nil
+}
+
 var _ PositionTable = (*stubPositionTable)(nil)
 
 type stubPositionTable struct{}
@@ -2064,6 +2070,12 @@ func (r *prepareDutyRunner) DoWork(nowNs int64) int {
 func (r *prepareDutyRunner) HandleConsensusMessage([]byte, int) bool {
 	r.handles++
 	return true
+}
+
+func (r *prepareDutyRunner) HandleReplayNewLeadershipTermEvent(
+	codecs.NewLeadershipTermEventFields,
+) error {
+	return nil
 }
 
 // TestPrepareForNewLeadership_dutyCycleIngressAndElection asserts Agent.DoWork

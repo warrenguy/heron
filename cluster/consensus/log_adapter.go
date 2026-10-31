@@ -59,6 +59,14 @@ type clusterActionSink interface {
 	handleClusterAction(fields codecs.ClusterActionRequestFields, logPosition int64)
 }
 
+// handleNewLeadershipTermEvent returns true to stop [LogAdapter.Poll] before
+// Poll consumes the frame.
+//
+// Concurrency: invoker-only. Same goroutine as [LogAdapter.Poll].
+type newLeadershipTermEventSink interface {
+	handleNewLeadershipTermEvent(fields codecs.NewLeadershipTermEventFields) bool
+}
+
 // LogAdapter polls a cluster log Image under a stream-position commit bound.
 //
 // Concurrency: invoker-only. One goroutine owns Poll / SetImage (Image contract).
@@ -73,6 +81,7 @@ type LogAdapter struct {
 	sessionSink   sessionEventSink
 	timerSink     timerEventSink
 	actionSink    clusterActionSink
+	termSink      newLeadershipTermEventSink
 	// assembler reassembles BEGIN, middle, and END trains before handleFragment.
 	assembler *aeron.ControlledFragmentAssembler
 	// assemblerHandler is the Handler() method value cached at construction.
@@ -161,6 +170,10 @@ func (a *LogAdapter) setClusterActionSink(sink clusterActionSink) {
 	a.actionSink = sink
 }
 
+func (a *LogAdapter) setNewLeadershipTermEventSink(sink newLeadershipTermEventSink) {
+	a.termSink = sink
+}
+
 // Position returns image.Position when bound, else cached logPosition.
 //
 // Nil receiver returns 0.
@@ -229,6 +242,9 @@ func (a *LogAdapter) Poll(boundPosition int64) int {
 // Behaviour:
 //   - A dispatched ClusterActionRequest returns BREAK. The poll consumes that
 //     frame, then ends the batch.
+//   - A dispatched NewLeadershipTermEvent returns ABORT when
+//     [newLeadershipTermEventSink] returns true. The poll does not consume
+//     that frame.
 //   - Every other frame returns CONTINUE. The frame is already committed, so
 //     a bad field must not stall the follower.
 //
@@ -242,8 +258,10 @@ func (a *LogAdapter) handleFragment(
 	sink := a.sessionSink
 	timerSink := a.timerSink
 	actionSink := a.actionSink
+	termSink := a.termSink
 	handler := a.handler
-	noTarget := sink == nil && timerSink == nil && actionSink == nil && handler == nil
+	noTarget := sink == nil && timerSink == nil && actionSink == nil &&
+		termSink == nil && handler == nil
 	if header == nil || noTarget {
 		return aeron.ControlledContinue
 	}
@@ -299,10 +317,17 @@ func (a *LogAdapter) handleFragment(
 			handler.SessionMessage(fields.ClusterSessionID, fields.Timestamp)
 		}
 	case clusterwire.NewLeadershipTermEventSbeTemplateID:
-		if handler == nil {
+		if termSink == nil && handler == nil {
 			return aeron.ControlledContinue
 		}
-		if fields, decoded := codecs.NewLeadershipTermEventFieldsFromLayout(frag, layout); decoded {
+		fields, decoded := codecs.NewLeadershipTermEventFieldsFromLayout(frag, layout)
+		if !decoded {
+			return aeron.ControlledContinue
+		}
+		if termSink != nil && termSink.handleNewLeadershipTermEvent(fields) {
+			return aeron.ControlledAbort
+		}
+		if handler != nil {
 			handler.NewLeadershipTermEvent(
 				fields.LeadershipTermID,
 				fields.LogPosition,

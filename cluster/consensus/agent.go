@@ -1458,17 +1458,17 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 // Concurrency: invoker-only (no concurrent [Agent.DoWork] during wire).
 func (a *Agent) SetLogPublisher(p *LogPublisher) { a.logPublisher = p }
 
+func (a *Agent) handleNewLeadershipTermEvent(fields codecs.NewLeadershipTermEventFields) bool {
+	if a.election == nil {
+		return false
+	}
+	return a.election.HandleReplayNewLeadershipTermEvent(fields) != nil
+}
+
 // SetLogAdapter wires or clears the [LogAdapter] used for follower log poll,
 // catchup and election replay.
 //
-// Behaviour:
-//   - A non-nil adapter receives this agent as its session event sink, its
-//     timer event sink and its cluster action sink. Committed
-//     SessionOpenEvent and SessionCloseEvent frames then update the registry.
-//     TimerEvent frames go to [Agent.handleTimerEvent]. Committed
-//     ClusterActionRequest frames may queue a snapshot wait.
-//   - A nil adapter clears the field only. The previous adapter keeps every
-//     sink.
+// A nil adapter clears the field only. The previous adapter keeps every sink.
 //
 // Concurrency: invoker-only. Must not race with [Agent.DoWork].
 func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
@@ -1477,6 +1477,7 @@ func (a *Agent) SetLogAdapter(adapter *LogAdapter) {
 		adapter.SetSessionEventSink(a)
 		adapter.setTimerEventSink(a)
 		adapter.setClusterActionSink(a)
+		adapter.setNewLeadershipTermEventSink(a)
 	}
 }
 

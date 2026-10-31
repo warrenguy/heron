@@ -600,16 +600,7 @@ func TestLogAdapter_SessionMessage_handler(t *testing.T) {
 func TestLogAdapter_NLT_handler(t *testing.T) {
 	a, image, spy := boundLogAdapterWithHandler(t)
 
-	fields := codecs.NewLeadershipTermEventFields{
-		LeadershipTermID:    7,
-		LogPosition:         128,
-		Timestamp:           999,
-		TermBaseLogPosition: 64,
-		LeaderMemberID:      1,
-		LogSessionID:        3,
-		TimeUnit:            clusterwire.ClusterTimeUnit_NANOS,
-		AppVersion:          42,
-	}
+	fields := sampleLogAdapterNLTFields()
 	writeAndPollOne(t, a, image, encodeLogAdapterNLTPayload(t, fields))
 
 	require.Equal(t, 0, spy.sessionMessages)
@@ -917,6 +908,19 @@ func sampleLogAdapterSessionCloseFields() codecs.SessionCloseEventFields {
 	}
 }
 
+func sampleLogAdapterNLTFields() codecs.NewLeadershipTermEventFields {
+	return codecs.NewLeadershipTermEventFields{
+		LeadershipTermID:    7,
+		LogPosition:         128,
+		Timestamp:           999,
+		TermBaseLogPosition: 64,
+		LeaderMemberID:      1,
+		LogSessionID:        3,
+		TimeUnit:            clusterwire.ClusterTimeUnit_NANOS,
+		AppVersion:          42,
+	}
+}
+
 func encodeLogAdapterSessionOpenPayload(
 	tb testing.TB,
 	fields codecs.SessionOpenEventFields,
@@ -1184,6 +1188,85 @@ func TestLogAdapter_ClusterAction_reachesSink(t *testing.T) {
 	}
 }
 
+type scriptedTermSink struct {
+	abortFirst bool
+	fields     []codecs.NewLeadershipTermEventFields
+}
+
+func (s *scriptedTermSink) handleNewLeadershipTermEvent(
+	fields codecs.NewLeadershipTermEventFields,
+) bool {
+	s.fields = append(s.fields, fields)
+	return s.abortFirst && len(s.fields) == 1
+}
+
+func TestLogAdapter_NewLeadershipTermEvent_reachesSink(t *testing.T) {
+	fields := sampleLogAdapterNLTFields()
+	payload := encodeLogAdapterNLTPayload(t, fields)
+	tests := []struct {
+		name string
+		// stopAt is the image position after an abort:
+		//   - 0 for one unfragmented frame.
+		//   - The END-frame start for a fragment train.
+		write func(t *testing.T, image *aeron.Image) (stopAt, eventEnd int64)
+	}{
+		{
+			name: "unfragmented",
+			write: func(t *testing.T, image *aeron.Image) (int64, int64) {
+				writeLogAdapterUnfragmentedFrame(t, image, 0, payload)
+				return 0, int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+			},
+		},
+		{
+			name: "fragment_train",
+			write: func(t *testing.T, image *aeron.Image) (int64, int64) {
+				offsets, end := writeLogAdapterFragmentTrain(
+					t, image, 0, payload, len(payload)/2+1,
+				)
+				require.Greater(t, len(offsets), 1)
+				return int64(offsets[len(offsets)-1]), end
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("continue", func(t *testing.T) {
+				a, image, handler := boundLogAdapterWithHandler(t)
+				sink := &scriptedTermSink{}
+				a.setNewLeadershipTermEventSink(sink)
+				_, eventEnd := tt.write(t, image)
+				messageEnd := writeSessionMessageFrame(t, image, int(eventEnd), 9)
+
+				require.Positive(t, a.Poll(messageEnd+32))
+				require.Equal(t, messageEnd, a.Position())
+				require.Equal(t, []codecs.NewLeadershipTermEventFields{fields}, sink.fields)
+				require.Equal(t, 1, handler.nltEvents)
+				require.Equal(t, 1, handler.sessionMessages)
+			})
+
+			t.Run("abort", func(t *testing.T) {
+				a, image, handler := boundLogAdapterWithHandler(t)
+				sink := &scriptedTermSink{abortFirst: true}
+				a.setNewLeadershipTermEventSink(sink)
+				stopAt, eventEnd := tt.write(t, image)
+				messageEnd := writeSessionMessageFrame(t, image, int(eventEnd), 9)
+
+				// The fragment count may be zero.
+				a.Poll(messageEnd + 32)
+				require.Equal(t, stopAt, a.Position())
+				require.Equal(t, []codecs.NewLeadershipTermEventFields{fields}, sink.fields)
+				requireHandlerIdle(t, handler)
+
+				require.Positive(t, a.Poll(messageEnd+32))
+				require.Equal(t, messageEnd, a.Position())
+				require.Equal(t, []codecs.NewLeadershipTermEventFields{fields, fields}, sink.fields)
+				require.Equal(t, 1, handler.nltEvents)
+				require.Equal(t, 1, handler.sessionMessages)
+			})
+		})
+	}
+}
+
 func TestLogAdapter_SessionClose_reachesSink(t *testing.T) {
 	a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
 
@@ -1220,6 +1303,7 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 		// thenMessage adds a session message frame after the payload. One Poll
 		// must consume both frames.
 		thenMessage bool
+		wantNLT     int
 	}{
 		{
 			name: "open",
@@ -1248,6 +1332,15 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 			withSessionSinkAndHandler: true,
 			thenMessage:               true,
 		},
+		{
+			name: "term_event_nil_term_sink",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterNLTPayload(tb, sampleLogAdapterNLTFields())
+			},
+			withSessionSinkAndHandler: true,
+			thenMessage:               true,
+			wantNLT:                   1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1273,6 +1366,7 @@ func TestLogAdapter_nilSinksAndHandler_eventsSafe(t *testing.T) {
 				require.Equal(t, messageEnd, a.Position())
 				requireSessionSinkIdle(t, sessionSink)
 				require.Equal(t, 1, handler.sessionMessages)
+				require.Equal(t, tt.wantNLT, handler.nltEvents)
 				return
 			}
 			require.NotPanics(t, func() {
@@ -1383,16 +1477,31 @@ func TestLogAdapter_undecodableEvents_skipped(t *testing.T) {
 				return p
 			},
 		},
+		{
+			name: "term_event_header_only",
+			payload: func(tb testing.TB) []byte {
+				return encodeLogAdapterMessageHeader(
+					tb,
+					clusterwire.NewLeadershipTermEventSbeBlockLength,
+					clusterwire.NewLeadershipTermEventSbeTemplateID,
+					clusterwire.MessageHeaderSbeSchemaID,
+					clusterwire.NewLeadershipTermEventSbeSchemaVersion,
+				)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, image, sessionSink, timerSink, handler := boundLogAdapterWithTimerSink(t)
 			actionSink := &logAdapterActionSinkSpy{}
 			a.setClusterActionSink(actionSink)
+			termSink := &scriptedTermSink{}
+			a.setNewLeadershipTermEventSink(termSink)
 			writeAndPollOne(t, a, image, tt.payload(t))
 			requireSessionSinkIdle(t, sessionSink)
 			require.Equal(t, 0, timerSink.events)
 			require.Equal(t, 0, actionSink.actions)
+			require.Empty(t, termSink.fields)
 			requireHandlerIdle(t, handler)
 		})
 	}
@@ -1415,16 +1524,7 @@ func TestLogAdapter_templates1And24_stillReachHandler(t *testing.T) {
 
 	t.Run("nlt", func(t *testing.T) {
 		a, image, sink, handler := boundLogAdapterWithSinkAndHandler(t)
-		nlt := codecs.NewLeadershipTermEventFields{
-			LeadershipTermID:    7,
-			LogPosition:         128,
-			Timestamp:           999,
-			TermBaseLogPosition: 64,
-			LeaderMemberID:      1,
-			LogSessionID:        3,
-			TimeUnit:            clusterwire.ClusterTimeUnit_NANOS,
-			AppVersion:          42,
-		}
+		nlt := sampleLogAdapterNLTFields()
 		writeAndPollOne(t, a, image, encodeLogAdapterNLTPayload(t, nlt))
 		require.Equal(t, 1, handler.nltEvents)
 		require.Equal(t, nlt.LeadershipTermID, handler.lastLeadershipTermID)
