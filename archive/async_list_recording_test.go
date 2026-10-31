@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -15,59 +14,26 @@ import (
 
 const asyncListRecordingTestRecordingID int64 = 42
 
-type asyncListRecordingFixture struct {
-	client           *Client
-	pub              *stubControlPublication
-	controlPoller    *ControlResponsePoller
-	descriptorPoller *RecordingDescriptorPoller
-	handle           *AsyncListRecording
+var asyncListRecordingKind = asyncHandleKind[*AsyncListRecording]{
+	build: func(client *Client) *AsyncListRecording {
+		return client.NewAsyncListRecording(asyncListRecordingTestRecordingID)
+	},
+	correlationID: func(handle *AsyncListRecording) int64 {
+		return handle.correlationID
+	},
+	relevantID:      0,
+	descriptorArmed: true,
+	requireOffered:  requireOfferedListRecording,
 }
 
-func newAsyncListRecordingFixture(t *testing.T) *asyncListRecordingFixture {
+func newAsyncListRecordingFixture(t *testing.T) *asyncHandleFixture[*AsyncListRecording] {
 	t.Helper()
-
-	pub, proxy := newTestProxy(Config{})
-	controlPoller := NewControlResponsePoller(nil, 1)
-	descriptorPoller := NewRecordingDescriptorPoller()
-	f := &asyncListRecordingFixture{
-		client: &Client{
-			controlSessionID: controlResponseTestControlSessionID,
-			proxy:            proxy,
-			controlPoller:    controlPoller,
-			descriptorPoller: descriptorPoller,
-			aeronClient:      aeron.NewAsyncConnectTestHarness(t).Client,
-		},
-		pub:              pub,
-		controlPoller:    controlPoller,
-		descriptorPoller: descriptorPoller,
-	}
-	f.handle = f.newHandle(t)
-	return f
+	return newAsyncHandleFixture(t, asyncListRecordingKind)
 }
 
-func (f *asyncListRecordingFixture) newHandle(t *testing.T) *AsyncListRecording {
-	t.Helper()
-
-	prior := f.client.aeronClient.NextCorrelationID()
-	handle := f.client.NewAsyncListRecording(asyncListRecordingTestRecordingID)
-	require.Equal(t, prior+1, handle.correlationID)
-	require.Equal(t, handle.correlationID, f.controlPoller.awaitCorrelationID)
-	require.Equal(t, handle.correlationID, f.descriptorPoller.awaitCorrelationID)
-	return handle
-}
-
-// deliver routes wire through the session poll targets, as Client.Poll does.
-func (f *asyncListRecordingFixture) deliver(t *testing.T, wire []byte) {
-	t.Helper()
-
-	invokeHandleControlFragment(t, f.client.sessionPollTargets(nil), wire)
-}
-
-func (f *asyncListRecordingFixture) descriptorFor(
-	handle *AsyncListRecording,
-) codecs.RecordingDescriptorFields {
+func asyncListDescriptorFor(handle *AsyncListRecording) codecs.RecordingDescriptorFields {
 	return codecs.RecordingDescriptorFields{
-		ControlSessionID: f.client.controlSessionID,
+		ControlSessionID: handle.client.controlSessionID,
 		CorrelationID:    handle.correlationID,
 		RecordingID:      asyncListRecordingTestRecordingID,
 		StartPosition:    4096,
@@ -78,26 +44,33 @@ func (f *asyncListRecordingFixture) descriptorFor(
 	}
 }
 
-func (f *asyncListRecordingFixture) deliverDescriptor(
+func deliverAsyncListDescriptor(
 	t *testing.T,
-	fields codecs.RecordingDescriptorFields,
+	f *asyncHandleFixture[*AsyncListRecording],
+	handle *AsyncListRecording,
+) codecs.RecordingDescriptorFields {
+	t.Helper()
+
+	fields := asyncListDescriptorFor(handle)
+	f.deliver(t, encodeRecordingDescriptorWire(t, fields))
+	return fields
+}
+
+func requireOfferedListRecording(
+	t *testing.T,
+	client *Client,
+	handle *AsyncListRecording,
+	wire []byte,
 ) {
 	t.Helper()
 
-	f.deliver(t, encodeRecordingDescriptorWire(t, fields))
-}
-
-func (f *asyncListRecordingFixture) requireOfferedListRecording(t *testing.T) {
-	t.Helper()
-
-	wire := f.pub.lastOffer()
 	fields := requireProxyWireFields[codecs.ListRecordingRequestFields](
 		t,
 		wire,
 		archivewire.ListRecordingRequestSbeTemplateID,
 	)
-	require.Equal(t, f.client.controlSessionID, fields.ControlSessionID)
-	require.Equal(t, f.handle.correlationID, fields.CorrelationID)
+	require.Equal(t, client.controlSessionID, fields.ControlSessionID)
+	require.Equal(t, handle.correlationID, fields.CorrelationID)
 	require.Equal(t, asyncListRecordingTestRecordingID, fields.RecordingID)
 
 	expectedLen, lenOK := codecs.ArchiveWireMessageLen(
@@ -122,104 +95,11 @@ func requirePollDescriptor(
 	require.Equal(t, wantDescriptor, descriptor)
 }
 
-func (f *asyncListRecordingFixture) responseFor(
-	handle *AsyncListRecording,
-	code archivewire.ControlResponseCode,
-	relevantID int64,
-	errorMessage []byte,
-) codecs.ControlResponseFields {
-	return codecs.ControlResponseFields{
-		ControlSessionID: f.client.controlSessionID,
-		CorrelationID:    handle.correlationID,
-		RelevantID:       relevantID,
-		Code:             code,
-		Version:          520,
-		ErrorMessage:     errorMessage,
-	}
-}
-
-func (f *asyncListRecordingFixture) okFor(handle *AsyncListRecording) codecs.ControlResponseFields {
-	return f.responseFor(handle, archivewire.ControlResponseCode_OK, 0, nil)
-}
-
-func (f *asyncListRecordingFixture) deliverResponse(
-	t *testing.T,
-	fields codecs.ControlResponseFields,
-) {
-	t.Helper()
-
-	f.deliver(t, encodeControlResponseWire(t, fields))
-}
-
-func TestAsyncListRecording_TryOffer_wire(t *testing.T) {
-	f := newAsyncListRecordingFixture(t)
-
-	offered, err := f.handle.TryOffer()
-	require.NoError(t, err)
-	require.True(t, offered, "accepted offer must report true")
-	require.Len(t, f.pub.offered, 1)
-	f.requireOfferedListRecording(t)
-}
-
-func TestAsyncListRecording_TryOffer_retriableThenAccepted(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "back_pressured", status: aeron.BackPressured},
-		{name: "admin_action", status: aeron.AdminAction},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncListRecordingFixture(t)
-			f.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.NoError(t, err, "retriable offer must not be terminal")
-			require.False(t, offered, "retriable offer must not report accepted")
-			require.Len(t, f.pub.offered, 1)
-			f.requireOfferedListRecording(t)
-
-			f.pub.offerResult = 0
-			offered, err = f.handle.TryOffer()
-			require.NoError(t, err)
-			require.True(t, offered, "accepted offer must report true")
-			require.Len(t, f.pub.offered, 2)
-			f.requireOfferedListRecording(t)
-		})
-	}
-}
-
-func TestAsyncListRecording_TryOffer_terminal(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "closed", status: aeron.Closed},
-		{name: "max_position_exceeded", status: aeron.MaxPositionExceeded},
-		{name: "not_connected", status: aeron.NotConnected},
-		{name: "unsupported_message_length", status: aeron.UnsupportedMessageLength},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncListRecordingFixture(t)
-			f.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.False(t, offered, "terminal offer must not report accepted")
-			requireControlTerminal(t, err, tc.status)
-			require.Len(t, f.pub.offered, 1)
-			f.requireOfferedListRecording(t)
-		})
-	}
-}
-
 func TestAsyncListRecording_PollDescriptor_matchingDescriptorCompletes(t *testing.T) {
 	f := newAsyncListRecordingFixture(t)
 	requirePollDescriptor(t, f.handle, false, codecs.RecordingDescriptorFields{}, nil)
 
-	want := f.descriptorFor(f.handle)
-	f.deliverDescriptor(t, want)
+	want := deliverAsyncListDescriptor(t, f, f.handle)
 
 	requirePollDescriptor(t, f.handle, true, want, nil)
 	require.False(t, f.controlPoller.IsPollComplete(), "descriptor must not latch the control poller")
@@ -228,30 +108,24 @@ func TestAsyncListRecording_PollDescriptor_matchingDescriptorCompletes(t *testin
 func TestAsyncListRecording_PollDescriptor_OKThenDescriptor(t *testing.T) {
 	f := newAsyncListRecordingFixture(t)
 
-	// Phase: PollDescriptor consumes a matching OK and keeps waiting.
-	f.deliverResponse(t, f.okFor(f.handle))
-	require.True(t, f.controlPoller.IsPollComplete())
+	f.latchResponse(t, f.okFor(f.handle))
 	requirePollDescriptor(t, f.handle, false, codecs.RecordingDescriptorFields{}, nil)
 	require.False(t, f.controlPoller.IsPollComplete(), "matching OK must be consumed")
 
-	// Phase: the descriptor completes the handle.
-	want := f.descriptorFor(f.handle)
-	f.deliverDescriptor(t, want)
+	want := deliverAsyncListDescriptor(t, f, f.handle)
 	requirePollDescriptor(t, f.handle, true, want, nil)
 	require.False(t, f.controlPoller.IsPollComplete())
 }
 
 func TestAsyncListRecording_PollDescriptor_descriptorWinsOverError(t *testing.T) {
 	f := newAsyncListRecordingFixture(t)
-	want := f.descriptorFor(f.handle)
-	f.deliverDescriptor(t, want)
-	f.deliverResponse(t, f.responseFor(
+	want := deliverAsyncListDescriptor(t, f, f.handle)
+	f.latchResponse(t, f.responseFor(
 		f.handle,
 		archivewire.ControlResponseCode_ERROR,
 		0,
 		[]byte("late"),
 	))
-	require.True(t, f.controlPoller.IsPollComplete())
 
 	requirePollDescriptor(t, f.handle, true, want, nil)
 	require.False(t, f.controlPoller.IsPollComplete(), "matching terminal must clear on completion")
@@ -324,9 +198,9 @@ func TestAsyncListRecording_PollDescriptor_descriptorModeError(t *testing.T) {
 func TestAsyncListRecording_PollDescriptor_foreignLeavesPending(t *testing.T) {
 	f := newAsyncListRecordingFixture(t)
 
-	foreignDescriptor := f.descriptorFor(f.handle)
+	foreignDescriptor := asyncListDescriptorFor(f.handle)
 	foreignDescriptor.CorrelationID++
-	f.deliverDescriptor(t, foreignDescriptor)
+	f.deliver(t, encodeRecordingDescriptorWire(t, foreignDescriptor))
 	require.False(t, f.descriptorPoller.IsPollComplete(), "armed filter must drop other correlation")
 
 	foreignResponse := f.responseFor(
@@ -351,14 +225,12 @@ func TestAsyncListRecording_PollDescriptor_discardsStaleTerminal(t *testing.T) {
 		[]byte("stale"),
 	)
 	stale.ControlSessionID++
-	f.deliverResponse(t, stale)
-	require.True(t, f.controlPoller.IsPollComplete())
+	f.latchResponse(t, stale)
 
 	requirePollDescriptor(t, f.handle, false, codecs.RecordingDescriptorFields{}, nil)
 	require.False(t, f.controlPoller.IsPollComplete(), "stale terminal must be discarded")
 
-	want := f.descriptorFor(f.handle)
-	f.deliverDescriptor(t, want)
+	want := deliverAsyncListDescriptor(t, f, f.handle)
 	requirePollDescriptor(t, f.handle, true, want, nil)
 }
 
@@ -368,7 +240,7 @@ func TestAsyncListRecording_Close_disarmsBothFilters(t *testing.T) {
 	require.Equal(t, int64(0), f.controlPoller.awaitCorrelationID)
 	require.Equal(t, conductor.NullCorrelationID, f.descriptorPoller.awaitCorrelationID)
 
-	f.deliverDescriptor(t, f.descriptorFor(f.handle))
+	deliverAsyncListDescriptor(t, f, f.handle)
 	require.False(
 		t,
 		f.descriptorPoller.IsPollComplete(),
@@ -378,15 +250,14 @@ func TestAsyncListRecording_Close_disarmsBothFilters(t *testing.T) {
 
 func TestAsyncListRecording_Close_clearsLatchedCaptures(t *testing.T) {
 	f := newAsyncListRecordingFixture(t)
-	f.deliverDescriptor(t, f.descriptorFor(f.handle))
-	f.deliverResponse(t, f.responseFor(
+	deliverAsyncListDescriptor(t, f, f.handle)
+	f.latchResponse(t, f.responseFor(
 		f.handle,
 		archivewire.ControlResponseCode_ERROR,
 		0,
 		[]byte("boom"),
 	))
 	require.True(t, f.descriptorPoller.IsPollComplete())
-	require.True(t, f.controlPoller.IsPollComplete())
 
 	f.handle.Close()
 	require.False(t, f.descriptorPoller.IsPollComplete(), "Close must clear the descriptor capture")
@@ -402,8 +273,7 @@ func TestAsyncListRecording_Close_keepsSuccessorFilters(t *testing.T) {
 	first := f.handle
 	second := f.newHandle(t)
 	require.NotEqual(t, first.correlationID, second.correlationID)
-	want := f.descriptorFor(second)
-	f.deliverDescriptor(t, want)
+	want := deliverAsyncListDescriptor(t, f, second)
 
 	first.Close()
 	require.Equal(
@@ -425,8 +295,7 @@ func TestAsyncListRecording_PollDescriptor_openPriorIgnoresSuccessorDescriptor(t
 	f := newAsyncListRecordingFixture(t)
 	first := f.handle
 	second := f.newHandle(t)
-	want := f.descriptorFor(second)
-	f.deliverDescriptor(t, want)
+	want := deliverAsyncListDescriptor(t, f, second)
 	require.True(t, f.descriptorPoller.IsPollComplete())
 
 	requirePollDescriptor(t, first, false, codecs.RecordingDescriptorFields{}, nil)
@@ -449,7 +318,6 @@ func TestAsyncListRecording_closedDoesNotOfferOrMatch(t *testing.T) {
 	require.False(t, offered, "closed TryOffer must not accept")
 	require.Empty(t, f.pub.offered, "closed TryOffer must not offer")
 
-	// Phase: the closed handle ignores a successor's captures.
 	successor := f.newHandle(t)
 	f.deliverResponse(t, f.responseFor(
 		successor,
@@ -457,7 +325,7 @@ func TestAsyncListRecording_closedDoesNotOfferOrMatch(t *testing.T) {
 		0,
 		[]byte("boom"),
 	))
-	f.deliverDescriptor(t, f.descriptorFor(successor))
+	deliverAsyncListDescriptor(t, f, successor)
 
 	requirePollDescriptor(t, f.handle, false, codecs.RecordingDescriptorFields{}, nil)
 	require.True(
