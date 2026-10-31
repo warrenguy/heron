@@ -86,6 +86,9 @@ type ConsensusModule struct {
 	// the wait pops. Close closes the counter too.
 	recoveryState *aeron.Counter
 
+	// moduleState is the consensus module state counter (type 200).
+	moduleState *aeron.Counter
+
 	streams   *LogStreams
 	host      *election.HostAdapter
 	election  *election.Election
@@ -137,6 +140,7 @@ type ConsensusModule struct {
 // those awaits.
 //
 // Open blocks on:
+//   - the module state counter add, bounded by the transport DriverTimeout
 //   - the archive control connect, bounded by archive.DefaultConnectTimeout
 //   - on a restart, the term recording stop and its catalog wait. The wait
 //     ends ControlResponseTimeout after the stop reply. The wait checks that
@@ -160,6 +164,7 @@ type ConsensusModule struct {
 // Returns an error when:
 //   - Config fails Validate
 //   - the transport client cannot connect
+//   - the module state counter add fails
 //   - the archive control client cannot connect
 //   - recovery fails
 //   - the module snapshot load fails
@@ -207,6 +212,12 @@ func OpenConsensusModule(
 		module.client = client
 		module.ownsClient = true
 	}
+
+	stateCounter, err := addModuleStateCounter(module.client)
+	if err != nil {
+		return nil, err
+	}
+	module.moduleState = stateCounter
 
 	archiveClient, err := archive.Connect(ctx, archiveConnectConfig(cfg, module.client))
 	if err != nil {
@@ -538,6 +549,11 @@ func OpenConsensusModule(
 		}
 	}
 
+	module.agent.SetModuleStateCounter(moduleStateCounter{
+		counterID: module.moduleState.CounterID(),
+		reader:    counters,
+	})
+
 	succeeded = true
 	return module, nil
 }
@@ -617,24 +633,21 @@ func (m *ConsensusModule) Close() error {
 
 	var err error
 
-	// Clear agent bindings before closing the handles they reference. Positions
-	// and egress hold the host adapter and its shared publisher. Publications
-	// close next. Catchup control and log publication reseed clear here before
-	// their module-owned handles tear down. Streams Close clears the log
-	// publisher, adapter, append source, and join source. Clear the election
-	// factory before the runner so a post-Close duty tick cannot re-install
-	// against a torn-down recovery.
+	// Clear each agent binding before closing the handle it references. A
+	// late DoWork call must not install an election, accept a connect, or add
+	// a publication.
 	//
-	// Close the module snapshot take first, before the log recording stop and
-	// the client closes. Clear the snapshot seams next, so a late DoWork that
-	// pops a snapshot wait fails its take instead of adding a publication.
-	//
-	// Unbind client ingress before clearing the election so a late DoWork cannot
-	// accept connects when election is nil and role is still leader. Tear session
-	// egress publications after no new accepts can queue. Clear the adder before
-	// the transport client closes.
+	// Order inside the block:
+	//   - MarkClosed first. CLOSED is terminal, so the take cancel cannot
+	//     store ACTIVE.
+	//   - SetClientIngress(nil) before SetElection(nil). A leader with no
+	//     election accepts connects.
+	//   - CloseSessionEgress after SetClientIngress(nil), so a new accept
+	//     cannot queue an egress publication.
 	if m.agent != nil {
+		m.agent.MarkClosed()
 		m.agent.CloseSnapshotTake()
+		m.agent.SetModuleStateCounter(nil)
 		m.agent.SetSnapshotRecordingControl(nil)
 		m.agent.SetSnapshotPublicationAdder(nil)
 		m.agent.SetSnapshotRecordingLog(nil, recordinglog.FileSyncNone)
@@ -728,6 +741,13 @@ func (m *ConsensusModule) Close() error {
 		err = errors.Join(err, m.archiveClient.Close())
 		m.archiveClient = nil
 	}
+
+	// Close the module state counter last before the transport client, in
+	// reverse open order. The counter reads CLOSED for the whole teardown.
+	if m.moduleState != nil {
+		err = errors.Join(err, m.moduleState.Close())
+		m.moduleState = nil
+	}
 	if m.client != nil && m.ownsClient {
 		err = errors.Join(err, m.client.Close())
 	}
@@ -820,6 +840,10 @@ func (m *ConsensusModule) NanoClock() func() int64 { return m.nanoClock }
 
 // Role returns the current cluster node role.
 func (m *ConsensusModule) Role() consensus.Role { return m.agent.Role() }
+
+func (m *ConsensusModule) ModuleState() consensus.ModuleState {
+	return m.agent.ModuleState()
+}
 
 // IsLeader reports whether this member currently holds leadership.
 func (m *ConsensusModule) IsLeader() bool {

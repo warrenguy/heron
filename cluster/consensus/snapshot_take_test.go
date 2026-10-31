@@ -920,7 +920,7 @@ func TestSnapshotTake_leaderHold(t *testing.T) {
 	h := newHeldLeader(t, startNs)
 	h.archive.stopNever = true
 	position := h.request(t, startNs)
-	require.True(t, h.agent.isLeaderSnapshotPending())
+	require.Equal(t, ModuleStateSnapshot, h.agent.ModuleState())
 
 	// Phase 1: held ticks before and after the pop.
 	nowNs := startNs
@@ -947,7 +947,7 @@ func TestSnapshotTake_leaderHold(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, result.Err)
 	require.Equal(t, fakeSnapshotFirstRecordingID, result.RecordingID)
-	require.False(t, h.agent.isLeaderSnapshotPending())
+	require.Equal(t, ModuleStateActive, h.agent.ModuleState())
 	h.requireSessionAndTimerMoved(t)
 
 	// Phase 3: the ingress poll runs before the take step, so the frame
@@ -1008,7 +1008,7 @@ func TestSnapshotTake_markedFailureWithWaitLiftsHold(t *testing.T) {
 	h.ack(t, position, 5, 77, 0)
 	h.agent.DoWork(startNs + 2)
 	require.ErrorIs(t, h.agent.ServiceAckFailure(), ErrServiceAckOutOfSequence)
-	require.False(t, h.agent.isLeaderSnapshotPending())
+	require.Equal(t, ModuleStateActive, h.agent.ModuleState())
 	h.requireSessionAndTimerMoved(t)
 
 	// Phase 3: the ingress frame moves one tick later. No take builds.
@@ -1117,11 +1117,11 @@ func TestSnapshotTake_holdLiftKeepsOpenSessions(t *testing.T) {
 			}
 			for i := range tt.heldTicks {
 				f.agent.DoWork(startNs + 1 + int64(i))
-				require.True(t, f.agent.isLeaderSnapshotPending())
+				require.Equal(t, ModuleStateSnapshot, f.agent.ModuleState())
 			}
 
 			tt.lift(t, f, position)
-			require.False(t, f.agent.isLeaderSnapshotPending())
+			require.Equal(t, ModuleStateActive, f.agent.ModuleState())
 			session, ok := f.agent.sessions.sessionByID(1)
 			require.True(t, ok)
 			require.Equal(t, sessionOpen, session.state)
@@ -1150,11 +1150,11 @@ func TestSnapshotTake_markedFailureWhileWriting(t *testing.T) {
 	f.ack(t, position, 5, 77, 0)
 	f.agent.DoWork(103)
 	require.Error(t, f.agent.ServiceAckFailure())
-	require.True(t, f.agent.isLeaderSnapshotPending())
+	require.Equal(t, ModuleStateSnapshot, f.agent.ModuleState())
 
 	result, _ := f.tickUntilResolved(t, 104, 1)
 	require.NoError(t, result.Err)
-	require.False(t, f.agent.isLeaderSnapshotPending())
+	require.Equal(t, ModuleStateActive, f.agent.ModuleState())
 }
 
 func TestSnapshotTake_copyCut(t *testing.T) {

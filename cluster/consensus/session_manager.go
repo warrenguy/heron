@@ -682,20 +682,11 @@ func (a *Agent) acceptSessionConnect(
 	}
 }
 
-// sessionWork runs settled session duty. Event drain runs first. Queued
-// REDIRECT and ERROR events send before NewLeaderEvent.
+// sessionWork runs settled session duty. Queued REDIRECT and ERROR events
+// send before NewLeaderEvent. A held leader does not open, time out or close
+// sessions.
 //
-// Behaviour: the leader snapshot hold skips sessionPendingWork and
-// sessionCloseWork. While the hold is on, a session does not open, time out
-// or close. The pending session reclaim in egressEventWork still runs. See
-// [Agent.isLeaderSnapshotPending].
-//
-// Concurrency: invoker-only. Callers must invoke sessionWork from the
-// [Agent.DoWork] election-nil branch. sessionPendingWork re-checks election
-// and role. Leader-only steps run only for the leader.
-//
-// Returns: the sum of work units from each step. Returns 0 when an election is
-// live.
+// Concurrency: invoker-only.
 func (a *Agent) sessionWork(nowNs int64) int {
 	if a.election != nil {
 		return 0
@@ -705,7 +696,7 @@ func (a *Agent) sessionWork(nowNs int64) int {
 		return work
 	}
 	work += a.newLeaderEventWork()
-	if !a.isLeaderSnapshotPending() {
+	if !a.isLeaderHeld() {
 		work += a.sessionPendingWork(nowNs)
 		work += a.sessionCloseWork(nowNs)
 	}
@@ -714,8 +705,8 @@ func (a *Agent) sessionWork(nowNs int64) int {
 }
 
 // refreshSessionActivity sets lastActivityNs to nowNs on each open or closing
-// session. The leader snapshot hold calls it in place of the client ingress
-// poll, so the session timeout counts from the end of the hold.
+// session. A leader in SNAPSHOT calls it in place of the client ingress poll,
+// so the session timeout counts from the end of the snapshot.
 func (a *Agent) refreshSessionActivity(nowNs int64) {
 	for _, s := range a.sessions.all {
 		if s.isOpenOrClosing() {

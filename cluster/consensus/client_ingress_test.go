@@ -596,3 +596,34 @@ func TestDoWork_electionHoldsClientIngress(t *testing.T) {
 		})
 	}
 }
+
+func TestPollClientIngress_leaderHeld(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range heldModuleStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			a := NewAgent(AgentConfig{Role: RoleLeader})
+			ingress := attachQueueClientIngress(a)
+			ingress.Enqueue(encodeSessionConnectWire(t, validConnectFields(1)))
+			const openedNs int64 = 10
+			a.sessions.learnSessionOpen(codecs.SessionOpenEventFields{
+				ClusterSessionID: 1,
+				ResponseChannel:  []byte("aeron:ipc"),
+			}, 32, openedNs)
+			a.setModuleState(state, "test")
+
+			const nowNs int64 = 50
+			require.Equal(t, 0, a.pollClientIngress(nowNs))
+			require.Equal(t, 1, ingress.Len())
+			session, ok := a.sessions.sessionByID(1)
+			require.True(t, ok)
+			wantActivity := openedNs
+			if state == ModuleStateSnapshot {
+				wantActivity = nowNs
+			}
+			require.Equal(t, wantActivity, session.lastActivityNs)
+		})
+	}
+}

@@ -210,7 +210,7 @@ func (a *Agent) serviceControlWork() int {
 	head := a.serviceAckWaits[0]
 	ok, err := a.hasReachedServiceAcks(head)
 	if err != nil {
-		a.serviceAckFailure = err
+		a.markServiceAckFailure(err)
 		return 0
 	}
 	if !ok {
@@ -237,11 +237,11 @@ func (a *Agent) serviceControlWork() int {
 		a.serviceStartHandler = nil
 		startHandler()
 		if nullServiceID >= 0 {
-			a.serviceAckFailure = fmt.Errorf(
+			a.markServiceAckFailure(fmt.Errorf(
 				"%w: service %d acked NULL_VALUE",
 				ErrServiceStartFailed,
 				nullServiceID,
-			)
+			))
 		}
 	}
 	a.dropAbandonedSnapshotLeftovers(head)
@@ -468,10 +468,17 @@ func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
 	}) {
 		return
 	}
-	err := a.serviceAcks.afterOfferSequenceError()
-	if err != nil && a.serviceAckFailure == nil {
-		a.serviceAckFailure = err
+	if err := a.serviceAcks.afterOfferSequenceError(); err != nil {
+		a.markServiceAckFailure(err)
 	}
+}
+
+func (a *Agent) markServiceAckFailure(cause error) {
+	if a.serviceAckFailure != nil {
+		return
+	}
+	a.serviceAckFailure = cause
+	a.endSnapshotState(moduleStateReasonServiceAckFailure)
 }
 
 // handleServiceCloseSession marks one session closing with SERVICE_ACTION.

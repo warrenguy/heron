@@ -3,12 +3,14 @@
 package cluster_archive_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	archivecodecs "github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/cluster"
@@ -102,6 +104,7 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 
 	sc := serviceCluster{set: set}
 	leader := requireSingleLeader(t, set, "")
+	requireModuleStateCounterActive(t, leader, "after election")
 	_, resolved := leader.Agent().LastSnapshotTake()
 	require.False(t, resolved)
 
@@ -126,6 +129,7 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	first := requestModuleSnapshot(
 		t, sc, leader, transport, session, "first snapshot",
 	)
+	requireModuleStateCounterActive(t, leader, "after first snapshot")
 	require.Empty(t, first.ServiceRecordingIDs)
 	logRecordingID := leader.Agent().LocalLogRecordingID()
 	require.GreaterOrEqual(t, logRecordingID, int64(0), "log recording id:\n%s", sc.dump())
@@ -145,6 +149,7 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	second := requestModuleSnapshot(
 		t, sc, leader, transport, session, "second snapshot",
 	)
+	requireModuleStateCounterActive(t, leader, "after second snapshot")
 	require.GreaterOrEqual(t, second.RecordingID, int64(0), "second recording id:\n%s", sc.dump())
 	require.NotEqual(t, first.RecordingID, second.RecordingID, "second recording id:\n%s", sc.dump())
 	require.NotEqual(t, logRecordingID, second.RecordingID, "second recording id:\n%s", sc.dump())
@@ -196,6 +201,18 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 		require.True(t, found)
 	})
 	require.NoError(t, set.RestartMember(0))
+
+	// FindCounterOfType returns the first type 200 counter. Stop left one at
+	// CLOSED. Each failed Open left one at INIT, because Open stores no state
+	// before the snapshot load fails. Those counters hide the new ACTIVE
+	// counter until the driver frees them.
+	requireServiceAwaitTick(
+		t, sc,
+		"module state counter active",
+		durableWorkBound,
+		func() bool { return readModuleStateCounter(set.Module(0)).isActive() },
+		func() string { return readModuleStateCounter(set.Module(0)).String() },
+	)
 	restarted := set.Module(0)
 	require.Equal(t, second.LogPosition, restarted.CommitPosition())
 	require.Equal(t, 1, restarted.Agent().OpenSessionCount())
@@ -253,6 +270,61 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 	}
 	require.Equal(t, 1, opens, "session opens in [%d, %d)", second.LogPosition, appended)
 	require.Equal(t, 1, closes, "session closes in [%d, %d)", second.LogPosition, appended)
+}
+
+const moduleStateCounterLabel = "Consensus Module state - clusterId=0"
+
+type moduleStateCounterView struct {
+	found bool
+	key   [cnc.CounterMetadataMaxKeyLength]byte
+	label string
+	value int64
+}
+
+func readModuleStateCounter(member *cluster.ConsensusModule) moduleStateCounterView {
+	var view moduleStateCounterView
+	if member == nil || member.Client() == nil {
+		return view
+	}
+	reader, err := member.Client().CountersReader()
+	if err != nil {
+		return view
+	}
+	id, found := reader.FindCounterOfType(consensus.ClusterConsensusModuleStateCounterTypeID)
+	if !found {
+		return view
+	}
+	key, keyOK := reader.CounterKey(id)
+	label, labelOK := reader.CounterLabel(id)
+	value, err := reader.CounterValue(id)
+	if !keyOK || !labelOK || err != nil {
+		return view
+	}
+	return moduleStateCounterView{found: true, key: key, label: label, value: value}
+}
+
+func (v moduleStateCounterView) isActive() bool {
+	var wantKey [cnc.CounterMetadataMaxKeyLength]byte
+	return v.found &&
+		v.key == wantKey &&
+		v.label == moduleStateCounterLabel &&
+		v.value == int64(consensus.ModuleStateActive)
+}
+
+func (v moduleStateCounterView) String() string {
+	return fmt.Sprintf(
+		"module state counter found=%v key=%x label=%q value=%d",
+		v.found,
+		v.key[:4],
+		v.label,
+		v.value,
+	)
+}
+
+func requireModuleStateCounterActive(t *testing.T, member *cluster.ConsensusModule, label string) {
+	t.Helper()
+	view := readModuleStateCounter(member)
+	require.True(t, view.isActive(), "%s:\n%s", label, view)
 }
 
 func withRecordingLog(t *testing.T, dir string, fn func(*recordinglog.Log)) {

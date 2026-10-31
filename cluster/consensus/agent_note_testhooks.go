@@ -10,6 +10,8 @@ import "testing"
 // concurrently with Agent.DoWork.
 var agentDoWorkStepRecorder func(step string)
 
+var agentModuleStateChangeRecorder func(from, to ModuleState, reason string)
+
 // agentUnexpectedHigherTermRecorder is unsynchronized. Same invoker-only rule
 // as agentDoWorkStepRecorder.
 var agentUnexpectedHigherTermRecorder func(nowNs, term int64)
@@ -36,6 +38,21 @@ func SetUnexpectedHigherTermRecorderForTest(
 func noteDoWorkStep(step string) {
 	if agentDoWorkStepRecorder != nil {
 		agentDoWorkStepRecorder(step)
+	}
+}
+
+func SetModuleStateChangeRecorderForTest(
+	tb testing.TB,
+	recorder func(from, to ModuleState, reason string),
+) {
+	tb.Helper()
+	agentModuleStateChangeRecorder = recorder
+	tb.Cleanup(func() { agentModuleStateChangeRecorder = nil })
+}
+
+func noteModuleStateChange(from, to ModuleState, reason string) {
+	if agentModuleStateChangeRecorder != nil {
+		agentModuleStateChangeRecorder(from, to, reason)
 	}
 }
 
