@@ -125,6 +125,12 @@ func (r prepareClearRunner) DoWork(int64) int {
 
 func (prepareClearRunner) HandleConsensusMessage([]byte, int) bool { return false }
 
+func (prepareClearRunner) HandleReplayNewLeadershipTermEvent(
+	codecs.NewLeadershipTermEventFields,
+) error {
+	return nil
+}
+
 func TestPollServiceControl_nilIngress_zero(t *testing.T) {
 	t.Parallel()
 

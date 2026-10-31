@@ -372,6 +372,8 @@ type recordingElectionHost struct {
 	catchupPollResult int
 	catchupPollErr    error
 
+	catchupPollHook func(limitPosition, nowNs int64)
+
 	addLogPublicationErr error
 
 	addLogPublicationCalls            []int64
@@ -529,6 +531,9 @@ func (h *recordingElectionHost) CatchupPoll(limitPosition, nowNs int64) (int, er
 		limitPosition: limitPosition,
 		nowNs:         nowNs,
 	})
+	if h.catchupPollHook != nil {
+		h.catchupPollHook(limitPosition, nowNs)
+	}
 	return h.catchupPollResult, h.catchupPollErr
 }
 
@@ -564,14 +569,19 @@ func (h *recordingElectionHost) NewLogReplay(logPosition, appendPosition int64) 
 	return &spyLogReplay{position: appendPosition, done: true}
 }
 
-// spyLogReplay counts Close calls and sets Position and IsDone for teardown tests.
 type spyLogReplay struct {
 	position   int64
 	done       bool
 	closeCalls int
+	doWork     func(nowNs int64) int
 }
 
-func (r *spyLogReplay) DoWork(int64) int { return 0 }
+func (r *spyLogReplay) DoWork(nowNs int64) int {
+	if r.doWork != nil {
+		return r.doWork(nowNs)
+	}
+	return 0
+}
 
 func (r *spyLogReplay) Position() int64 { return r.position }
 

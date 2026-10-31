@@ -42,6 +42,9 @@ type Election struct {
 	lastPublishedAppendPosition      int64
 	lastError                        error
 
+	// replayTermErr holds a failed term-row append until the duty cycle reads it.
+	replayTermErr error
+
 	// logPublicationErr holds the AddLogPublication error from the
 	// LEADER_LOG_REPLICATION entry. becomeSelfLeader resets on it once the
 	// entry returns.

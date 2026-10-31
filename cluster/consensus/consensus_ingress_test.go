@@ -10,7 +10,9 @@ import (
 )
 
 type recordingRunner struct {
-	handles [][]byte
+	handles    [][]byte
+	termEvents []codecs.NewLeadershipTermEventFields
+	termErr    error
 }
 
 func (r *recordingRunner) DoWork(int64) int { return 0 }
@@ -20,6 +22,13 @@ func (r *recordingRunner) HandleConsensusMessage(buf []byte, offset int) bool {
 	copy(cp, buf[offset:])
 	r.handles = append(r.handles, cp)
 	return true
+}
+
+func (r *recordingRunner) HandleReplayNewLeadershipTermEvent(
+	fields codecs.NewLeadershipTermEventFields,
+) error {
+	r.termEvents = append(r.termEvents, fields)
+	return r.termErr
 }
 
 type recordingPositionTable struct {

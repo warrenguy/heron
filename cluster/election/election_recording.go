@@ -1,6 +1,14 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/recordinglog"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/recordinglog"
+)
+
+var errReplayTermEntry = errors.New("election: append log term entry")
 
 // RecordingLogCoherency is the recording-log write surface the election owns.
 // Nil skips every write when the agent omits a recording log.
@@ -63,6 +71,43 @@ func (e *Election) commitRecordingLogTerm(
 	}
 	e.logLeadershipTermID = leadershipTermID
 	return nil
+}
+
+// HandleReplayNewLeadershipTermEvent appends the TERM row of a consumed
+// NewLeadershipTermEvent in FOLLOWER_CATCHUP or FOLLOWER_REPLAY.
+func (e *Election) HandleReplayNewLeadershipTermEvent(
+	fields codecs.NewLeadershipTermEventFields,
+) error {
+	if !e.isFollowerLogConsumeState() {
+		return nil
+	}
+	if e.replayTermErr != nil {
+		return e.replayTermErr
+	}
+	err := e.commitRecordingLogTerm(
+		fields.LeadershipTermID,
+		fields.TermBaseLogPosition,
+		NullValue,
+	)
+	if err != nil {
+		e.replayTermErr = fmt.Errorf(
+			"%w: term %d: %w", errReplayTermEntry, fields.LeadershipTermID, err,
+		)
+		return e.replayTermErr
+	}
+	e.logPosition = fields.LogPosition
+	return nil
+}
+
+func (e *Election) takeReplayTermErr() error {
+	err := e.replayTermErr
+	e.replayTermErr = nil
+	return err
+}
+
+func (e *Election) isFollowerLogConsumeState() bool {
+	return e.electionState == ElectionStateFollowerCatchup ||
+		e.electionState == ElectionStateFollowerReplay
 }
 
 // truncateRecordingLogTerm lowers the stored logPosition of leadershipTermID to

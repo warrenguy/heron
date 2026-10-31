@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -687,4 +688,68 @@ func TestUncommittedEntryRollback_replay(t *testing.T) {
 			tt.run(t)
 		})
 	}
+}
+
+func newLeadershipTermReplay(
+	tb testing.TB,
+	adapter *LogAdapter,
+	image *aeron.Image,
+	payload []byte,
+) *Agent {
+	tb.Helper()
+	agent := NewAgent(AgentConfig{Commit: new(atomic.Int64), LogAdapter: adapter})
+	writeLogAdapterUnfragmentedFrame(tb, image, 0, payload)
+	return agent
+}
+
+func requireAdapterCommit(tb testing.TB, agent *Agent, position int64) {
+	tb.Helper()
+	require.Equal(tb, position, agent.logAdapter.Position())
+	require.Equal(tb, position, agent.CommitPosition())
+}
+
+func TestAgent_newLeadershipTermEventReachesElection(t *testing.T) {
+	fields := sampleLogAdapterNLTFields()
+	payload := encodeLogAdapterNLTPayload(t, fields)
+	eventEnd := int64(logbuffer.AlignFragmentChunkLength(len(payload)))
+
+	t.Run("runner_set", func(t *testing.T) {
+		adapter, image := boundLogAdapter(t)
+		agent := newLeadershipTermReplay(t, adapter, image, payload)
+		runner := &recordingRunner{}
+		agent.SetElection(runner)
+
+		require.Positive(t, agent.ReplayLogPoll(eventEnd+32, 1))
+		requireAdapterCommit(t, agent, eventEnd)
+		require.Equal(t, []codecs.NewLeadershipTermEventFields{fields}, runner.termEvents)
+	})
+
+	t.Run("runner_nil", func(t *testing.T) {
+		adapter, image := boundLogAdapter(t)
+		agent := newLeadershipTermReplay(t, adapter, image, payload)
+
+		require.NotPanics(t, func() {
+			require.Positive(t, agent.ReplayLogPoll(eventEnd+32, 1))
+		})
+		requireAdapterCommit(t, agent, eventEnd)
+	})
+
+	t.Run("runner_error", func(t *testing.T) {
+		adapter, image, handler := boundLogAdapterWithHandler(t)
+		agent := newLeadershipTermReplay(t, adapter, image, payload)
+		runner := &recordingRunner{termErr: errors.New("append refused")}
+		agent.SetElection(runner)
+
+		messageEnd := writeSessionMessageFrame(t, image, int(eventEnd), 9)
+
+		agent.ReplayLogPoll(messageEnd+32, 1)
+		requireAdapterCommit(t, agent, 0)
+		require.Equal(t, []codecs.NewLeadershipTermEventFields{fields}, runner.termEvents)
+		requireHandlerIdle(t, handler)
+
+		agent.ReplayLogPoll(messageEnd+32, 1)
+		requireAdapterCommit(t, agent, 0)
+		require.Equal(t, []codecs.NewLeadershipTermEventFields{fields, fields}, runner.termEvents)
+		require.Equal(t, 0, handler.sessionMessages)
+	})
 }

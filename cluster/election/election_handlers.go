@@ -20,6 +20,7 @@ func (e *Election) handleInit(nowNs int64) int {
 		e.isFirstInit = false
 		skipPrepare = e.isNodeStartup
 	} else {
+		e.replayTermErr = nil
 		if work, stopping := e.stopLogReplication(nowNs); stopping {
 			return work
 		}
@@ -442,6 +443,11 @@ func (e *Election) handleFollowerReplay(nowNs int64) int {
 	}
 
 	workCount += e.logReplay.DoWork(nowNs)
+
+	if err := e.takeReplayTermErr(); err != nil {
+		e.HandleError(nowNs, err)
+		return workCount + 1
+	}
 	if e.logReplay.IsDone() {
 		e.logPosition = e.logReplay.Position()
 		e.stopReplay()
@@ -559,8 +565,6 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 //   - live destination attached
 //
 // Then advances append and log position and moves to LOG_INIT.
-//
-// A CatchupPoll error restarts the election through [Election.HandleError].
 func (e *Election) handleFollowerCatchup(nowNs int64) int {
 	host := e.deps.Host
 	limit := e.notifiedCommitPosition
@@ -568,6 +572,9 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 		limit = e.catchupJoinPosition
 	}
 	workCount, err := host.CatchupPoll(limit, nowNs)
+	if stored := e.takeReplayTermErr(); stored != nil {
+		err = errors.Join(err, stored)
+	}
 	if err != nil {
 		e.HandleError(nowNs, err)
 		return workCount + 1
