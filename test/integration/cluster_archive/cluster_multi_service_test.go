@@ -5,6 +5,7 @@ package cluster_archive_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -237,6 +238,76 @@ func everyMultiServiceRecorder(seats [][]*serviceSeat, pred func(*sessionRecorde
 		}
 	}
 	return true
+}
+
+func multiServiceMembersAt(
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	position int64,
+) bool {
+	if !membersReachCommit(set, position) || !survivorsAppendAtLeast(set, nil, position) {
+		return false
+	}
+	for _, memberSeats := range seats {
+		for _, seat := range memberSeats {
+			if seat.agent.LogPosition() != position {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func requireMultiServiceSessionOpen(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	sessionID int64,
+	label string,
+) {
+	t.Helper()
+
+	requireMultiServiceAwaitTick(
+		t, set, seats,
+		label,
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
+				return rec.holdsOpen(sessionID)
+			})
+		}),
+	)
+}
+
+// The call offers payload. Every recorder must then hold prior, then
+// payload, after the session open.
+func requireMultiServiceMessageDelivered(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	label string,
+	payload []byte,
+	prior ...[]byte,
+) {
+	t.Helper()
+
+	offerServiceMessage(t, serviceCluster{set: set}, session, payload)
+	payloads := append(slices.Clone(prior), payload)
+	sessionID := session.ClusterSessionID()
+	requireMultiServiceAwaitTick(
+		t, set, seats,
+		label,
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
+				return rec.holdsMessagesAfterOpen(sessionID, payloads...)
+			})
+		}),
+	)
 }
 
 func openMultiServiceSeat(

@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -194,11 +196,9 @@ func multiServiceRecordersRestarted(
 	return true
 }
 
-// TestClusterMultiService_restartsEveryMemberFromSnapshots asserts three
-// members with two services each restart from their own snapshots.
-func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
-	t.Parallel()
-
+// A later open through the same wrap replaces the recorder for that
+// member and service.
+func newSnapshotStateWrap() ([][]*snapshotStateRecorder, multiServiceWrap) {
 	recorders := make([][]*snapshotStateRecorder, 3)
 	for i := range recorders {
 		recorders[i] = make([]*snapshotStateRecorder, multiServiceCount)
@@ -212,6 +212,175 @@ func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
 		recorders[memberIndex][serviceID] = state
 		return state
 	}
+	return recorders, wrap
+}
+
+func requireMultiServiceSnapshot(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	leader *cluster.ConsensusModule,
+	transport *aeron.Client,
+	session *client.AeronCluster,
+	label string,
+) []consensus.SnapshotTakeResult {
+	t.Helper()
+
+	sc := serviceCluster{set: set}
+	dump := func() string { return dumpMultiService(set, seats) }
+	leaderTake := requestModuleSnapshot(t, sc, leader, transport, session, label)
+	actionPosition := leaderTake.LogPosition
+	requireMultiServiceAwaitTick(
+		t, set, seats,
+		label+" on every member",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return snapshotTakenOnEveryMember(t, set, actionPosition, dump)
+		}),
+	)
+	takes := make([]consensus.SnapshotTakeResult, len(set.Modules()))
+	for i, module := range set.Modules() {
+		result, _ := module.Agent().LastSnapshotTake()
+		require.NoError(t, result.ForceErr, "snapshot member %d:\n%s", module.ThisMemberID(), dump())
+		require.Len(t, result.ServiceRecordingIDs, multiServiceCount, "member %d", module.ThisMemberID())
+		for sid, seat := range seats[i] {
+			where := lazyText(func() string {
+				return fmt.Sprintf("member %d service %d:\n%s", module.ThisMemberID(), sid, dump())
+			})
+			require.Equal(t, result.ServiceRecordingIDs[sid], seat.agent.LastSnapshotRecordingID(),
+				"snapshot recording %s", where)
+		}
+		result.ServiceRecordingIDs = slices.Clone(result.ServiceRecordingIDs)
+		takes[i] = result
+	}
+	return takes
+}
+
+func snapshotRecordingIDs(take consensus.SnapshotTakeResult) []int64 {
+	return slices.Concat(take.ServiceRecordingIDs, []int64{take.RecordingID})
+}
+
+func requireDistinctRecordingIDs(t *testing.T, member int, ids []int64) {
+	t.Helper()
+
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		require.GreaterOrEqual(t, id, int64(0), "recording id member %d", member)
+		_, dup := seen[id]
+		require.False(t, dup, "recording id %d repeats on member %d", id, member)
+		seen[id] = struct{}{}
+	}
+}
+
+// Each payload set yields one taken state per member and service, in
+// snapshot order.
+func requireSnapshotStates(
+	t *testing.T,
+	recorders [][]*snapshotStateRecorder,
+	dump func() string,
+	payloadSets ...[][]byte,
+) {
+	t.Helper()
+
+	for i, memberRecorders := range recorders {
+		for sid, rec := range memberRecorders {
+			want := make([][]byte, len(payloadSets))
+			for j, payloads := range payloadSets {
+				want[j] = snapshotState(i, sid, payloads...)
+			}
+			where := lazyText(func() string {
+				return fmt.Sprintf("member %d service %d:\n%s", i, sid, dump())
+			})
+			require.Equal(t, want, rec.taken, "taken %s", where)
+		}
+	}
+}
+
+func requireMultiServiceRestartSettled(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	preTerm, restoredID int64,
+) *cluster.ConsensusModule {
+	t.Helper()
+
+	dump := func() string { return dumpMultiService(set, seats) }
+	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
+	requireAwait(t, set, "post-restart election", durableElectBound, set.AwaitElection)
+	newLeader := requireSingleLeader(t, set, "")
+	term := newLeader.LeadershipTermID()
+	leaderID := newLeader.ThisMemberID()
+	require.Greater(t, term, preTerm, "term:\n%s", dump())
+
+	// The leader does not have an append target.
+	require.Equal(t, int32(-1), newLeader.LeaderMemberID(),
+		"leader append target:\n%s", dump())
+	for _, module := range set.Modules() {
+		require.Equal(t, term, module.LeadershipTermID(),
+			"term member %d:\n%s", module.ThisMemberID(), dump())
+		if module.ThisMemberID() == leaderID {
+			continue
+		}
+		require.Equal(t, leaderID, module.LeaderMemberID(),
+			"leader member %d:\n%s", module.ThisMemberID(), dump())
+	}
+
+	requireMultiServiceAwaitTick(
+		t, set, seats,
+		"restart settle",
+		durableWorkBound,
+		func() bool {
+			return multiServiceJoinSettled(set, seats) &&
+				multiServiceRecoveryCountersFreed(t, set) &&
+				restoredSessionClosed(set) &&
+				multiServiceRecordersRestarted(t, set, seats, restoredID, 0)
+		},
+	)
+	return newLeader
+}
+
+func requireMultiServicePostMessage(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	seats [][]*serviceSeat,
+	leader *cluster.ConsensusModule,
+	restoredID int64,
+	payload []byte,
+) (
+	*aeron.Client,
+	*client.AeronCluster,
+) {
+	t.Helper()
+
+	sc := serviceCluster{set: set}
+	dump := func() string { return dumpMultiService(set, seats) }
+	freshTransport, fresh := openSession(t, set, leader)
+	freshID := fresh.ClusterSessionID()
+	require.Equal(t, restoredID+1, freshID, dump())
+	requireMultiServiceSessionOpen(
+		t, set, seats, freshTransport, fresh, freshID, "fresh session open committed",
+	)
+
+	offerServiceMessage(t, sc, fresh, payload)
+	requireMultiServiceAwaitTick(
+		t, set, seats,
+		"post message delivered",
+		durableWorkBound,
+		sessionPump(freshTransport, fresh, func() bool {
+			return multiServiceRecordersRestarted(
+				t, set, seats, restoredID, freshID, payload,
+			)
+		}),
+	)
+	return freshTransport, fresh
+}
+
+// TestClusterMultiService_restartsEveryMemberFromSnapshots asserts three
+// members with two services each restart from their own snapshots.
+func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
+	t.Parallel()
+
+	recorders, wrap := newSnapshotStateWrap()
 
 	set, seats := startMultiServiceCluster(
 		t,
@@ -219,7 +388,6 @@ func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
 		harness.ClusterMultiServiceSnapshotRestartLogEndpoint,
 		wrap,
 	)
-	sc := serviceCluster{set: set}
 	dump := func() string { return dumpMultiService(set, seats) }
 	leader := requireSingleLeader(t, set, "")
 
@@ -233,76 +401,25 @@ func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
 	transport, session := openSession(t, set, leader)
 	restoredID := session.ClusterSessionID()
 	require.Positive(t, restoredID)
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"session open committed",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
-				return rec.holdsOpen(restoredID)
-			})
-		}),
+	requireMultiServiceSessionOpen(
+		t, set, seats, transport, session, restoredID, "session open committed",
 	)
 
 	pre := []byte(multiServicePreSnapshotPayload)
-	offerServiceMessage(t, sc, session, pre)
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"pre message delivered",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
-				return rec.holdsMessagesAfterOpen(restoredID, pre)
-			})
-		}),
+	requireMultiServiceMessageDelivered(
+		t, set, seats, transport, session, "pre message delivered", pre,
 	)
 
-	leaderTake := requestModuleSnapshot(t, sc, leader, transport, session, "snapshot")
-	actionPosition := leaderTake.LogPosition
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"snapshot on every member",
-		durableWorkBound,
-		sessionPump(transport, session, func() bool {
-			return snapshotTakenOnEveryMember(t, set, actionPosition, dump)
-		}),
-	)
-	// The await above resolved every take without error.
-	takes := make([]consensus.SnapshotTakeResult, 3)
-	for i, module := range set.Modules() {
-		result, _ := module.Agent().LastSnapshotTake()
-		require.NoError(t, result.ForceErr, "snapshot member %d:\n%s", module.ThisMemberID(), dump())
-		require.Len(t, result.ServiceRecordingIDs, multiServiceCount, "member %d", module.ThisMemberID())
-		for sid, seat := range seats[i] {
-			where := lazyText(func() string {
-				return fmt.Sprintf("member %d service %d:\n%s", module.ThisMemberID(), sid, dump())
-			})
-			require.Equal(t, result.ServiceRecordingIDs[sid], seat.agent.LastSnapshotRecordingID(),
-				"snapshot recording %s", where)
-			require.Equal(t, [][]byte{snapshotState(i, sid, pre)}, recorders[i][sid].taken,
-				"taken %s", where)
-		}
-		result.ServiceRecordingIDs = slices.Clone(result.ServiceRecordingIDs)
-		takes[i] = result
-	}
+	takes := requireMultiServiceSnapshot(t, set, seats, leader, transport, session, "snapshot")
+	actionPosition := takes[int(leader.ThisMemberID())].LogPosition
+	requireSnapshotStates(t, recorders, dump, [][]byte{pre})
 
 	requireMultiServiceAwaitTick(
 		t, set, seats,
 		"members at snapshot",
 		durableWorkBound,
 		sessionPump(transport, session, func() bool {
-			if !membersReachCommit(set, actionPosition) ||
-				!survivorsAppendAtLeast(set, nil, actionPosition) {
-				return false
-			}
-			for _, memberSeats := range seats {
-				for _, seat := range memberSeats {
-					if seat.agent.LogPosition() != actionPosition {
-						return false
-					}
-				}
-			}
-			return true
+			return multiServiceMembersAt(set, seats, actionPosition)
 		}),
 	)
 	type storedEgress struct {
@@ -337,14 +454,7 @@ func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
 		withRecordingLog(t, set.ClusterDir(i), func(log *recordinglog.Log) {
 			requireSnapshotGroupsInLog(t, log, dump, take)
 		})
-		ids := slices.Concat(take.ServiceRecordingIDs, []int64{take.RecordingID})
-		seen := make(map[int64]struct{}, len(ids))
-		for _, id := range ids {
-			require.GreaterOrEqual(t, id, int64(0), "recording id member %d", i)
-			_, dup := seen[id]
-			require.False(t, dup, "recording id %d repeats on member %d", id, i)
-			seen[id] = struct{}{}
-		}
+		requireDistinctRecordingIDs(t, i, snapshotRecordingIDs(take))
 	}
 
 	// The test does not tick until every container attaches.
@@ -371,64 +481,9 @@ func TestClusterMultiService_restartsEveryMemberFromSnapshots(t *testing.T) {
 		}
 	}
 
-	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
-	requireAwait(t, set, "post-restart election", durableElectBound, set.AwaitElection)
-	newLeader := requireSingleLeader(t, set, "")
-	term := newLeader.LeadershipTermID()
-	leaderID := newLeader.ThisMemberID()
-	require.Greater(t, term, preTerm, "term:\n%s", dump())
-
-	// The leader has no append target. LeaderMemberID stays -1.
-	require.Equal(t, int32(-1), newLeader.LeaderMemberID(),
-		"leader append target:\n%s", dump())
-	for _, module := range set.Modules() {
-		require.Equal(t, term, module.LeadershipTermID(),
-			"term member %d:\n%s", module.ThisMemberID(), dump())
-		if module.ThisMemberID() == leaderID {
-			continue
-		}
-		require.Equal(t, leaderID, module.LeaderMemberID(),
-			"leader member %d:\n%s", module.ThisMemberID(), dump())
-	}
-
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"restart settle",
-		durableWorkBound,
-		func() bool {
-			return multiServiceJoinSettled(set, seats) &&
-				multiServiceRecoveryCountersFreed(t, set) &&
-				restoredSessionClosed(set) &&
-				multiServiceRecordersRestarted(t, set, seats, restoredID, 0)
-		},
-	)
-
-	freshTransport, fresh := openSession(t, set, newLeader)
-	freshID := fresh.ClusterSessionID()
-	require.Equal(t, restoredID+1, freshID, dump())
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"fresh session open committed",
-		durableWorkBound,
-		sessionPump(freshTransport, fresh, func() bool {
-			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
-				return rec.holdsOpen(freshID)
-			})
-		}),
-	)
-
+	newLeader := requireMultiServiceRestartSettled(t, set, seats, preTerm, restoredID)
 	post := []byte(multiServicePostSnapshotPayload)
-	offerServiceMessage(t, sc, fresh, post)
-	requireMultiServiceAwaitTick(
-		t, set, seats,
-		"post message delivered",
-		durableWorkBound,
-		sessionPump(freshTransport, fresh, func() bool {
-			return multiServiceRecordersRestarted(
-				t, set, seats, restoredID, freshID, post,
-			)
-		}),
-	)
+	requireMultiServicePostMessage(t, set, seats, newLeader, restoredID, post)
 
 	requireMultiServiceCommitBound(t, set, seats)
 	requireNoMultiServiceFailures(t, set, seats, " final")
