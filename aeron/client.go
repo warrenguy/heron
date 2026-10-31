@@ -442,8 +442,8 @@ func (client *Client) Close() error {
 
 func (client *Client) closeTeardownLocked() error {
 	if client.conductor != nil {
-		client.conductor.ClearPendingEntriesForClose()
 		client.conductor.CloseAllResources()
+		client.conductor.ClearPendingEntriesForClose()
 		client.drainCloseResponses()
 		time.Sleep(client.clientCloseLinger)
 		client.conductor.UnmapLingeringLogBuffers()

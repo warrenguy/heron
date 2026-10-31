@@ -1046,6 +1046,59 @@ func TestClient_OfferAdd_withoutPoll_cancelsOnClose(t *testing.T) {
 	require.Equal(t, activeCorrelationID, fixture.Conductor.ActiveCorrelationID())
 }
 
+func TestClient_OfferAdd_readyWithoutPoll_closeLingerHoldsLog(t *testing.T) {
+	const clientCloseLinger = 200 * time.Millisecond
+
+	for _, testCase := range clientAddPublicationKindCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir, logPath := testCase.setupLog(t)
+			client, fixture := newClientOfferAddTestFixture(t, dir)
+			fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
+
+			correlationID, err := testCase.offerAdd(client)
+			require.NoError(t, err)
+			testCase.signalReady(
+				fixture.Conductor,
+				clientAddPublicationReadyEvent(correlationID, logPath),
+			)
+			require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+
+			client.SetClientCloseLingerDurationForTest(clientCloseLinger)
+			started := time.Now()
+			closeDone := make(chan error, 1)
+			go func() {
+				closeDone <- client.Close()
+			}()
+
+			sawLinger := false
+			var cleared time.Time
+			deadline := time.After(2 * time.Second)
+		poll:
+			for {
+				if registry.HasScheduledLinger() {
+					sawLinger = true
+				} else if sawLinger && cleared.IsZero() {
+					cleared = time.Now()
+				}
+				select {
+				case closeErr := <-closeDone:
+					require.NoError(t, closeErr)
+					break poll
+				case <-deadline:
+					t.Fatal("client close hung")
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+
+			require.True(t, sawLinger, "close unmapped the unpolled log before the sleep")
+			require.GreaterOrEqual(t, cleared.Sub(started), clientCloseLinger)
+			require.Zero(t, conductor.LogBuffersRegistryEntryCountForTest(registry))
+		})
+	}
+}
+
 func TestClient_CancelPending_idempotent(t *testing.T) {
 	client, fixture := newClientOfferAddTestFixture(t, t.TempDir())
 
