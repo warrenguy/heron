@@ -27,15 +27,15 @@ func representativeConfigForConnectConfigTest(tb testing.TB) Config {
 	tb.Helper()
 
 	return Config{
-		AeronDir:            tb.TempDir(),
-		DriverTimeout:       7 * time.Second,
-		KeepAliveInterval:   100 * time.Millisecond,
-		IdleSleepDuration:   5 * time.Millisecond,
-		InterServiceTimeout: 2 * time.Second,
-		CloseLingerDuration: 1500 * time.Millisecond,
-		EpochClock:          func() int64 { return 42 },
-		NanoClock:           func() int64 { return 99 },
-		ErrorHandler:        func(error) {},
+		AeronDir:               tb.TempDir(),
+		DriverTimeout:          7 * time.Second,
+		KeepAliveInterval:      100 * time.Millisecond,
+		IdleSleepDuration:      5 * time.Millisecond,
+		InterServiceTimeout:    2 * time.Second,
+		ResourceLingerDuration: new(time.Duration(0)),
+		EpochClock:             func() int64 { return 42 },
+		NanoClock:              func() int64 { return 99 },
+		ErrorHandler:           func(error) {},
 	}
 }
 
@@ -48,11 +48,7 @@ func TestConductorConnectConfig_propagatesConfigScalarFields(t *testing.T) {
 	require.Equal(t, ConductorImageLifecycle, config.ImageLifecycle)
 	require.NotNil(t, config.ResourceLifecycle)
 	require.Equal(t, cfg.AeronDir, config.MediaDriverDir)
-	require.Equal(
-		t,
-		cfg.CloseLingerDuration.Nanoseconds(),
-		config.CloseLingerNs,
-	)
+	require.Zero(t, config.ResourceLingerNs)
 	require.Equal(t, cfg.DriverTimeout, config.DriverTimeout)
 	require.Equal(t, cfg.KeepAliveInterval, config.KeepAliveInterval)
 	require.Equal(t, cfg.IdleSleepDuration, config.IdleSleepDuration)

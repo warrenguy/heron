@@ -43,7 +43,6 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Short harness heartbeats and close linger come with the config builder.
 	cfg := harness.MemberClusterConfig(0, members, t.TempDir(), md.Dir)
 
 	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/ringbuffer"
@@ -1209,12 +1211,8 @@ func ResolveInterServiceTimeoutForTest(cfg Config, metadata cnc.Metadata) (time.
 	return resolveInterServiceTimeout(cfg, metadata)
 }
 
-func (client *Client) SetCloseLingerDurationForTest(duration time.Duration) {
-	conductorInstance := client.conductorForTest()
-	if conductorInstance == nil {
-		return
-	}
-	conductor.SetCloseLingerNsForTest(conductorInstance, duration.Nanoseconds())
+func (client *Client) SetClientCloseLingerDurationForTest(duration time.Duration) {
+	client.clientCloseLinger = duration
 }
 
 func (cfg Config) UseConductorInvokerEnabledForTest() bool {
@@ -1633,6 +1631,49 @@ func WaitUntilConnectedForTest(
 // Unit Add fixtures skip cold-path helpers; live Connect passes *Client.
 func ConductorConnectConfigForTest(cfg Config, clientID int64) conductor.Config {
 	return conductorConnectConfig(cfg, clientID, nil)
+}
+
+// The 10s InterServiceTimeout stands in for the CnC liveness timeout that
+// Connect reads. A zero value terminates the Client on the second DoWork
+// inside Close.
+func SetupDefaultCloseClientForTest(
+	tb testing.TB,
+	record func(error),
+) (*Client, *testutil.ConductorFixture) {
+	tb.Helper()
+
+	dir, imageLog := setupConductorImageLifecycleLogFile(tb, "image.log")
+	cfg := normalizeConfig(Config{
+		AeronDir:            dir,
+		InterServiceTimeout: 10 * time.Second,
+		ErrorHandler:        record,
+	})
+
+	connectConfig := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
+	fixtureConfig := conductorFixtureConfigFromConnect(connectConfig)
+	fixtureConfig.NanoClock = cfg.NanoClock
+	client, fixture := newClientAddFixtureFromConfig(tb, fixtureConfig)
+
+	NewFileBackedPublicationBoundForCloseTest(
+		tb,
+		fixture.Conductor,
+		filepath.Join(dir, "publication.log"),
+	)
+
+	sub := registerConductorImageLifecycleSubscriptionForTest(
+		fixture.Conductor,
+		conductorImageLifecycleGoldenAvailableImage.StreamID,
+	)
+	deliverAvailableImageToClientSubscription(
+		tb,
+		client,
+		fixture,
+		imageLog,
+		conductorImageLifecycleTestRegistrationID,
+	)
+	require.Equal(tb, 1, sub.ImageCount())
+
+	return client, fixture
 }
 
 func SubscriptionAvailableImageHandlerForTest(sub *Subscription) AvailableImageHandler {

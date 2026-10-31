@@ -73,6 +73,7 @@ type Client struct {
 	nanoClock               conductor.NanoClock
 	driverTimeout           time.Duration
 	interServiceTimeout     time.Duration
+	clientCloseLinger       time.Duration
 	pollTimeout             time.Duration
 	publicationOfferTimeout time.Duration
 	idleSleepDuration       time.Duration
@@ -174,8 +175,11 @@ func validateConnectConfig(cfg Config) error {
 			cfg.KeepAliveInterval,
 		)
 	}
-	if cfg.CloseLingerDuration < 0 {
-		return errors.New("aeron: CloseLingerDuration must not be negative")
+	if cfg.resourceLingerDuration() < 0 {
+		return errors.New("aeron: ResourceLingerDuration must not be negative")
+	}
+	if cfg.ClientCloseLingerDuration < 0 {
+		return errors.New("aeron: ClientCloseLingerDuration must not be negative")
 	}
 	if !cfg.useConductorInvokerEnabled() {
 		return errors.New("aeron: dedicated conductor invoker is not supported")
@@ -236,8 +240,8 @@ func conductorConnectConfig(cfg Config, clientID int64, client *Client) conducto
 			unavailableImageHandler: cfg.UnavailableImageHandler,
 			client:                  client,
 		},
-		MediaDriverDir: cfg.AeronDir,
-		CloseLingerNs:  cfg.CloseLingerDuration.Nanoseconds(),
+		MediaDriverDir:   cfg.AeronDir,
+		ResourceLingerNs: cfg.resourceLingerDuration().Nanoseconds(),
 	}
 	if client != nil {
 		config.HandlerScope = &client.handlerScope
@@ -305,6 +309,7 @@ func newConductorClient(
 		nanoClock:               cfg.NanoClock,
 		driverTimeout:           cfg.DriverTimeout,
 		interServiceTimeout:     cfg.InterServiceTimeout,
+		clientCloseLinger:       cfg.ClientCloseLingerDuration,
 		pollTimeout:             cfg.PollTimeout,
 		publicationOfferTimeout: cfg.PublicationOfferTimeout,
 		idleSleepDuration:       cfg.IdleSleepDuration,
@@ -395,11 +400,15 @@ func (client *Client) IsTerminating() bool {
 	return client.conductor.IsTerminating()
 }
 
-// Close tears down resources, drains close responses and log linger, sends
-// CLIENT_CLOSE, and unmaps the CNC file.
+// Commit or Abort each claim before Close. Call Close only after these
+// calls have returned:
+//   - Offer, TryClaim and Poll on this Client
+//   - Position, IsConnected and AvailableWindow, which read the log
+//   - ChannelStatus, which reads the CNC file that Close unmaps
 //
-// Behaviour: Close is idempotent. Linger drain is best-effort when NanoClock
-// does not advance.
+// Poll is invoker-only. Close on the invoker goroutine does not race Poll.
+//
+// Behaviour: Close is idempotent.
 //
 // Concurrency: callers should not run Close beside another Close or a
 // blocking call. If they do:
@@ -436,7 +445,8 @@ func (client *Client) closeTeardownLocked() error {
 		client.conductor.ClearPendingEntriesForClose()
 		client.conductor.CloseAllResources()
 		client.drainCloseResponses()
-		client.awaitCloseLingerDrain()
+		time.Sleep(client.clientCloseLinger)
+		client.conductor.UnmapLingeringLogBuffers()
 	}
 
 	if client.driverProxy != nil {
@@ -467,26 +477,6 @@ func (client *Client) drainCloseResponses() {
 		}
 		time.Sleep(client.idleSleepDuration)
 	}
-}
-
-func (client *Client) awaitCloseLingerDrain() {
-	nanoClock := client.nanoClock
-	if nanoClock == nil || !client.conductor.HasScheduledLinger() {
-		return
-	}
-
-	lingerNs := client.conductor.CloseLingerNs()
-	lingerDeadlineNs := nanoClock() + lingerNs
-	wallDeadline := time.Now().Add(time.Duration(lingerNs))
-	for nanoClock() < lingerDeadlineNs && time.Now().Before(wallDeadline) {
-		client.conductor.DrainLingeringLogBuffers()
-		client.doWorkLocked()
-		if !client.conductor.HasScheduledLinger() {
-			return
-		}
-		time.Sleep(client.idleSleepDuration)
-	}
-	client.conductor.DrainLingeringLogBuffers()
 }
 
 // CancelPending abandons an in-flight OfferAdd* registration or an async

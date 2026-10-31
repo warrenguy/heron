@@ -64,7 +64,7 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &closeOrderResourceLifecycle{}
-		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 
 		usedRegIDs := make(map[int64]struct{})
 		stepCount := rapid.IntRange(1, 16).Draw(rt, "stepCount")
@@ -109,7 +109,7 @@ func TestConductor_CloseResource_idempotent_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &recordingResourceLifecycle{}
-		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 		ring := conductorInstance.DriverProxyForTest().Ring()
 
 		regID := rapid.Int64().Draw(rt, "regID")
@@ -203,7 +203,7 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		lifecycle := &recordingResourceLifecycle{}
-		conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 		ring := conductorInstance.DriverProxyForTest().Ring()
 
 		usedRegIDs := make(map[int64]struct{})

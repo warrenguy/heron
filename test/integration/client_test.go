@@ -407,6 +407,22 @@ func TestClientStayAlive(t *testing.T) {
 	require.True(t, sawProgress, "client never made progress during stay-alive")
 }
 
+// TestClientCloseSkipsLingerWait checks that a default-config Close returns within a second.
+func TestClientCloseSkipsLingerWait(t *testing.T) {
+	md := harness.SharedParallel(t)
+	client, hadClientError := harness.ConnectIPCClient(t, md)
+	pub, sub := harness.ConnectIPCPubSubClients(
+		t, client, client, harness.ClientCloseSkipsLingerWaitStreamID,
+	)
+
+	started := time.Now()
+	require.NoError(t, client.Close())
+	require.Less(t, time.Since(started), time.Second)
+	require.True(t, pub.IsClosed())
+	require.True(t, sub.IsClosed())
+	require.False(t, hadClientError.Load())
+}
+
 // TestClientSurvivesStallBelowLivenessTimeout stalls DoWork below the driver liveness timeout.
 func TestClientSurvivesStallBelowLivenessTimeout(t *testing.T) {
 	md := harness.SharedParallel(t)

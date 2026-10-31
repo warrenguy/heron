@@ -184,9 +184,6 @@ func TestArchiveClient_directAsyncConnectOwnedClient(t *testing.T) {
 		ControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ControlResponseChannel: archive.DefaultLocalControlChannel,
 		AeronDir:               md.Dir,
-		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
-		},
 	}.WithRemoteControl().Normalize()
 	connect, err := archive.NewAsyncConnect(t.Context(), cfg)
 	require.NoError(t, err)
@@ -395,10 +392,6 @@ func TestArchiveClient_ownedTransportDriverShutdownClosesSession(t *testing.T) {
 		ControlRequestChannel:  harness.ArchiveClientFaultControl0,
 		ControlResponseChannel: "aeron:udp?endpoint=127.0.0.1:0",
 		AeronDir:               clientDriver.Dir,
-		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
-			CloseLingerDuration: 250 * time.Millisecond,
-		},
 	}.WithRemoteControl().Normalize()
 	archiveClient, err := archive.Connect(t.Context(), cfg)
 	require.NoError(t, err, "connect over UDP control")

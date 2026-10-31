@@ -1,5 +1,11 @@
 package conductor
 
+import "math"
+
+// untilUnmapLingerNs keeps a released log buffer mapped until
+// UnmapLingeringLogBuffers. A DoWork sweep never reaches its deadline.
+const untilUnmapLingerNs = math.MaxInt64
+
 // ClosePublication retires the publication (mark closed, map remove, linger), then
 // offers REMOVE_PUBLICATION to the driver.
 //
@@ -8,17 +14,24 @@ package conductor
 // When ResourceLifecycle is nil, only map entries are removed; handle retire and
 // mark-closed are skipped.
 func (conductor *Conductor) ClosePublication(publication PublicationHandle) error {
-	if conductor.retirePublication(publication) {
+	conductor.closePublication(publication, conductor.config.ResourceLingerNs)
+	return nil
+}
+
+func (conductor *Conductor) closePublication(publication PublicationHandle, lingerNs int64) {
+	if conductor.retirePublication(publication, lingerNs) {
 		conductor.offerRemovePublication(publication.RegistrationID())
 	}
-	return nil
 }
 
 // retirePublication retires the publication under the resource write lock.
 // Does not offer REMOVE_PUBLICATION. A locked-lookup miss marks the handle
 // closed. Reports a retire error after the unlock. Returns whether it retired
 // a map entry.
-func (conductor *Conductor) retirePublication(publication PublicationHandle) bool {
+func (conductor *Conductor) retirePublication(
+	publication PublicationHandle,
+	lingerNs int64,
+) bool {
 	if isAbsentMapValue(publication) {
 		return false
 	}
@@ -32,7 +45,7 @@ func (conductor *Conductor) retirePublication(publication PublicationHandle) boo
 		}
 		return retireResult{
 			retired: true,
-			err:     conductor.retirePublicationLocked(pub, registrationID),
+			err:     conductor.retirePublicationLocked(pub, registrationID, lingerNs),
 		}
 	})
 	conductor.reportCloseError(result.err)
@@ -64,6 +77,7 @@ func (conductor *Conductor) offerRemovePublication(registrationID int64) {
 func (conductor *Conductor) retirePublicationLocked(
 	publication PublicationHandle,
 	registrationID int64,
+	lingerNs int64,
 ) error {
 	if conductor.resourceLifecycle == nil {
 		conductor.removePublication(registrationID)
@@ -76,7 +90,7 @@ func (conductor *Conductor) retirePublicationLocked(
 	}
 	conductor.removePublication(registrationID)
 	if registryKey != "" {
-		conductor.releaseLogBuffersByKey(registryKey, conductor.config.CloseLingerNs)
+		conductor.releaseLogBuffersByKey(registryKey, lingerNs)
 	}
 	return err
 }
@@ -89,17 +103,24 @@ func (conductor *Conductor) retirePublicationLocked(
 // When ResourceLifecycle is nil, only map entries are removed; handle retire and
 // mark-closed are skipped.
 func (conductor *Conductor) CloseSubscription(subscription SubscriptionHandle) error {
-	if conductor.retireSubscription(subscription) {
+	conductor.closeSubscription(subscription, conductor.config.ResourceLingerNs)
+	return nil
+}
+
+func (conductor *Conductor) closeSubscription(subscription SubscriptionHandle, lingerNs int64) {
+	if conductor.retireSubscription(subscription, lingerNs) {
 		conductor.offerRemoveSubscription(subscription.RegistrationID())
 	}
-	return nil
 }
 
 // retireSubscription retires the subscription under the resource write lock.
 // Does not offer REMOVE_SUBSCRIPTION. A locked-lookup miss marks the handle
 // closed. Reports a retire error after the unlock. Returns whether it retired
 // a map entry.
-func (conductor *Conductor) retireSubscription(subscription SubscriptionHandle) bool {
+func (conductor *Conductor) retireSubscription(
+	subscription SubscriptionHandle,
+	lingerNs int64,
+) bool {
 	if isAbsentMapValue(subscription) {
 		return false
 	}
@@ -113,7 +134,7 @@ func (conductor *Conductor) retireSubscription(subscription SubscriptionHandle) 
 		}
 		return retireResult{
 			retired: true,
-			err:     conductor.retireSubscriptionLocked(sub, registrationID),
+			err:     conductor.retireSubscriptionLocked(sub, registrationID, lingerNs),
 		}
 	})
 	conductor.reportCloseError(result.err)
@@ -131,6 +152,7 @@ func (conductor *Conductor) offerRemoveSubscription(registrationID int64) {
 func (conductor *Conductor) retireSubscriptionLocked(
 	subscription SubscriptionHandle,
 	registrationID int64,
+	lingerNs int64,
 ) error {
 	if conductor.resourceLifecycle == nil {
 		conductor.removeSubscription(registrationID)
@@ -142,36 +164,30 @@ func (conductor *Conductor) retireSubscriptionLocked(
 		conductor.resourceLifecycle.MarkSubscriptionClosed(subscription)
 	}
 	conductor.removeSubscription(registrationID)
-	conductor.releaseLogBuffersByKeys(registryKeys, conductor.config.CloseLingerNs)
+	conductor.releaseLogBuffersByKeys(registryKeys, lingerNs)
 	return err
 }
 
 // CloseAllResources closes all publications, then all subscriptions.
 // Close errors reach ErrorHandler inside HandlerScope. Production callers
 // hold clientLock.
+//
+// Each released log buffer lingers until UnmapLingeringLogBuffers, whatever
+// ResourceLingerNs holds. A DoWork sweep never unmaps it.
 func (conductor *Conductor) CloseAllResources() {
 	entered := conductor.enterHandler()
 	defer conductor.exitHandler(entered)
 
 	for _, publication := range conductor.snapshotPublications() {
-		_ = conductor.ClosePublication(publication)
+		conductor.closePublication(publication, untilUnmapLingerNs)
 	}
 	for _, subscription := range conductor.snapshotSubscriptions() {
-		_ = conductor.CloseSubscription(subscription)
+		conductor.closeSubscription(subscription, untilUnmapLingerNs)
 	}
 }
 
 // forceCloseResources retires every publication and subscription. Does not
 // offer REMOVE commands to the driver.
-//
-// Behaviour:
-//   - Snapshots publications, then retires each under the resource write lock.
-//   - Snapshots subscriptions, then retires each the same way.
-//   - Retire marks closed, closes images, removes map entries, and releases
-//     log buffers with CloseLingerNs.
-//   - Write-lock re-lookup miss marks the snapshotted handle closed when
-//     ResourceLifecycle is set. Does not retire or release on that miss.
-//   - When ResourceLifecycle is nil, only map entries are removed.
 //
 // A client-timeout terminate finds the driver already removed the resources.
 // Other terminate causes leave remains for driver liveness collection.
@@ -182,10 +198,10 @@ func (conductor *Conductor) CloseAllResources() {
 // Lifetime: idempotent. A later CloseAllResources finds empty maps and no-ops.
 func (conductor *Conductor) forceCloseResources() {
 	for _, publication := range conductor.snapshotPublications() {
-		conductor.retirePublication(publication)
+		conductor.retirePublication(publication, conductor.config.ResourceLingerNs)
 	}
 	for _, subscription := range conductor.snapshotSubscriptions() {
-		conductor.retireSubscription(subscription)
+		conductor.retireSubscription(subscription, conductor.config.ResourceLingerNs)
 	}
 }
 
@@ -199,19 +215,6 @@ func (conductor *Conductor) markSubscriptionClosed(subscription SubscriptionHand
 	if conductor.resourceLifecycle != nil {
 		conductor.resourceLifecycle.MarkSubscriptionClosed(subscription)
 	}
-}
-
-// CloseLingerNs returns configured log-buffer linger after resource close.
-func (conductor *Conductor) CloseLingerNs() int64 {
-	return conductor.config.CloseLingerNs
-}
-
-// HasScheduledLinger reports whether any log buffer awaits linger sweep.
-func (conductor *Conductor) HasScheduledLinger() bool {
-	if conductor == nil || conductor.logBuffersRegistry == nil {
-		return false
-	}
-	return conductor.logBuffersRegistry.HasScheduledLinger()
 }
 
 func (conductor *Conductor) snapshotPublications() []PublicationHandle {

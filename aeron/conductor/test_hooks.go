@@ -33,10 +33,6 @@ func WriteMinimalLogFileForTest(tb testing.TB, path string) {
 	require.NoError(tb, os.WriteFile(path, buf, 0o644))
 }
 
-func SetCloseLingerNsForTest(conductor *Conductor, lingerNs int64) {
-	conductor.config.CloseLingerNs = lingerNs
-}
-
 func assertInvokeImageHandlerUnderWriteLock(savedDepth int32) {
 	if savedDepth <= 0 {
 		panic("conductor: invokeImageHandler called without resource write lock")
@@ -105,6 +101,10 @@ func SubscriptionCountForTest(conductor *Conductor) int {
 
 func LogBuffersRegistryForTest(conductor *Conductor) *LogBuffersRegistry {
 	return logBuffersRegistryHook(conductor)
+}
+
+func LogBuffersRegistryEntryCountForTest(registry *LogBuffersRegistry) int {
+	return len(registry.entries)
 }
 
 func LogBuffersRegistryRefCountForTest(

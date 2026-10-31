@@ -218,7 +218,7 @@ func NewAeronCluster(result *ConnectResult) (*AeronCluster, error) {
 //
 // PollEgress closes the session when the owned transport client has
 // terminated, before the adapter poll. TransportFault returns the cause. The
-// owned client Close blocks for up to AeronConfig.CloseLingerDuration.
+// owned client Close sleeps AeronConfig.ClientCloseLingerDuration.
 //
 // Concurrency: invoker-only. PollEgress takes the transport client lock after
 // an owned client error. Must not run inside a transport client callback.

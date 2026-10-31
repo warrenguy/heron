@@ -127,7 +127,7 @@ func (conductor *Conductor) handleUnavailableImage(
 			return errImageCloseFailedBeforeRelease
 		}
 		registryKey := image.LogFileName()
-		conductor.releaseLogBuffersByKey(registryKey, conductor.config.CloseLingerNs)
+		conductor.releaseLogBuffersByKey(registryKey, conductor.config.ResourceLingerNs)
 
 		if handler := conductor.imageLifecycle.UnavailableImageHandler(sub); handler != nil {
 			conductor.invokeImageHandler(func() {

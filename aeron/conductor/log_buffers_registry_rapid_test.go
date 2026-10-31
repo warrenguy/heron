@@ -4,6 +4,7 @@ package conductor_test
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 
@@ -22,6 +23,7 @@ const (
 	registryRapidOpRelease
 	registryRapidOpSweep
 	registryRapidOpClosePublication
+	registryRapidOpUnmapLingering
 )
 
 const registryRapidClosePublicationRegID int64 = 42
@@ -30,11 +32,13 @@ var (
 	registryRapidOpsNoRelease = []registryRapidOpKind{
 		registryRapidOpAcquire,
 		registryRapidOpSweep,
+		registryRapidOpUnmapLingering,
 	}
 	registryRapidOpsWithRelease = []registryRapidOpKind{
 		registryRapidOpAcquire,
 		registryRapidOpRelease,
 		registryRapidOpSweep,
+		registryRapidOpUnmapLingering,
 	}
 )
 
@@ -57,10 +61,15 @@ func drawRegistryRapidNowNs(rt *rapid.T, label string) int64 {
 	return registryRapidBaseNowNs + offset
 }
 
+// drawRegistryRapidLingerNs also draws math.MaxInt64, the linger that
+// Client.Close uses to hold a log buffer until the unmap sweep.
 func drawRegistryRapidLingerNs(rt *rapid.T, label string) int64 {
 	rt.Helper()
 
-	return rapid.Int64Range(0, 1_000_000_000).Draw(rt, label)
+	return rapid.OneOf(
+		rapid.Int64Range(0, 1_000_000_000),
+		rapid.Just(int64(math.MaxInt64)),
+	).Draw(rt, label)
 }
 
 func drawRegistryRapidPositiveLingerNs(rt *rapid.T, label string) int64 {
@@ -107,6 +116,10 @@ func applyRegistryRapidRelease(
 	}
 
 	model.contains = true
+	if nowNs > math.MaxInt64-lingerNs {
+		model.lingerDeadlineNs = math.MaxInt64
+		return
+	}
 	model.lingerDeadlineNs = nowNs + lingerNs
 }
 
@@ -189,7 +202,7 @@ type registryRapidStepTarget struct {
 	liveMapped       *any
 	conductor        *conductor.Conductor
 	nanoNs           *int64
-	closeLingerNs    int64
+	resourceLingerNs int64
 	publicationInMap *bool
 }
 
@@ -232,6 +245,12 @@ func runRegistryRapidStep(
 		applyRegistryRapidSweep(target.model, nowNs)
 		clearRegistryRapidLiveMappedIfEvicted(target)
 
+	case registryRapidOpUnmapLingering:
+		conductor.SweepLingeringLogBuffersForTest(target.registry, math.MaxInt64)
+		applyRegistryRapidSweep(target.model, math.MaxInt64)
+		clearRegistryRapidLiveMappedIfEvicted(target)
+		require.False(rt, target.registry.HasScheduledLinger())
+
 	case registryRapidOpClosePublication:
 		require.NotNil(rt, target.conductor)
 		require.NotNil(rt, target.nanoNs)
@@ -248,7 +267,7 @@ func runRegistryRapidStep(
 		*target.publicationInMap = false
 		require.Equal(rt, 0, conductor.PublicationCountForTest(target.conductor))
 
-		applyRegistryRapidRelease(target.model, nowNs, target.closeLingerNs)
+		applyRegistryRapidRelease(target.model, nowNs, target.resourceLingerNs)
 		clearRegistryRapidLiveMappedIfEvicted(target)
 	}
 }
@@ -269,6 +288,21 @@ func sweepAllRegistryRapidKeys(
 	}
 }
 
+func unmapAllRegistryRapidKeys(
+	rt *rapid.T,
+	registry *conductor.LogBuffersRegistry,
+	states []registryRapidKeyState,
+) {
+	rt.Helper()
+
+	conductor.SweepLingeringLogBuffersForTest(registry, math.MaxInt64)
+	require.False(rt, registry.HasScheduledLinger())
+	for i := range states {
+		applyRegistryRapidSweep(&states[i].model, math.MaxInt64)
+		assertRegistryRapidInvariants(rt, registry, states[i].logPath, states[i].model)
+	}
+}
+
 func registryRapidKeyStateForLog(
 	rt *rapid.T,
 	registry *conductor.LogBuffersRegistry,
@@ -282,12 +316,12 @@ func registryRapidKeyStateForLog(
 }
 
 type registryCloseRapidFixture struct {
-	conductor     *conductor.Conductor
-	registry      *conductor.LogBuffersRegistry
-	state         registryRapidKeyState
-	nanoNs        *int64
-	closeLingerNs int64
-	liveMapped    *any
+	conductor        *conductor.Conductor
+	registry         *conductor.LogBuffersRegistry
+	state            registryRapidKeyState
+	nanoNs           *int64
+	resourceLingerNs int64
+	liveMapped       *any
 }
 
 func newRegistryCloseRapidFixture(
@@ -297,14 +331,14 @@ func newRegistryCloseRapidFixture(
 	t.Helper()
 	rt.Helper()
 
-	closeLingerNs := drawRegistryRapidPositiveLingerNs(rt, "closeLingerNs")
+	resourceLingerNs := drawRegistryRapidPositiveLingerNs(rt, "resourceLingerNs")
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "close-rapid.log")
 	writeMinimalLogFileForRegistryTest(t, logPath)
 
 	lifecycle := &lingerPublicationLifecycle{registryKey: logPath}
-	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(t, closeLingerNs, lifecycle)
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(t, resourceLingerNs, lifecycle)
 
 	buffers, err := conductorInstance.AcquireLogBuffersForTest(logPath)
 	require.NoError(t, err)
@@ -319,12 +353,12 @@ func newRegistryCloseRapidFixture(
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 	state := registryRapidKeyStateForLog(rt, registry, logPath)
 	return registryCloseRapidFixture{
-		conductor:     conductorInstance,
-		registry:      registry,
-		state:         state,
-		nanoNs:        nanoNs,
-		closeLingerNs: closeLingerNs,
-		liveMapped:    &liveMapped,
+		conductor:        conductorInstance,
+		registry:         registry,
+		state:            state,
+		nanoNs:           nanoNs,
+		resourceLingerNs: resourceLingerNs,
+		liveMapped:       &liveMapped,
 	}
 }
 
@@ -422,7 +456,7 @@ func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T
 				liveMapped:       fixture.liveMapped,
 				conductor:        fixture.conductor,
 				nanoNs:           fixture.nanoNs,
-				closeLingerNs:    fixture.closeLingerNs,
+				resourceLingerNs: fixture.resourceLingerNs,
 				publicationInMap: &publicationInMap,
 			}, op, step)
 			assertRegistryRapidInvariants(rt, fixture.registry, fixture.state.logPath, model)
@@ -445,6 +479,10 @@ func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
 
 			if op == registryRapidOpSweep {
 				sweepAllRegistryRapidKeys(rt, registry, states, step)
+				continue
+			}
+			if op == registryRapidOpUnmapLingering {
+				unmapAllRegistryRapidKeys(rt, registry, states)
 				continue
 			}
 

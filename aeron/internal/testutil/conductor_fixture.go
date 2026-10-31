@@ -51,7 +51,7 @@ type ConductorConfig struct {
 	ImageLifecycle               conductor.ImageLifecycle
 	ResourceLifecycle            conductor.ResourceLifecycle
 	MediaDriverDir               string
-	CloseLingerNs                int64
+	ResourceLingerNs             int64
 	PublicationErrorFrameHandler conductor.PublicationErrorHandler
 }
 
@@ -157,7 +157,7 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 		ImageLifecycle:               cfg.ImageLifecycle,
 		ResourceLifecycle:            cfg.ResourceLifecycle,
 		MediaDriverDir:               cfg.MediaDriverDir,
-		CloseLingerNs:                cfg.CloseLingerNs,
+		ResourceLingerNs:             cfg.ResourceLingerNs,
 		PublicationErrorFrameHandler: cfg.PublicationErrorFrameHandler,
 	}
 

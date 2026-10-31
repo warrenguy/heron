@@ -1,6 +1,8 @@
 package conductor
 
 import (
+	"math"
+
 	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
@@ -206,20 +208,29 @@ func (conductor *Conductor) sweepLingeringLogBuffers(nowNs int64) int {
 	return conductor.logBuffersRegistry.SweepLingering(nowNs)
 }
 
-// DrainLingeringLogBuffers is the close-path hook for a final linger sweep
-// before CLIENT_CLOSE.
+// DrainLingeringLogBuffers unmaps each lingering log buffer whose deadline
+// has passed. Returns the count.
 //
 // Safe from any goroutine once the agent quiesces.
 //
-// During a suspended image handler the mutex is unlocked, so a foreign goroutine may
-// acquire the write lock concurrently with the blocked handler.
+// During a suspended image handler the mutex is unlocked, so a foreign
+// goroutine may acquire the write lock concurrently with the blocked handler.
 func (conductor *Conductor) DrainLingeringLogBuffers() int {
-	if conductor.logBuffersRegistry == nil ||
-		!conductor.logBuffersRegistry.HasScheduledLinger() {
+	return conductor.sweepLingeringUnderLock(conductor.config.NanoClock())
+}
+
+// UnmapLingeringLogBuffers unmaps every lingering log buffer, whatever its
+// deadline. Returns the count.
+func (conductor *Conductor) UnmapLingeringLogBuffers() int {
+	return conductor.sweepLingeringUnderLock(math.MaxInt64)
+}
+
+func (conductor *Conductor) sweepLingeringUnderLock(nowNs int64) int {
+	if !conductor.logBuffersRegistry.HasScheduledLinger() {
 		return 0
 	}
 	return underResourceWriteLockResult(conductor, func() int {
-		return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
+		return conductor.sweepLingeringLogBuffers(nowNs)
 	})
 }
 

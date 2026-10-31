@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -173,8 +174,15 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 		return
 	}
 
-	entry.lingerDeadlineNs = nowNs + lingerNs
+	entry.lingerDeadlineNs = saturatedLingerDeadlineNs(nowNs, lingerNs)
 	registry.lingerScheduled.Add(1)
+}
+
+func saturatedLingerDeadlineNs(nowNs, lingerNs int64) int64 {
+	if nowNs > math.MaxInt64-lingerNs {
+		return math.MaxInt64
+	}
+	return nowNs + lingerNs
 }
 
 func (registry *LogBuffersRegistry) deleteEntry(key string, entry *logBufferEntry) {

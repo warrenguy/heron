@@ -25,10 +25,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// mixedMemberCloseLinger bounds Client.Close linger at module teardown.
-// Nothing polls after the duty cycle stops.
-const mixedMemberCloseLinger = 250 * time.Millisecond
-
 // mixedIdlePollInterval paces polls that run no Go duty cycle.
 // Nothing local advances between reads. A tighter interval only burns wakeups.
 const mixedIdlePollInterval = 50 * time.Millisecond
@@ -88,9 +84,6 @@ func buildMixedJavaLeaderConfig(t *testing.T) cluster.Config {
 		AppointedLeaderID:             &appointed,
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-		AeronConfig: aeron.Config{
-			CloseLingerDuration: mixedMemberCloseLinger,
-		},
 	}
 }
 
@@ -114,9 +107,6 @@ func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 		AppointedLeaderID:             &appointed,
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-		AeronConfig: aeron.Config{
-			CloseLingerDuration: mixedMemberCloseLinger,
-		},
 	}
 }
 
@@ -624,11 +614,9 @@ func awaitGoRecordingReaches(
 func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 	t.Helper()
 
-	// Induction client uses its own transport client on the shared driver.
-	// The module client is invoker-only on the test goroutine.
-	// Payload is unasserted. Empty handlers silent no-op all egress events.
+	// Induction client uses its own transport client on the shared
+	// driver. The module client is invoker-only on the test goroutine.
 	aeronClient, hadClientError := harness.ConnectIPCClientConfig(t, f.driver, aeron.Config{
-		CloseLingerDuration: mixedMemberCloseLinger,
 		ErrorHandler: func(err error) {
 			t.Errorf("induction client error: %v", err)
 		},
@@ -646,7 +634,9 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 		AeronDir:         f.driver.Dir,
 		Aeron:            aeronClient,
 		MessageTimeout:   clusterjava.MixedConnectBudget,
-		EgressHandler:    &client.EgressHandlers{},
+
+		// Empty handlers silent no-op all egress events.
+		EgressHandler: &client.EgressHandlers{},
 	}
 
 	ac, err := client.NewAsyncConnect(t.Context(), cfg)

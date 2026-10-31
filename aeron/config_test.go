@@ -17,7 +17,8 @@ func TestNormalizeConfig_defaults(t *testing.T) {
 	require.Equal(t, 500*time.Millisecond, normalized.KeepAliveInterval)
 	require.Zero(t, normalized.InterServiceTimeout)
 	require.Equal(t, 16*time.Millisecond, normalized.IdleSleepDuration)
-	require.Equal(t, 3*time.Second, normalized.CloseLingerDuration)
+	require.Nil(t, normalized.ResourceLingerDuration)
+	require.Zero(t, normalized.ClientCloseLingerDuration)
 	require.Equal(t, 10*time.Second, normalized.PollTimeout)
 	require.Equal(t, 10*time.Second, normalized.PublicationOfferTimeout)
 	require.NotNil(t, normalized.EpochClock)
@@ -26,27 +27,21 @@ func TestNormalizeConfig_defaults(t *testing.T) {
 	require.Positive(t, normalized.NanoClock())
 }
 
-func TestNormalizeConfig_zeroCloseLingerUsesDefault(t *testing.T) {
-	normalized := aeron.NormalizeConfigForTest(aeron.Config{
-		CloseLingerDuration: 0,
-	})
-
-	require.Equal(t, 3*time.Second, normalized.CloseLingerDuration)
-}
-
 func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	epochMs := int64(42)
 	nanoNs := int64(99)
 	useInvoker := false
+	resourceLinger := 7 * time.Second
 
 	normalized := aeron.NormalizeConfigForTest(aeron.Config{
-		DriverTimeout:           3 * time.Second,
-		KeepAliveInterval:       250 * time.Millisecond,
-		InterServiceTimeout:     2 * time.Second,
-		IdleSleepDuration:       8 * time.Millisecond,
-		CloseLingerDuration:     7 * time.Second,
-		PollTimeout:             4 * time.Second,
-		PublicationOfferTimeout: 3 * time.Second,
+		DriverTimeout:             3 * time.Second,
+		KeepAliveInterval:         250 * time.Millisecond,
+		InterServiceTimeout:       2 * time.Second,
+		IdleSleepDuration:         8 * time.Millisecond,
+		ResourceLingerDuration:    &resourceLinger,
+		ClientCloseLingerDuration: 2 * time.Second,
+		PollTimeout:               4 * time.Second,
+		PublicationOfferTimeout:   3 * time.Second,
 		EpochClock: func() int64 {
 			return epochMs
 		},
@@ -60,7 +55,9 @@ func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, 250*time.Millisecond, normalized.KeepAliveInterval)
 	require.Equal(t, 2*time.Second, normalized.InterServiceTimeout)
 	require.Equal(t, 8*time.Millisecond, normalized.IdleSleepDuration)
-	require.Equal(t, 7*time.Second, normalized.CloseLingerDuration)
+	require.Same(t, &resourceLinger, normalized.ResourceLingerDuration)
+	require.Equal(t, 7*time.Second, *normalized.ResourceLingerDuration)
+	require.Equal(t, 2*time.Second, normalized.ClientCloseLingerDuration)
 	require.Equal(t, 4*time.Second, normalized.PollTimeout)
 	require.Equal(t, 3*time.Second, normalized.PublicationOfferTimeout)
 	require.Equal(t, epochMs, normalized.EpochClock())

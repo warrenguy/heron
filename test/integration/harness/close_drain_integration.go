@@ -101,9 +101,8 @@ func captureCloseDrainDuringClose(
 			continue
 		}
 		if pastDeadline {
-			// pollTimeout bounds wire sampling, not closeFn completion; wait for
-			// closeErr so teardown result is not lost (client.Close is separately
-			// capped by DriverTimeout + CloseLingerDuration).
+			// pollTimeout bounds wire sampling, not closeFn completion. client.Close
+			// returns within DriverTimeout plus ClientCloseLingerDuration.
 			closeErr = <-closeDone
 			break
 		}

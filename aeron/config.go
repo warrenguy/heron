@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	defaultDriverTimeout       = 10 * time.Second
-	defaultKeepAliveInterval   = 500 * time.Millisecond
-	defaultIdleSleepDuration   = 16 * time.Millisecond
-	defaultCloseLingerDuration = 3 * time.Second
-	defaultPollTimeout         = 10 * time.Second
+	defaultDriverTimeout          = 10 * time.Second
+	defaultKeepAliveInterval      = 500 * time.Millisecond
+	defaultIdleSleepDuration      = 16 * time.Millisecond
+	defaultResourceLingerDuration = 3 * time.Second
+	defaultPollTimeout            = 10 * time.Second
 
 	DefaultIdleSleepDuration = defaultIdleSleepDuration
 
@@ -38,10 +38,28 @@ type Config struct {
 
 	IdleSleepDuration time.Duration
 
-	// CloseLingerDuration schedules log unmap after publication or image close.
+	// ResourceLingerDuration delays the unmap of a log buffer after its
+	// last Publication, Subscription or Image releases it. Nil uses the
+	// default (3s). A pointer to zero unmaps at release.
 	//
-	// Zero uses the default (3s), not immediate unmap.
-	CloseLingerDuration time.Duration
+	// The conductor also releases a log buffer on its own when it terminates
+	// or removes an unavailable Image. The caller cannot order those
+	// releases. Under a zero linger, keep these calls invoker-only:
+	//   - Offer, claim and Poll
+	//   - Position, IsConnected and AvailableWindow
+	//
+	// Under a zero linger, commit or abort each claim before the next DoWork.
+	ResourceLingerDuration *time.Duration
+
+	// ClientCloseLingerDuration is the sleep in Client.Close between resource
+	// close and log buffer unmap. Zero unmaps at once. Zero is the default.
+	// The sleep applies whatever ResourceLingerDuration holds.
+	//
+	// Raise the duration when another goroutine still calls any of these
+	// during Close:
+	//   - Offer, claim or Poll
+	//   - Position, IsConnected or AvailableWindow
+	ClientCloseLingerDuration time.Duration
 
 	// PollTimeout bounds resource WaitUntil* and receive poll helpers, plus
 	// [Client.RunDuringClientWork].
@@ -96,6 +114,13 @@ func (cfg Config) useConductorInvokerEnabled() bool {
 	return *cfg.UseConductorInvoker
 }
 
+func (cfg Config) resourceLingerDuration() time.Duration {
+	if cfg.ResourceLingerDuration == nil {
+		return defaultResourceLingerDuration
+	}
+	return *cfg.ResourceLingerDuration
+}
+
 func normalizeConfig(cfg Config) Config {
 	if cfg.DriverTimeout == 0 {
 		cfg.DriverTimeout = defaultDriverTimeout
@@ -105,9 +130,6 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.IdleSleepDuration == 0 {
 		cfg.IdleSleepDuration = defaultIdleSleepDuration
-	}
-	if cfg.CloseLingerDuration == 0 {
-		cfg.CloseLingerDuration = defaultCloseLingerDuration
 	}
 	if cfg.PollTimeout == 0 {
 		cfg.PollTimeout = defaultPollTimeout

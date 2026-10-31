@@ -406,10 +406,6 @@ func ownedSessionConfig(leader *cluster.ConsensusModule, aeronDir string) client
 			credentials: []byte(sessionSmokeCredentials),
 		},
 		EgressHandler: &client.EgressHandlers{},
-		AeronConfig: aeron.Config{
-			InterServiceTimeout: harness.ConnectedPollTimeout,
-			CloseLingerDuration: 250 * time.Millisecond,
-		},
 	}
 }
 

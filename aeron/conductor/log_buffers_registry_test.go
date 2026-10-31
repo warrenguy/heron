@@ -1,6 +1,7 @@
 package conductor_test
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -518,6 +519,93 @@ func TestLogBuffersRegistry_lingerScheduled_nilRegistry(t *testing.T) {
 	require.False(t, nilRegistry.HasScheduledLinger())
 	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(nil))
 	require.Zero(t, conductor.LogBuffersRegistryCountScheduledLingersForTest(nil))
+}
+
+func TestLogBuffersRegistry_SweepLingering_maxInt64(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 6_000_000_000
+
+	tests := []struct {
+		name           string
+		acquires       int
+		releases       int
+		lingerNs       int64
+		sweepNs        int64
+		wantSwept      int
+		wantContains   bool
+		wantRefCount   int32
+		wantDeadlineNs int64
+	}{
+		{
+			name:      "lingeringBeforeDeadline",
+			acquires:  1,
+			releases:  1,
+			lingerNs:  int64(time.Hour),
+			sweepNs:   math.MaxInt64,
+			wantSwept: 1,
+		},
+		{
+			name:           "saturatedDeadlineRetainedBelowMax",
+			acquires:       1,
+			releases:       1,
+			lingerNs:       math.MaxInt64,
+			sweepNs:        math.MaxInt64 - 1,
+			wantContains:   true,
+			wantDeadlineNs: math.MaxInt64,
+		},
+		{
+			name:      "saturatedDeadlineSweptAtMax",
+			acquires:  1,
+			releases:  1,
+			lingerNs:  math.MaxInt64,
+			sweepNs:   math.MaxInt64,
+			wantSwept: 1,
+		},
+		{
+			name:         "positiveRefCountStaysMapped",
+			acquires:     2,
+			releases:     1,
+			lingerNs:     int64(time.Hour),
+			sweepNs:      math.MaxInt64,
+			wantContains: true,
+			wantRefCount: 1,
+		},
+		{
+			name:    "emptyRegistry",
+			sweepNs: math.MaxInt64,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			registry, logPath := newRegistryWithLogFile(t, "sweep-max.log")
+			key, err := conductor.ResolveLogFileKeyForTest(registry, logPath)
+			require.NoError(t, err)
+			for range test.acquires {
+				_, err := registry.Acquire(logPath)
+				require.NoError(t, err)
+			}
+			for range test.releases {
+				conductor.ReleaseResolvedKeyAtForTest(registry, key, startNs, test.lingerNs)
+			}
+
+			swept := conductor.SweepLingeringLogBuffersForTest(registry, test.sweepNs)
+			require.Equal(t, test.wantSwept, swept)
+			require.Equal(
+				t, test.wantContains, conductor.LogBuffersRegistryContainsForTest(registry, logPath),
+			)
+			require.Equal(
+				t, test.wantRefCount, conductor.LogBuffersRegistryRefCountForTest(registry, logPath),
+			)
+			require.Equal(
+				t, test.wantDeadlineNs, conductor.LingerDeadlineNsForTest(registry, logPath),
+			)
+			require.Equal(t, test.wantDeadlineNs != 0, registry.HasScheduledLinger())
+			assertRegistryLingerScheduledMatchesScan(t, registry)
+		})
+	}
 }
 
 func TestSweepLingeringLogBuffers_nilRegistry(t *testing.T) {

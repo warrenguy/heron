@@ -38,10 +38,6 @@ func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
 	conductor.terminating = terminating
 }
 
-func (conductor *Conductor) SetCloseLingerNsForTest(lingerNs int64) {
-	conductor.config.CloseLingerNs = lingerNs
-}
-
 func (proxy *DriverProxy) Ring() *ringbuffer.ManyToOneRingBuffer {
 	return proxy.ring
 }
@@ -195,13 +191,13 @@ func (conductor *Conductor) ForceCloseResourcesForTest() {
 // ForceClosePublicationForTest force-closes one publication. Does not offer
 // REMOVE.
 func (conductor *Conductor) ForceClosePublicationForTest(publication PublicationHandle) {
-	conductor.retirePublication(publication)
+	conductor.retirePublication(publication, conductor.config.ResourceLingerNs)
 }
 
 // ForceCloseSubscriptionForTest force-closes one subscription. Does not offer
 // REMOVE.
 func (conductor *Conductor) ForceCloseSubscriptionForTest(subscription SubscriptionHandle) {
-	conductor.retireSubscription(subscription)
+	conductor.retireSubscription(subscription, conductor.config.ResourceLingerNs)
 }
 
 // InsertPublicationForTest is for conductor_test.
