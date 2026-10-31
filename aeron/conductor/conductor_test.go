@@ -1092,7 +1092,7 @@ func conductorTestConfig(
 
 // conductorTestConfigMutableNano leaves ResourceLifecycle nil; Close* then drops
 // map entries only. Tests that need retire, linger, or mark-closed inject lifecycle
-// via newConductorWithResourceLifecycleForTest or newConductorWithCloseLingerForTest.
+// via newConductorWithResourceLifecycleForTest or newConductorWithResourceLingerForTest.
 func conductorTestConfigMutableNano(
 	tb testing.TB,
 	errorHandler func(error),
@@ -1461,7 +1461,7 @@ func TestNewConductor_requiresResourceLifecycleWithImageLifecycle(t *testing.T) 
 	)
 }
 
-func TestNewConductor_rejectsNegativeCloseLingerNs(t *testing.T) {
+func TestNewConductor_rejectsNegativeResourceLingerNs(t *testing.T) {
 	t.Parallel()
 
 	conductorInstance, err := conductor.NewConductor(
@@ -1469,12 +1469,12 @@ func TestNewConductor_rejectsNegativeCloseLingerNs(t *testing.T) {
 		nil,
 		nil,
 		conductor.Config{
-			CloseLingerNs: -1,
+			ResourceLingerNs: -1,
 		},
 	)
 	require.Nil(t, conductorInstance)
-	require.ErrorIs(t, err, conductor.ErrNegativeCloseLingerNs)
-	require.EqualError(t, err, "conductor: CloseLingerNs must not be negative")
+	require.ErrorIs(t, err, conductor.ErrNegativeResourceLingerNs)
+	require.EqualError(t, err, "conductor: ResourceLingerNs must not be negative")
 }
 
 type countingHandlerScope struct {

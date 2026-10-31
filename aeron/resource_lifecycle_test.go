@@ -512,17 +512,17 @@ func TestValidateConfig_requiresResourceLifecycleWithImageLifecycle(t *testing.T
 	require.NoError(t, err)
 }
 
-func TestValidateConfig_rejectsNegativeCloseLingerNs(t *testing.T) {
+func TestValidateConfig_rejectsNegativeResourceLingerNs(t *testing.T) {
 	t.Parallel()
 
 	err := conductor.ValidateConfig(conductor.Config{
-		CloseLingerNs: -1,
+		ResourceLingerNs: -1,
 	})
-	require.ErrorIs(t, err, conductor.ErrNegativeCloseLingerNs)
-	require.EqualError(t, err, "conductor: CloseLingerNs must not be negative")
+	require.ErrorIs(t, err, conductor.ErrNegativeResourceLingerNs)
+	require.EqualError(t, err, "conductor: ResourceLingerNs must not be negative")
 
 	err = conductor.ValidateConfig(conductor.Config{
-		CloseLingerNs: 0,
+		ResourceLingerNs: 0,
 	})
 	require.NoError(t, err)
 }

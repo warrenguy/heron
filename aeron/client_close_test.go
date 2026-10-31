@@ -2,7 +2,6 @@ package aeron_test
 
 import (
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -15,7 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 )
 
-const clientCloseLingerNs = int64(50_000_000)
+const testResourceLingerNs = int64(50 * time.Millisecond)
 
 func newClientCloseTestClient(
 	fixture *testutil.ConductorFixture,
@@ -108,31 +107,6 @@ func assertClientCloseIsIdempotent(t *testing.T, client *aeron.Client) {
 	require.False(t, client.IsTerminating())
 }
 
-func waitForClientCloseWithAdvancingClock(
-	t *testing.T,
-	closeDone <-chan error,
-	nanoNs *atomic.Int64,
-	lingerNs int64,
-) {
-	t.Helper()
-
-	var closeErr error
-	advanceDeadline := time.After(2 * time.Second)
-advanceLoop:
-	for {
-		select {
-		case closeErr = <-closeDone:
-			break advanceLoop
-		case <-advanceDeadline:
-			t.Fatal("client close did not finish during linger drain")
-		default:
-			nanoNs.Add(lingerNs / 5)
-			runtime.Gosched()
-		}
-	}
-	require.NoError(t, closeErr)
-}
-
 func setupClientCloseRealPublicationLingerTest(
 	t *testing.T,
 	logFileName string,
@@ -143,7 +117,7 @@ func setupClientCloseRealPublicationLingerTest(
 
 	config := testutil.DefaultConductorConfig(nil)
 	config.NanoClock = nanoClock
-	config.CloseLingerNs = lingerNs
+	config.ResourceLingerNs = lingerNs
 	config.ResourceLifecycle = aeron.ConductorResourceLifecycle
 	fixture := testutil.NewConductorFixture(t, config)
 
@@ -178,13 +152,13 @@ func setupClientCloseLingerTest(
 	t *testing.T,
 	logFileName string,
 	lingerNs int64,
-	nanoClock func() int64,
 ) (*testutil.ConductorFixture, *aeron.Client) {
 	t.Helper()
 
+	nanoClock := func() int64 { return testutil.TestStartNanoNs }
 	config := testutil.DefaultConductorConfig(nil)
 	config.NanoClock = nanoClock
-	config.CloseLingerNs = lingerNs
+	config.ResourceLingerNs = lingerNs
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, logFileName)
 	conductor.WriteMinimalLogFileForTest(t, logPath)
@@ -387,74 +361,19 @@ func TestClient_Close_drainsSubscriptionBeforeClientClose(t *testing.T) {
 	require.Equal(t, 0, conductor.SubscriptionCountForTest(fixture.Conductor))
 }
 
-func TestClient_Close_lingerDrainRunsConductorDoWork(t *testing.T) {
-	const startNs = int64(30_000_000_000)
-
-	var nanoNs atomic.Int64
-	nanoNs.Store(startNs)
-	nanoClock := nanoNs.Load
-
-	fixture, client := setupClientCloseLingerTest(
-		t, "linger-dowork.log", clientCloseLingerNs, nanoClock,
-	)
-
-	var doWorkLingerSweeps atomic.Int32
-	fixture.Conductor.SetLingerSweepBlockerForTest(func() {
-		doWorkLingerSweeps.Add(1)
-	})
-	t.Cleanup(func() { fixture.Conductor.SetLingerSweepBlockerForTest(nil) })
-
-	sweepsBeforeClose := doWorkLingerSweeps.Load()
-	closeDone := closeClientAsync(client)
-	lingerScheduled := false
-	advanceDeadline := time.After(2 * time.Second)
-advanceLoop:
-	for {
-		select {
-		case closeErr := <-closeDone:
-			require.NoError(t, closeErr)
-			require.True(t, lingerScheduled, "linger was not scheduled during close")
-			require.Greater(
-				t,
-				doWorkLingerSweeps.Load(),
-				sweepsBeforeClose,
-				"conductor DoWork did not run during linger drain",
-			)
-			break advanceLoop
-		case <-advanceDeadline:
-			t.Fatal("client close did not finish during linger drain")
-		default:
-			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
-			if registry.HasScheduledLinger() {
-				lingerScheduled = true
-				nanoNs.Add(clientCloseLingerNs / 5)
-			}
-			runtime.Gosched()
-		}
-	}
-}
-
-func TestClient_Close_realPublication_lingerDrainBeforeClientClose(t *testing.T) {
+func TestClient_Close_realPublication_unmapsLingeringLogBuffers(t *testing.T) {
 	const startNs = int64(31_000_000_000)
 
-	var nanoNs atomic.Int64
-	nanoNs.Store(startNs)
-	nanoClock := nanoNs.Load
-
 	fixture, client, _, _ := setupClientCloseRealPublicationLingerTest(
-		t, "client-real-linger.log", clientCloseLingerNs, nanoClock,
+		t, "client-real-linger.log", testResourceLingerNs,
+		func() int64 { return startNs },
 	)
-	waitForClientCloseWithAdvancingClock(
-		t, closeClientAsync(client), &nanoNs, clientCloseLingerNs,
+	closeClientAndRequireRecordOrder(
+		t, client, fixture, conductor.RemovePublication, conductor.ClientClose,
 	)
 
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 	require.False(t, registry.HasScheduledLinger())
-
-	requireRecordOrder(
-		t, testutil.CommittedRecordTypeIDs(fixture.Ring),
-		conductor.RemovePublication, conductor.ClientClose,
-	)
 	require.Equal(t, 0, conductor.PublicationCountForTest(fixture.Conductor))
 }
 
@@ -466,7 +385,7 @@ func TestClient_Close_realPublication_closePublicationLingerRetainedThenSwept(t 
 	nanoClock := nanoNs.Load
 
 	fixture, client, pub, logPath := setupClientCloseRealPublicationLingerTest(
-		t, "client-real-pub-close.log", clientCloseLingerNs, nanoClock,
+		t, "client-real-pub-close.log", testResourceLingerNs, nanoClock,
 	)
 
 	require.NoError(t, pub.Close())
@@ -477,53 +396,117 @@ func TestClient_Close_realPublication_closePublicationLingerRetainedThenSwept(t 
 	require.True(t, registry.HasScheduledLinger())
 	require.Equal(
 		t,
-		startNs+clientCloseLingerNs,
+		startNs+testResourceLingerNs,
 		conductor.LingerDeadlineNsForTest(registry, logPath),
 	)
 
 	assertDrainLingerRetainedThenSwept(
-		t, fixture, logPath, &nanoNs, startNs, clientCloseLingerNs,
+		t, fixture, logPath, &nanoNs, startNs, testResourceLingerNs,
 	)
 	require.False(t, registry.HasScheduledLinger())
 
 	require.NoError(t, client.Close())
 }
 
-func TestClient_Close_lingerDrainBeforeClientClose(t *testing.T) {
-	const startNs = int64(30_000_000_000)
-
-	var nanoNs atomic.Int64
-	nanoNs.Store(startNs)
-	nanoClock := nanoNs.Load
-
-	fixture, client := setupClientCloseLingerTest(
-		t, "client-linger.log", clientCloseLingerNs, nanoClock,
-	)
-	waitForClientCloseWithAdvancingClock(
-		t, closeClientAsync(client), &nanoNs, clientCloseLingerNs,
+func TestClient_Close_unmapsLingeringLogBuffers(t *testing.T) {
+	fixture, client := setupClientCloseLingerTest(t, "client-linger.log", testResourceLingerNs)
+	closeClientAndRequireRecordOrder(
+		t, client, fixture, conductor.RemovePublication, conductor.ClientClose,
 	)
 
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
 	require.False(t, registry.HasScheduledLinger())
-
-	requireRecordOrder(
-		t, testutil.CommittedRecordTypeIDs(fixture.Ring),
-		conductor.RemovePublication, conductor.ClientClose,
-	)
 }
 
-func TestClient_Close_frozenNanoClock_bestEffortLingerDrain(t *testing.T) {
-	const startNs = int64(40_000_000_000)
-
-	nanoClock := func() int64 { return startNs }
-
-	fixture, client := setupClientCloseLingerTest(
-		t, "frozen-linger.log", clientCloseLingerNs, nanoClock,
+func TestClient_Close_sleepsClientCloseLingerBeforeUnmap(t *testing.T) {
+	const (
+		startNs           = int64(33_000_000_000)
+		clientCloseLinger = 200 * time.Millisecond
 	)
-	waitForClientClose(t, closeClientAsync(client), "client close hung with frozen NanoClock")
+
+	tests := []struct {
+		name      string
+		lingerNs  int64
+		nanoClock func() int64
+	}{
+		{
+			name:      "frozenClock",
+			lingerNs:  testResourceLingerNs,
+			nanoClock: func() int64 { return startNs },
+		},
+		{
+			name:      "zeroResourceLinger",
+			lingerNs:  0,
+			nanoClock: func() int64 { return startNs },
+		},
+		{
+			// Each NanoClock read advances 1ns, so every drain DoWork after
+			// the release sees a 1ns linger deadline as passed.
+			name:     "deadlinePassesDuringDrain",
+			lingerNs: 1,
+			nanoClock: func() func() int64 {
+				var nanoNs atomic.Int64
+				nanoNs.Store(startNs)
+				return func() int64 { return nanoNs.Add(1) }
+			}(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, client, _, _ := setupClientCloseRealPublicationLingerTest(
+				t, "client-close-sleep.log", test.lingerNs, test.nanoClock,
+			)
+			client.SetClientCloseLingerDurationForTest(clientCloseLinger)
+
+			registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
+			started := time.Now()
+			closeDone := closeClientAsync(client)
+
+			sawLinger := false
+			var cleared time.Time
+			deadline := time.After(2 * time.Second)
+			for {
+				if registry.HasScheduledLinger() {
+					sawLinger = true
+				} else if sawLinger {
+					cleared = time.Now()
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("lingering log buffer was not unmapped")
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+
+			require.GreaterOrEqual(t, cleared.Sub(started), clientCloseLinger)
+			waitForClientClose(t, closeDone, "client close did not finish after unmap")
+			require.Zero(t, conductor.LogBuffersRegistryEntryCountForTest(registry))
+		})
+	}
+}
+
+func TestClient_Close_defaultConfigSkipsLingerWait(t *testing.T) {
+	var recorded []error
+	client, fixture := aeron.SetupDefaultCloseClientForTest(t, func(err error) {
+		recorded = append(recorded, err)
+	})
+
+	started := time.Now()
+	waitForClientClose(t, closeClientAsync(client), "client close hung with default config")
+	require.Less(t, time.Since(started), time.Second)
 
 	registry := conductor.LogBuffersRegistryForTest(fixture.Conductor)
-	require.True(t, registry.HasScheduledLinger())
+	require.Zero(t, conductor.LogBuffersRegistryEntryCountForTest(registry))
+	requireRecordOrder(
+		t,
+		testutil.CommittedRecordTypeIDs(fixture.Ring),
+		conductor.RemovePublication,
+		conductor.RemoveSubscription,
+		conductor.ClientClose,
+	)
+	require.Empty(t, recorded)
 }
 
 func TestClient_delayedFirstDoWorkReSeedsAfterConstructorSeed(t *testing.T) {

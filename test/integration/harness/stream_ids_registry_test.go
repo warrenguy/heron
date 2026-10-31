@@ -11,6 +11,7 @@ var sharedDriverStreamIDs = map[string]int32{
 	"AeronHelpersSmokeStreamID":                              AeronHelpersSmokeStreamID,
 	"AssertSubscribeMetadataStreamID":                        AssertSubscribeMetadataStreamID,
 	"ChannelStatusCounterStreamID":                           ChannelStatusCounterStreamID,
+	"ClientCloseSkipsLingerWaitStreamID":                     ClientCloseSkipsLingerWaitStreamID,
 	"ConnectedWaitPublicationTimeoutStreamID":                ConnectedWaitPublicationTimeoutStreamID,
 	"ConnectedWaitSubscriptionTimeoutStreamID":               ConnectedWaitSubscriptionTimeoutStreamID,
 	"ConsensusEgressCancelMarkedStreamID":                    ConsensusEgressCancelMarkedStreamID,

@@ -261,7 +261,7 @@ func (client *Client) IsClosed() bool {
 //
 // Poll closes the session when the owned transport client has terminated,
 // then returns 0. TransportFault returns the cause. The owned client Close
-// blocks for up to AeronConfig.CloseLingerDuration.
+// sleeps AeronConfig.ClientCloseLingerDuration.
 //
 // Concurrency: invoker-only. Poll takes the transport client lock after an
 // owned client error. Must not run inside a transport client callback.

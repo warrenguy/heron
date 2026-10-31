@@ -128,7 +128,7 @@ func conductorFixtureConfigFromConnect(connectConfig conductor.Config) testutil.
 	config.MediaDriverDir = connectConfig.MediaDriverDir
 	config.ErrorHandler = connectConfig.ErrorHandler
 	config.SubscriberErrorHandler = connectConfig.SubscriberErrorHandler
-	config.CloseLingerNs = connectConfig.CloseLingerNs
+	config.ResourceLingerNs = connectConfig.ResourceLingerNs
 	config.PublicationErrorFrameHandler = connectConfig.PublicationErrorFrameHandler
 	return config
 }

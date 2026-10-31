@@ -26,8 +26,8 @@ var (
 	ErrResourceLifecycleRequired = errors.New(
 		"conductor: ResourceLifecycle is required when ImageLifecycle is set",
 	)
-	ErrNegativeCloseLingerNs = errors.New(
-		"conductor: CloseLingerNs must not be negative",
+	ErrNegativeResourceLingerNs = errors.New(
+		"conductor: ResourceLingerNs must not be negative",
 	)
 )
 
@@ -105,8 +105,8 @@ type Config struct {
 	// MediaDriverDir confines log file paths from the driver; required when
 	// ImageLifecycle is non-nil.
 	MediaDriverDir string
-	// CloseLingerNs schedules log unmap after publication or image close.
-	CloseLingerNs int64
+	// Zero unmaps a log buffer when its last reference drops.
+	ResourceLingerNs int64
 	// PublicationErrorFrameHandler is optional. Nil drops every publication
 	// error frame. The conductor calls the handler once per publication
 	// whose OriginalRegistrationID equals the frame RegistrationID. The call
@@ -119,8 +119,8 @@ func ValidateConfig(config Config) error {
 	if config.ImageLifecycle != nil && config.ResourceLifecycle == nil {
 		return ErrResourceLifecycleRequired
 	}
-	if config.CloseLingerNs < 0 {
-		return ErrNegativeCloseLingerNs
+	if config.ResourceLingerNs < 0 {
+		return ErrNegativeResourceLingerNs
 	}
 	return nil
 }

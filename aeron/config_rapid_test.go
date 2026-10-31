@@ -25,6 +25,16 @@ func drawOptionalDuration(t *rapid.T, name string) time.Duration {
 	return time.Duration(n)
 }
 
+func drawResourceLinger(t *rapid.T) *time.Duration {
+	t.Helper()
+
+	if rapid.Bool().Draw(t, "resource_linger_nil") {
+		return nil
+	}
+	n := rapid.Int64Range(0, int64(rapidMaxDuration)).Draw(t, "resource_linger")
+	return new(time.Duration(n))
+}
+
 func drawPartialConfig(t *rapid.T) (
 	cfg aeron.Config,
 	epochMs int64,
@@ -37,7 +47,8 @@ func drawPartialConfig(t *rapid.T) (
 	cfg.KeepAliveInterval = drawOptionalDuration(t, "keep_alive")
 	cfg.InterServiceTimeout = drawOptionalDuration(t, "inter_service")
 	cfg.IdleSleepDuration = drawOptionalDuration(t, "idle_sleep")
-	cfg.CloseLingerDuration = drawOptionalDuration(t, "close_linger")
+	cfg.ResourceLingerDuration = drawResourceLinger(t)
+	cfg.ClientCloseLingerDuration = drawOptionalDuration(t, "client_close_linger")
 
 	customEpoch = rapid.Bool().Draw(t, "custom_epoch")
 	if customEpoch {
@@ -69,17 +80,17 @@ func TestNormalizeConfig_durationFields_rapid(t *testing.T) {
 		cfg, _, _, _, _ := drawPartialConfig(t)
 		normalized := aeron.NormalizeConfigForTest(cfg)
 		want := aeron.NormalizeConfigForTest(aeron.Config{
-			DriverTimeout:       cfg.DriverTimeout,
-			KeepAliveInterval:   cfg.KeepAliveInterval,
-			IdleSleepDuration:   cfg.IdleSleepDuration,
-			CloseLingerDuration: cfg.CloseLingerDuration,
+			DriverTimeout:     cfg.DriverTimeout,
+			KeepAliveInterval: cfg.KeepAliveInterval,
+			IdleSleepDuration: cfg.IdleSleepDuration,
 		})
 
 		require.Equal(t, want.DriverTimeout, normalized.DriverTimeout)
 		require.Equal(t, want.KeepAliveInterval, normalized.KeepAliveInterval)
 		require.Equal(t, cfg.InterServiceTimeout, normalized.InterServiceTimeout)
 		require.Equal(t, want.IdleSleepDuration, normalized.IdleSleepDuration)
-		require.Equal(t, want.CloseLingerDuration, normalized.CloseLingerDuration)
+		require.Same(t, cfg.ResourceLingerDuration, normalized.ResourceLingerDuration)
+		require.Equal(t, cfg.ClientCloseLingerDuration, normalized.ClientCloseLingerDuration)
 	})
 }
 
@@ -117,7 +128,8 @@ func requireNormalizedConfigsEqual(
 	require.Equal(t, want.KeepAliveInterval, got.KeepAliveInterval)
 	require.Equal(t, want.InterServiceTimeout, got.InterServiceTimeout)
 	require.Equal(t, want.IdleSleepDuration, got.IdleSleepDuration)
-	require.Equal(t, want.CloseLingerDuration, got.CloseLingerDuration)
+	require.Same(t, want.ResourceLingerDuration, got.ResourceLingerDuration)
+	require.Equal(t, want.ClientCloseLingerDuration, got.ClientCloseLingerDuration)
 	require.Equal(t, want.UseConductorInvoker, got.UseConductorInvoker)
 	require.NotNil(t, want.EpochClock)
 	require.NotNil(t, got.EpochClock)

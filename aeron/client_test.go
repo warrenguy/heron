@@ -25,12 +25,20 @@ func TestConnect_validationErrors(t *testing.T) {
 			wantErr: "aeron: AeronDir is required",
 		},
 		{
-			name: "rejects negative close linger duration",
+			name: "rejects negative resource linger duration",
 			cfg: aeron.Config{
-				AeronDir:            "unused",
-				CloseLingerDuration: -time.Second,
+				AeronDir:               "unused",
+				ResourceLingerDuration: new(-time.Second),
 			},
-			wantErr: "aeron: CloseLingerDuration must not be negative",
+			wantErr: "aeron: ResourceLingerDuration must not be negative",
+		},
+		{
+			name: "rejects negative client close linger duration",
+			cfg: aeron.Config{
+				AeronDir:                  "unused",
+				ClientCloseLingerDuration: -time.Second,
+			},
+			wantErr: "aeron: ClientCloseLingerDuration must not be negative",
 		},
 		{
 			name: "rejects negative keepalive interval",

@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
@@ -24,13 +23,6 @@ import (
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
-
-// defaultClusterMemberCloseLinger is the Client.Close linger cap per member at
-// teardown.
-//
-// The aeron default is three seconds. Nothing polls after the duty cycle stops,
-// so the fixture must not wait that long per member.
-const defaultClusterMemberCloseLinger = 250 * time.Millisecond
 
 // Integration election heartbeats for live harness opens. Production defaults
 // are a 10s leader heartbeat timeout and a 200ms interval. Re-elect waits use
@@ -407,11 +399,6 @@ func bootstrapMemberInfra(
 // driver-assigned port, so replication stays on the loopback interface.
 const MemberReplicationChannel = "aeron:udp?endpoint=127.0.0.1:0"
 
-// MemberClusterConfig builds the cluster.Config for one harness member open.
-//
-// Behaviour: sets Election to IntegrationElectionConfig and ReplicationChannel
-// to MemberReplicationChannel. Caps close linger below the 3s client default.
-// Other zero fields take cluster.Config.Normalize defaults at open.
 func MemberClusterConfig(
 	memberID int32,
 	membersString string,
@@ -428,9 +415,6 @@ func MemberClusterConfig(
 		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
 		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
 		Election:                      IntegrationElectionConfig(),
-		AeronConfig: aeron.Config{
-			CloseLingerDuration: defaultClusterMemberCloseLinger,
-		},
 	}
 }
 

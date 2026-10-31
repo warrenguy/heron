@@ -173,7 +173,7 @@ func (lifecycle *realCreateMarkRecordingLifecycle) BindSubscription(
 	return aeron.ConductorResourceLifecycle.BindSubscription(sub, clientConductor)
 }
 
-func newConductorWithCloseLingerForTest(
+func newConductorWithResourceLingerForTest(
 	tb testing.TB,
 	lingerNs int64,
 	lifecycle conductor.ResourceLifecycle,
@@ -188,13 +188,13 @@ func newConductorWithCloseLingerForTest(
 
 	var nanoNs int64
 	config := conductorTestConfigMutableNano(tb, errorHandler, resourceMapTestEpochMs, &nanoNs)
-	config.CloseLingerNs = lingerNs
+	config.ResourceLingerNs = lingerNs
 	config.ResourceLifecycle = lifecycle
 	conductorInstance := newConductorForTest(tb, config)
 	return conductorInstance, &nanoNs
 }
 
-func newConductorWithImageCloseLingerForTest(
+func newConductorWithImageResourceLingerForTest(
 	tb testing.TB,
 	lingerNs int64,
 	lifecycle *recordingImageLifecycle,
@@ -205,7 +205,7 @@ func newConductorWithImageCloseLingerForTest(
 	config := conductorTestConfigMutableNano(tb, func(error) {}, resourceMapTestEpochMs, &nanoNs)
 	config.ImageLifecycle = lifecycle
 	config.MediaDriverDir = "/"
-	config.CloseLingerNs = lingerNs
+	config.ResourceLingerNs = lingerNs
 	return newConductorForTest(tb, config), &nanoNs
 }
 
@@ -450,7 +450,7 @@ func TestConductor_CloseResource_retireBeforeRemoveOffer(t *testing.T) {
 			t.Parallel()
 
 			lifecycle := &retireBeforeRemoveLifecycle{}
-			conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+			conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 			ring := conductorInstance.DriverProxyForTest().Ring()
 			lifecycle.tb = t
 			lifecycle.ring = ring
@@ -472,7 +472,7 @@ func TestConductor_ClosePublication_realPublication_positiveLinger_retainsMmap(t
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "real-pub-close.log")
 
-	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(
 		t,
 		lingerNs,
 		aeron.ConductorResourceLifecycle,
@@ -503,7 +503,7 @@ func TestConductor_ClosePublication_positiveLinger_retainsMmap(t *testing.T) {
 	writeMinimalLogFileForRegistryTest(t, logPath)
 
 	lifecycle := &lingerPublicationLifecycle{registryKey: logPath}
-	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(t, lingerNs, lifecycle)
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(t, lingerNs, lifecycle)
 	*nanoNs = startNs
 
 	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
@@ -533,7 +533,7 @@ func TestConductor_CloseSubscription_positiveLinger_retainsMmap(t *testing.T) {
 	writeMinimalLogFileForRegistryTest(t, logPath)
 
 	lifecycle := &lingerSubscriptionLifecycle{registryKeys: []string{logPath}}
-	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(t, lingerNs, lifecycle)
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(t, lingerNs, lifecycle)
 	*nanoNs = startNs
 
 	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
@@ -556,7 +556,7 @@ func TestConductor_CloseAllResources_publicationsBeforeSubscriptions(t *testing.
 	t.Parallel()
 
 	lifecycle := &closeOrderResourceLifecycle{}
-	conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+	conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 
 	conductorInstance.InsertPublicationForTest(11, stubPublication{registrationID: 11})
 	conductorInstance.InsertSubscriptionForTest(22, &stubResourceSubscription{registrationID: 22})
@@ -576,7 +576,7 @@ func TestConductor_CloseAllResources_removeOffersBeforeClientClose(t *testing.T)
 	t.Parallel()
 
 	lifecycle := &recordingResourceLifecycle{}
-	conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+	conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 	ring := conductorInstance.DriverProxyForTest().Ring()
 
 	conductorInstance.InsertPublicationForTest(11, stubPublication{registrationID: 11})
@@ -600,7 +600,7 @@ func TestConductor_forceCloseResources_retiresWithoutRemoveOffer(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "force-close.log")
 
-	conductorInstance, nanoNs := newConductorWithCloseLingerForTest(
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(
 		t,
 		lingerNs,
 		aeron.ConductorResourceLifecycle,
@@ -802,7 +802,7 @@ func TestConductor_CloseResource_zeroLinger_immediateUnmap(t *testing.T) {
 			logPath := filepath.Join(dir, testCase.logFile)
 			writeMinimalLogFileForRegistryTest(t, logPath)
 
-			conductorInstance, _ := newConductorWithCloseLingerForTest(
+			conductorInstance, _ := newConductorWithResourceLingerForTest(
 				t,
 				0,
 				testCase.lifecycle(logPath),
@@ -976,7 +976,7 @@ func TestConductor_CloseResource_idempotent(t *testing.T) {
 			t.Parallel()
 
 			lifecycle := &recordingResourceLifecycle{}
-			conductorInstance, _ := newConductorWithCloseLingerForTest(t, 0, lifecycle)
+			conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 			ring := conductorInstance.DriverProxyForTest().Ring()
 
 			testCase.setup(conductorInstance)
@@ -1050,7 +1050,7 @@ func TestConductor_CloseResource_removeOfferFailure_reportsError(t *testing.T) {
 			t.Parallel()
 
 			errorHandler, gotErrors := collectConductorErrors()
-			conductorInstance, _ := newConductorWithCloseLingerForTest(
+			conductorInstance, _ := newConductorWithResourceLingerForTest(
 				t,
 				0,
 				&recordingResourceLifecycle{},
@@ -1078,7 +1078,7 @@ func TestConductor_onUnavailableImage_positiveLinger_retainsMmap(t *testing.T) {
 		hasImage:           true,
 		removedLogFileName: goldenAvailableImageEvent.LogFileName,
 	}
-	conductorInstance, nanoNs := newConductorWithImageCloseLingerForTest(t, lingerNs, lifecycle)
+	conductorInstance, nanoNs := newConductorWithImageResourceLingerForTest(t, lingerNs, lifecycle)
 	conductorInstance.SeedServiceTimestamps(startNs)
 	*nanoNs = startNs
 
