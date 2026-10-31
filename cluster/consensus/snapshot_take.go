@@ -270,26 +270,13 @@ func (a *Agent) snapshotHoldPosition() int64 {
 	return 0
 }
 
-// isLeaderSnapshotPending reports whether this member leads with a module
-// take unresolved, or with a snapshot action wait that can still pop.
-func (a *Agent) isLeaderSnapshotPending() bool {
-	if a.role != RoleLeader {
-		return false
-	}
-	if a.snapshotTake != nil {
-		return true
-	}
-	waitCanPop := a.serviceAckFailure == nil
-	return a.snapshotWaitPosition != 0 && waitCanPop
-}
-
 // buildSnapshotTake stores a new take at the popped snapshot wait. The take
 // copies the service ack RelevantIDs and the module state.
 //
 // Call only after hasReachedServiceAcks returned true, and before
 // removeServiceAckHead.
 func (a *Agent) buildSnapshotTake(logPosition int64) {
-	a.cancelSnapshotTake()
+	a.discardSnapshotTake()
 	a.snapshotTake = &snapshotTake{
 		state:               takeChecking,
 		logPosition:         logPosition,
@@ -576,14 +563,24 @@ func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
 	a.snapshotTake = nil
 	a.lastSnapshotTake = result
 	a.hasLastSnapshotTake = true
+	a.endSnapshotState(moduleStateReasonSnapshotComplete)
 }
 
-// cancelSnapshotTake drops a take in flight and runs its cleanup. It does not
-// store a result. The take position joins abandonedSnapshotWaits, so a
-// redelivered action there does not queue a wait. A later truncate below the
-// position removes the entry. The pop consumed every ack at the position, so
-// the retired entry does not owe an ack.
+// cancelSnapshotTake discards a take in flight. The module then returns to
+// ACTIVE when no snapshot is in progress.
 func (a *Agent) cancelSnapshotTake() {
+	a.discardSnapshotTake()
+	a.endSnapshotState(moduleStateReasonSnapshotCancelled)
+}
+
+// discardSnapshotTake drops a take in flight. It runs the take cleanup. It does
+// not store a result. It leaves the module state unchanged.
+//
+// The take position joins abandonedSnapshotWaits, so a redelivered action
+// there does not queue a wait. A later truncate below the position removes the
+// entry. The pop consumed every ack at the position, so the retired entry does
+// not owe an ack.
+func (a *Agent) discardSnapshotTake() {
 	take := a.snapshotTake
 	if take == nil {
 		return

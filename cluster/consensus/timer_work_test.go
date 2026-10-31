@@ -252,15 +252,26 @@ func TestTimerWork_prepareRestoresUncommittedTimer(t *testing.T) {
 func TestTimerWork_followerAndElectionLive(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		cfg  AgentConfig
-	}{
+	type timerCase struct {
+		name     string
+		cfg      AgentConfig
+		setState bool
+		state    ModuleState
+	}
+	tests := []timerCase{
 		{name: "follower", cfg: AgentConfig{Role: RoleFollower}},
 		{
 			name: "electionLive",
 			cfg:  AgentConfig{Role: RoleLeader, Election: &orderRunner{n: 0}},
 		},
+	}
+	for _, state := range heldModuleStates {
+		tests = append(tests, timerCase{
+			name:     "leader_" + state.String(),
+			cfg:      AgentConfig{Role: RoleLeader},
+			setState: true,
+			state:    state,
+		})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -269,6 +280,9 @@ func TestTimerWork_followerAndElectionLive(t *testing.T) {
 			p, _ := boundLogPublisher(t)
 			tt.cfg.LogPublisher = p
 			a, q := agentWithServiceIngressConfig(tt.cfg)
+			if tt.setState {
+				a.setModuleState(tt.state, "test")
+			}
 			enqueueScheduleTimer(t, q, 1, 0)
 			require.Equal(t, 1, a.DoWork(0))
 			requireTimerCount(t, a.timers, 1)

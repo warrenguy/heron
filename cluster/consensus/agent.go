@@ -448,6 +448,10 @@ type Agent struct {
 	// a snapshot wait builds it.
 	snapshotTake *snapshotTake
 
+	// NewAgent stores ACTIVE. setModuleState is the only writer after NewAgent.
+	moduleState        ModuleState
+	moduleStateCounter ModuleStateCounter
+
 	// lastSnapshotTake is the latest resolved take. hasLastSnapshotTake is
 	// false before any take resolves.
 	lastSnapshotTake    SnapshotTakeResult
@@ -671,6 +675,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		egress:                    cfg.Egress,
 		commit:                    cfg.Commit,
 		role:                      cfg.Role,
+		moduleState:               ModuleStateActive,
 		localLogRecordingID:       nullValue,
 		leadershipTermID:          cfg.LeadershipTermID,
 		thisMemberID:              cfg.ThisMemberID,
@@ -2152,34 +2157,12 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 	a.timeOfLastLogUpdateNs = nowNs
 }
 
-// DoWork runs one duty-cycle tick:
-//   - slow tick
-//   - consensus ingress poll when no prepare episode is in progress
-//   - log stop check: a recording STOP mark or a closed non-leader log image
-//     installs an election ([Agent.logStopTick])
-//   - client ingress poll when no election is live. A leader under the
-//     snapshot hold ([Agent.isLeaderSnapshotPending]) skips the poll and
-//     refreshes session activity
-//   - service control poll (always; ServiceAck, ScheduleTimer, CancelTimer, and
-//     CloseSession dispatch; every role; while election is live)
-//   - service control work (always; consume first wait after poll; every role;
-//     while election is live). A popped snapshot wait builds the module
-//     snapshot take
-//   - module snapshot take work (always; every role; while election is live)
-//   - [ElectionRunner.DoWork] when an election is live, else sessionWork then
-//     timerWork then consensusWork
-//   - pending JoinLog retry after that branch so PrepareForNewLeadership can
-//     drop a superseded pending before any offer
+// DoWork runs one duty-cycle tick. Returns the work count.
 //
-// Prepare starts after the consensus ingress poll of the first episode tick.
-// That tick is the one INIT drop. Later pending ticks skip the poll. A stop
-// or derivation error ends the episode. The next tick polls once, then
-// election.DoWork starts a fresh episode.
-//
-// Settled sessionWork order: egressEventWork, newLeaderEventWork,
-// sessionPendingWork, sessionCloseWork, okPendingWork. The leader snapshot
-// hold skips sessionPendingWork, sessionCloseWork and timerWork. See
-// [Agent.sessionWork].
+// Every step that can install an election runs before the client ingress
+// poll. Service control and the module snapshot take run during an election
+// too. The pending JoinLog retry runs last, so PrepareForNewLeadership can
+// drop a superseded pending JoinLog before any offer.
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {

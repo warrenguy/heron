@@ -119,13 +119,12 @@ func (a *Agent) handleClusterAction(
 	}
 }
 
-// queueSnapshotWait queues one snapshot wait at logPosition. The wait stores
-// the action's leadership term and wire timestamp.
 func (a *Agent) queueSnapshotWait(logPosition, leadershipTermID, timestamp int64) {
 	a.serviceAckWaits = append(a.serviceAckWaits, logPosition)
 	a.snapshotWaitPosition = logPosition
 	a.snapshotWaitLeadershipTermID = leadershipTermID
 	a.snapshotWaitTimestamp = timestamp
+	a.setModuleState(ModuleStateSnapshot, moduleStateReasonSnapshotAction)
 }
 
 // holdLogPollBound returns boundPosition lowered by each pending hold. Every
@@ -214,6 +213,7 @@ func (a *Agent) retireSnapshotWait() {
 	a.serviceAcks.dropAt(pos, func(serviceID int32) {
 		owed[serviceID] = false
 	})
+	a.endSnapshotState(moduleStateReasonSnapshotWaitRetired)
 }
 
 // dropAbandonedSnapshotAck reports whether handleServiceAck drops an ack from

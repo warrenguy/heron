@@ -859,10 +859,11 @@ func TestSessionWork_openThenRetriableMidWalk(t *testing.T) {
 // TestSessionWork_guardTable asserts every sessionWork early return leaves the
 // pending session untouched when the deadline has not expired.
 func TestSessionWork_guardTable(t *testing.T) {
-	for _, tc := range []struct {
+	type guardCase struct {
 		name  string
 		agent func(t *testing.T) *Agent
-	}{
+	}
+	cases := []guardCase{
 		{
 			name: "off_leader",
 			agent: func(t *testing.T) *Agent {
@@ -905,7 +906,20 @@ func TestSessionWork_guardTable(t *testing.T) {
 				return NewAgent(AgentConfig{Role: RoleLeader, LogPublisher: p})
 			},
 		},
-	} {
+	}
+	for _, state := range heldModuleStates {
+		cases = append(cases, guardCase{
+			name: "leader_" + state.String(),
+			agent: func(t *testing.T) *Agent {
+				p, _ := boundLogPublisher(t)
+				a := NewAgent(AgentConfig{Role: RoleLeader, LogPublisher: p})
+				a.setModuleState(state, "test")
+				return a
+			},
+		})
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := tc.agent(t)
 			wireImmediateEgress(t, a)

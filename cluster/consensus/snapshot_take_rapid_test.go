@@ -285,17 +285,6 @@ func (m *snapshotTakeAckModel) pop() bool {
 	return true
 }
 
-// TestSnapshotTake_model_rapid drives one snapshot action through a drawn
-// fake archive script, drawn clock steps, cancels and out-of-sequence acks.
-// Each step checks the take, the pending report, the leader hold and the
-// session clock at a hold lift. A held leader tick must leave the client
-// ingress, the sessions and the timers alone. A resolved take must match the
-// cause the script forces, or a deadline cause the clock may fire first. A
-// successful take names the START id after a STOP at or above the close
-// position, and its rows follow the module row order. The recording log does
-// not see a write before the take resolves, or after a cancel or a retire. A
-// successful take writes its full group, then one Force. A Force error sets
-// ForceErr. The take still succeeds.
 func TestSnapshotTake_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -318,6 +307,8 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			LeadershipTermID: 4,
 			SessionTimeoutNs: sessionTimeoutNs,
 		})
+		stateCounter := &recordingModuleStateCounter{}
+		a.SetModuleStateCounter(stateCounter)
 		q := attachQueueServiceIngress(a)
 		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
 		lp, _ := boundLogPublisher(t)
@@ -413,8 +404,15 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			marked := a.ServiceAckFailure() != nil
 			require.Equal(rt, acks.marked, marked, step)
 			waitCanPop := status == actionStatusWaiting && !marked
-			wantHold := a.Role() == RoleLeader && (status == actionStatusTake || waitCanPop)
-			require.Equal(rt, wantHold, a.isLeaderSnapshotPending(), step)
+			wantSnapshot := status == actionStatusTake || waitCanPop
+			wantState := ModuleStateActive
+			if wantSnapshot {
+				wantState = ModuleStateSnapshot
+			}
+			require.Equal(rt, wantState, a.ModuleState(), step)
+			require.Equal(rt, wantState, stateCounter.last(), step)
+			wantHold := a.Role() == RoleLeader && wantSnapshot
+			require.Equal(rt, wantHold, a.isLeaderHeld(), step)
 
 			result, ok := a.LastSnapshotTake()
 			require.Equal(rt, status == actionStatusResolved, ok, step)
@@ -437,7 +435,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		tick := func(stepNs int64) {
 			rt.Helper()
 			nowNs += stepNs
-			held := a.isLeaderSnapshotPending()
+			held := a.isLeaderHeld()
 			a.DoWork(nowNs)
 
 			if status == actionStatusWaiting || status == actionStatusTake {
@@ -453,11 +451,11 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 				)
 				wantLog = *recordingLog
 			}
-			if held && a.isLeaderSnapshotPending() {
+			if held && a.isLeaderHeld() {
 				requireHeldUntouched("held tick")
 			}
 
-			lifted := held && !a.isLeaderSnapshotPending()
+			lifted := held && !a.isLeaderHeld()
 			if lifted {
 				session, ok := a.sessions.sessionByID(1)
 				require.True(rt, ok, "lift tick")
@@ -539,6 +537,12 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			require.NotEqual(rt, actionStatusWaiting, status)
 			require.NotEqual(rt, actionStatusTake, status)
 		}
+
+		a.MarkClosed()
+		nowNs++
+		a.DoWork(nowNs)
+		require.Equal(rt, ModuleStateClosed, a.ModuleState())
+		require.Equal(rt, ModuleStateClosed, stateCounter.last())
 	})
 }
 
