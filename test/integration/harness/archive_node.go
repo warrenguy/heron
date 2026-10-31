@@ -29,7 +29,7 @@ const (
 	archiveReadyTimeout = 60 * time.Second
 
 	archiveNodeMainClass = "heron.archivejava.ArchiveNode"
-	archiveAddOpens      = "java.base/jdk.internal.misc=ALL-UNNAMED"
+	javaAddOpens         = "java.base/jdk.internal.misc=ALL-UNNAMED"
 
 	// archiveRuntimeMissing is the host-fix phrase for a missing Archive jar or
 	// Java runtime. StartArchiveNode skips with it. RequireArchiveRuntime fails
@@ -155,15 +155,7 @@ func startArchiveNodeProcess(
 	jarPath string,
 ) (*ArchiveNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(
-		ctx,
-		javaPath,
-		"--add-opens",
-		archiveAddOpens,
-		"-cp",
-		jarPath,
-		archiveNodeMainClass,
-	)
+	cmd := javaMainCommand(ctx, javaPath, jarPath, archiveNodeMainClass)
 	cmd.Env = buildArchiveCmdEnv(aeronDir, archiveDir, controlChannel)
 
 	if err := cmd.Start(); err != nil {
@@ -255,16 +247,27 @@ func buildArchiveCmdEnv(aeronDir, archiveDir, controlChannel string) []string {
 }
 
 func resolveArchiveJar() (string, error) {
-	if path := os.Getenv(envArchiveJar); path != "" {
+	return resolveJavaJar(envArchiveJar, func() (string, error) {
+		if forceDefaultArchiveJarMiss.Load() {
+			return "", errArchiveJarNotFound
+		}
+		return defaultArchiveJar()
+	})
+}
+
+// resolveJavaJar returns the jar path in envKey when set, else defaultJar.
+func resolveJavaJar(envKey string, defaultJar func() (string, error)) (string, error) {
+	if path := os.Getenv(envKey); path != "" {
 		if _, err := os.Stat(path); err != nil {
 			return "", err
 		}
 		return path, nil
 	}
-	if forceDefaultArchiveJarMiss.Load() {
-		return "", errArchiveJarNotFound
-	}
-	return defaultArchiveJar()
+	return defaultJar()
+}
+
+func javaMainCommand(ctx context.Context, javaPath, jarPath, mainClass string) *exec.Cmd {
+	return exec.CommandContext(ctx, javaPath, "--add-opens", javaAddOpens, "-cp", jarPath, mainClass)
 }
 
 // defaultArchiveJar is immutable OnceValues. Tests set forceDefaultArchiveJarMiss
