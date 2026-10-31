@@ -159,10 +159,23 @@ const (
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
 
+// Multi-service snapshot retention endpoints. The pair reserves one
+// three-member consensus port block (base+1 .. base+205) and one shared
+// cluster-log multicast endpoint. The reserved range is 18601-18805. The
+// next block above starts at 18901 (ClusterJavaClientPortBase).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterMultiServiceSnapshotRetentionPortBase    = 18600
+	ClusterMultiServiceSnapshotRetentionLogEndpoint = "239.255.12.89:18604"
+)
+
 // Java cluster client endpoints. The pair reserves one three-member consensus
 // port block (base+1 .. base+205) and one shared cluster-log multicast
 // endpoint. The reserved range is 18901-19105. The next block above starts at
-// 19201 (ClusterSessionReplicateExLeaderPortBase).
+// 19201 (ClusterSessionReplicateExLeaderPortBase). The next block below ends
+// at 18805 (ClusterMultiServiceSnapshotRetentionPortBase).
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -651,6 +664,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    DurableReplicateTruncatePortBase,
 			memberCount: 3,
 			logEndpoint: DurableReplicateTruncateLogEndpoint,
+		},
+		{
+			name:        "multi-service-snapshot-retention",
+			portBase:    ClusterMultiServiceSnapshotRetentionPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterMultiServiceSnapshotRetentionLogEndpoint,
 		},
 		{
 			name:        "java-client",

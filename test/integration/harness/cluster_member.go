@@ -444,10 +444,20 @@ func (s *ClusterMemberSet) Module(index int) *cluster.ConsensusModule {
 // ClusterDir returns the cluster directory stored for slot index.
 // Empty when index is out of range.
 func (s *ClusterMemberSet) ClusterDir(index int) string {
+	return s.MemberConfig(index).ClusterDir
+}
+
+// MemberConfig returns the cluster.Config stored for slot index, with any
+// AmendMemberConfig change applied. Zero when index is out of range.
+//
+// The caller receives a shallow copy. A change to a value field does not
+// change the stored config. Pointer and interface fields still share their
+// targets.
+func (s *ClusterMemberSet) MemberConfig(index int) cluster.Config {
 	if index < 0 || index >= len(s.configs) {
-		return ""
+		return cluster.Config{}
 	}
-	return s.configs[index].ClusterDir
+	return s.configs[index]
 }
 
 // ArchiveNodes returns every Archive server in member-id order.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -78,6 +79,7 @@ func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
 	require.Error(t, set.StopMember(n))
 	require.Error(t, set.RestartMember(-1))
 	require.Error(t, set.RestartMember(n))
+	require.Equal(t, cluster.Config{}, set.MemberConfig(n))
 	require.ErrorContains(t, set.RestartMember(1), "call StopMember first")
 	require.Len(t, set.Modules(), n)
 	require.NotNil(t, set.Module(0))
@@ -108,6 +110,7 @@ func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
 	require.NotNil(t, nodes[0])
 	require.NotNil(t, nodes[1])
 	require.Equal(t, dirBefore, set.ClusterDir(1))
+	require.Equal(t, dirBefore, set.MemberConfig(1).ClusterDir)
 	require.NotPanics(t, func() { _ = set.Leaders() })
 	require.Len(t, set.LogSessionIDs(), 1)
 
@@ -126,6 +129,7 @@ func TestClusterMemberSet_stopAndRestartAffordance(t *testing.T) {
 	require.NotNil(t, m)
 	require.Equal(t, int32(1), m.ThisMemberID())
 	require.Equal(t, dirBefore, set.ClusterDir(1))
+	require.Equal(t, dirBefore, set.MemberConfig(1).ClusterDir)
 	require.NotNil(t, m.RecordingLog())
 	require.NotNil(t, m.Client())
 	require.Same(t, nodeBefore, set.ArchiveNodes()[1])
