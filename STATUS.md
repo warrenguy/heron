@@ -18,6 +18,7 @@ Works:
 - Multi-destination subscriptions (`Subscription.AddDestination` /
   `RemoveDestination`).
 - Available and unavailable image handlers.
+- Counters: blocking `Client.AddCounter` and `Counter.Close`.
 
 Partial:
 
@@ -31,8 +32,7 @@ Partial:
 
 Not implemented:
 
-- Counters: `addCounter`, static counters, available and unavailable counter
-  handlers.
+- Counters: static counters, available and unavailable counter handlers.
 - Publication destinations (manual MDC `addDestination` / `removeDestination`).
 - `Image.reject`, `blockPoll` / `rawPoll`, `controlledPeek`,
   `ExclusivePublication.appendPadding` / `offerBlock`, publication revoke.
@@ -107,11 +107,13 @@ Works:
 - Client sessions: connect, authentication, messages, keepalive, timeout, close,
   and transfer to a new leader.
 - Service ack coordination with Go service containers; cluster timers.
+- Snapshots: taking and loading. `RetainLatestSnapshot` keeps only the latest
+  snapshot on a stopped member.
+- Restart loads the latest snapshot and replays the local log after it. It
+  rebuilds sessions and timers from both.
 
 Partial:
 
-- Restart replays the local log to recover position only; sessions and timers
-  are not rebuilt.
 - Timer races match upstream. When a service schedules or cancels a timer
   close to its expiry, a follower may disagree with the leader about whether
   that timer is live. After that follower becomes leader, the timer may fire
@@ -128,8 +130,6 @@ Partial:
 
 Not implemented:
 
-- Snapshots: taking and loading. Startup refuses a recovery plan that contains
-  snapshots.
 - Termination and shutdown, cluster control and node control toggles, the module
   state machine.
 - Admin requests: the client snapshot request works only against a Java
@@ -152,19 +152,17 @@ Works:
   services reconnect egress.
 - `CloseClientSession` asks the consensus module to close a client session.
   Every member sees the close through the log.
+- Snapshots: `TakeSnapshotHandler` records a service snapshot on a snapshot
+  action. On restart, `LoadSnapshotHandler` restores it.
+- Restart on a non-empty log, with or without a snapshot.
 
 Partial:
 
-- `TakeSnapshot` is called on a snapshot action, but `service.Open` passes a nil
-  publication and nothing is recorded.
-- On a restarted member with a non-empty log, the service container fails its
-  first JoinLog with `service: log not contiguous`. The container then stops.
 - The caller drives `Agent.DoWork` and the transport client, and supplies the
   commit position as a function; there is no commit position counter lookup.
 
 Not implemented:
 
-- Recovery: snapshot loading; a service always starts from log position 0.
 - Termination, `onRoleChange`, `onTerminate`, background work.
 - Service messages to the log, mark file, counters.
 
