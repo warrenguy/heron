@@ -1084,6 +1084,11 @@ func TestClient_OfferAdd_readyWithoutPoll_closeLingerHoldsLog(t *testing.T) {
 				select {
 				case closeErr := <-closeDone:
 					require.NoError(t, closeErr)
+					if sawLinger && cleared.IsZero() {
+						// Close returned between the read and the select.
+						require.False(t, registry.HasScheduledLinger())
+						cleared = time.Now()
+					}
 					break poll
 				case <-deadline:
 					t.Fatal("client close hung")
