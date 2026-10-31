@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -632,10 +634,28 @@ func recorderSequenceStatus(
 	sessionID int64,
 	payloads ...[]byte,
 ) (complete, corrupt bool) {
+	return recorderSessionStatus(rec, sessionID, clusterwire.CloseReason_NULL_VALUE, payloads...)
+}
+
+// recorderSessionStatus is recorderSequenceStatus that also expects one
+// trailing close with closeReason. CloseReason_NULL_VALUE expects no close.
+func recorderSessionStatus(
+	rec *sessionRecorder,
+	sessionID int64,
+	closeReason clusterwire.CloseReason,
+	payloads ...[]byte,
+) (complete, corrupt bool) {
 	if rec == nil {
 		return false, false
 	}
-	if len(rec.closes) != 0 {
+	wantCloses := 0
+	if closeReason != clusterwire.CloseReason_NULL_VALUE {
+		wantCloses = 1
+	}
+	if len(rec.closes) > wantCloses {
+		return false, true
+	}
+	if len(rec.closes) == 1 && !rec.holdsCloseWithReason(sessionID, closeReason) {
 		return false, true
 	}
 	if len(rec.opens) > 1 {
@@ -647,7 +667,7 @@ func recorderSequenceStatus(
 	if len(rec.messages) > len(payloads) {
 		return false, true
 	}
-	if len(rec.opens) == 0 && len(rec.messages) != 0 {
+	if len(rec.opens) == 0 && (len(rec.messages) != 0 || len(rec.closes) != 0) {
 		return false, true
 	}
 	for i, msg := range rec.messages {
@@ -655,25 +675,25 @@ func recorderSequenceStatus(
 			return false, true
 		}
 	}
-
-	wantLen := len(rec.opens) + len(rec.messages)
-	if len(rec.order) != wantLen {
+	// A close ends the session. Every payload must precede it.
+	if len(rec.closes) == 1 && len(rec.messages) != len(payloads) {
 		return false, true
 	}
+
+	want := slices.Repeat([]string{"message"}, len(rec.messages))
 	if len(rec.opens) == 1 {
-		if rec.order[0] != "open" {
-			return false, true
-		}
-		for i := range rec.messages {
-			if rec.order[i+1] != "message" {
-				return false, true
-			}
-		}
+		want = append([]string{"open"}, want...)
 	}
-	if len(rec.opens) == 1 && len(rec.messages) == len(payloads) {
-		return true, false
+	if len(rec.closes) == 1 {
+		want = append(want, "close")
 	}
-	return false, false
+	if !slices.Equal(rec.order, want) {
+		return false, true
+	}
+	done := len(rec.opens) == 1 &&
+		len(rec.messages) == len(payloads) &&
+		len(rec.closes) == wantCloses
+	return done, false
 }
 
 // recorderHoldsOpenThenMessages reports one session open followed by the

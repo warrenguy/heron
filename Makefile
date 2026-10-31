@@ -471,13 +471,20 @@ bin/aeronmd: specs/versions.yaml test/integration/docker/aeronmd/Dockerfile scri
 CLUSTER_ARCHIVE_TEST_TIMEOUT ?= 5m
 
 .PHONY: test-cluster-archive
-test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar ## Live: per-member Archive elect and commit
+test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar bin/heron-cluster-java.jar ## Live: per-member Archive elect and commit
 	go test -timeout=$(CLUSTER_ARCHIVE_TEST_TIMEOUT) -race -count=1 \
 		-tags=integration,archive_live \
 		./test/integration/cluster_archive/
 
-bin/heron-archive-java.jar: $(shell find test/integration/archive_java/src -type f) test/integration/archive_java/pom.xml scripts/build-archive-jar.sh
-	./scripts/build-archive-jar.sh
+# $(1)=module dir under test/integration, $(2)=jar stem.
+define build-java-jar
+bin/$(2).jar: $(shell find test/integration/$(1)/src/main -type f) \
+		test/integration/$(1)/pom.xml scripts/build-java-jar.sh
+	./scripts/build-java-jar.sh $(1) $(2)
+endef
+
+$(eval $(call build-java-jar,archive_java,heron-archive-java))
+$(eval $(call build-java-jar,cluster_java,heron-cluster-java))
 
 .PHONY: aeronmd-compose-image
 aeronmd-compose-image: bin/aeronmd test/integration/docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes
