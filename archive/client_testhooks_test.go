@@ -751,13 +751,11 @@ func TestClientListRecording_forwardsSignalsToPendingTracker(t *testing.T) {
 	var captured capturedRecordingSignal
 	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
 
-	listCorrelationID := f.h.client.NextCorrelationID() + 1
-	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
-		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    listCorrelationID,
-		Code:             archivewire.ControlResponseCode_OK,
-		Version:          520,
-	})
+	listCorrelationID := f.harness.writeNextControlResponse(
+		t,
+		0,
+		archivewire.ControlResponseCode_OK,
+	)
 	descriptorWire := encodeRecordingDescriptorWire(t, codecs.RecordingDescriptorFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    listCorrelationID,
@@ -765,9 +763,12 @@ func TestClientListRecording_forwardsSignalsToPendingTracker(t *testing.T) {
 		StartPosition:    4096,
 		StopPosition:     8192,
 	})
-	writeUnfragmentedWireToTerm(t, f.h.termBuffer, responseWire)
-	appendUnfragmentedWireToTerm(t, f.h.termBuffer, descriptorWire)
-	appendUnfragmentedWireToTerm(t, f.h.termBuffer, f.startWire(t))
+	appendUnfragmentedWireToTerm(t, f.harness.termBuffer, descriptorWire)
+	appendUnfragmentedWireToTerm(
+		t,
+		f.harness.termBuffer,
+		startWire(t, f.handle),
+	)
 
 	got, err := f.client.ListRecording(t.Context(), lifecycleRecordingID)
 	require.NoError(t, err)
@@ -787,24 +788,22 @@ func TestClientStartRecordingAwaitSignal_bypassesPendingTracker(t *testing.T) {
 	var captured capturedRecordingSignal
 	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
 	awaitRecordingID := lifecycleRecordingID + 1
+	startWire := startWire(t, f.handle)
 
 	// Phase: the blocking call sees its own START only.
-	awaitCorrelationID := f.h.client.NextCorrelationID() + 1
-	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
-		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    awaitCorrelationID,
-		Code:             archivewire.ControlResponseCode_OK,
-		Version:          520,
-	})
+	awaitCorrelationID := f.harness.writeNextControlResponse(
+		t,
+		0,
+		archivewire.ControlResponseCode_OK,
+	)
 	awaitSignalWire := encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    awaitCorrelationID,
 		RecordingID:      awaitRecordingID,
 		Signal:           archivewire.RecordingSignal_START,
 	})
-	writeUnfragmentedWireToTerm(t, f.h.termBuffer, responseWire)
-	appendUnfragmentedWireToTerm(t, f.h.termBuffer, f.startWire(t))
-	appendUnfragmentedWireToTerm(t, f.h.termBuffer, awaitSignalWire)
+	appendUnfragmentedWireToTerm(t, f.harness.termBuffer, startWire)
+	appendUnfragmentedWireToTerm(t, f.harness.termBuffer, awaitSignalWire)
 
 	tracker := NewStartSignalTracker(controlResponseTestControlSessionID)
 	got, err := f.client.StartRecordingAwaitSignal(
@@ -822,7 +821,7 @@ func TestClientStartRecordingAwaitSignal_bypassesPendingTracker(t *testing.T) {
 	require.Same(t, &f.handle.tracker, f.client.pendingSignalTracker)
 
 	// Phase: Poll feeds the slot again.
-	f.deliver(t, f.startWire(t))
+	f.deliver(t, startWire)
 	require.Equal(t, 1, captured.calls)
 	requirePollSignal(t, f.handle, true)
 	require.Equal(t, lifecycleRecordingID, f.handle.RecordingID())
@@ -838,7 +837,7 @@ func TestClientPoll_fullSlot_ZeroAllocs(t *testing.T) {
 	var captured capturedRecordingSignal
 	f.client.SetRecordingSignalHandler(recordingSignalCapture(&captured))
 
-	f.deliver(t, f.startWire(t))
+	f.deliver(t, startWire(t, f.handle))
 	require.Equal(t, 1, captured.calls)
 	require.True(t, f.handle.tracker.Started())
 
