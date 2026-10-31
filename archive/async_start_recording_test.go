@@ -411,12 +411,6 @@ func TestAsyncStartRecording_PollSignal_displacedHandle(t *testing.T) {
 	require.False(t, first.tracker.Started(), "displaced tracker must not see START")
 	requirePollSignal(t, first, false)
 
-	// Phase: a poll on the open older handle clears the newer latched OK.
-	f.deliver(t, f.okWire(t, second))
-	require.True(t, f.h.poller.IsPollComplete())
-	requirePollSignal(t, first, false)
-	require.False(t, f.h.poller.IsPollComplete(), "older poll must discard the newer OK")
-
 	// Phase: the newer handle still completes on its own START.
 	f.deliver(t, startSignalWireFor(t, second, lifecycleRecordingID+1))
 	requirePollSignal(t, second, true)

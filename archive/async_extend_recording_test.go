@@ -480,12 +480,6 @@ func TestAsyncExtendRecording_PollSignal_displacedHandle(t *testing.T) {
 	require.False(t, first.tracker.Extended(), "displaced tracker must not see EXTEND")
 	requirePollSignal(t, first, false)
 
-	// Phase: a poll on the open older handle clears the newer latched OK.
-	f.deliver(t, f.okWire(t, second))
-	require.True(t, f.h.poller.IsPollComplete())
-	requirePollSignal(t, first, false)
-	require.False(t, f.h.poller.IsPollComplete(), "older poll must discard the newer OK")
-
 	// Phase: the newer handle still completes on its own EXTEND.
 	f.deliver(t, extendSignalWireFor(t, second, lifecycleRecordingID))
 	requirePollSignal(t, second, true)

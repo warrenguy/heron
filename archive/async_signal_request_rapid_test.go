@@ -13,11 +13,7 @@ import (
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 )
 
-const (
-	asyncSignalRapidForeignCorrelationID int64 = 1 << 40
-	asyncSignalRapidMaxHandles                 = 4
-	asyncSignalRapidOtherRecordingID     int64 = 7
-)
+const asyncSignalRapidOtherRecordingID int64 = 7
 
 type asyncSignalOp int
 
@@ -30,18 +26,6 @@ const (
 	asyncSignalOpPollSignal
 	asyncSignalOpClose
 )
-
-// asyncSignalRapidDisarmedPrefix builds one handle, then closes it. The close
-// disarms the filter. Each poll then clears the disarmed latch and latches the
-// next response.
-var asyncSignalRapidDisarmedPrefix = []asyncSignalOp{
-	asyncSignalOpBuild,
-	asyncSignalOpClose,
-	asyncSignalOpResponse,
-	asyncSignalOpClientPoll,
-	asyncSignalOpResponse,
-	asyncSignalOpClientPoll,
-}
 
 type asyncSignalHandleKind int
 
@@ -70,92 +54,34 @@ type asyncSignalHandle interface {
 // asyncSignalModelHandle mirrors one AsyncStartRecording or
 // AsyncExtendRecording.
 type asyncSignalModelHandle struct {
+	asyncModelHandle
 	kind                 asyncSignalHandleKind
 	handle               asyncSignalHandle
 	tracker              RecordingSignalHandler
 	trackerLatched       func() bool
-	correlationID        int64
 	requestedRecordingID int64
-	closed               bool
 	signalLatched        bool
 	recordingID          int64
 	proven               bool
 }
 
-// asyncSignalModelEvent is one fragment written to the term and not yet
-// polled.
-type asyncSignalModelEvent struct {
-	response codecs.ControlResponseFields
-	signal   codecs.RecordingSignalEventFields
-	isSignal bool
+func (handle *asyncSignalModelHandle) Close() {
+	handle.handle.Close()
 }
 
-// asyncSignalModel mirrors the session poller latch and filter, the client
-// slot, and the session handler log.
+// asyncSignalModel mirrors the client slot and the session handler log.
 type asyncSignalModel struct {
-	filter            int64
-	latched           bool
-	latchedFields     codecs.ControlResponseFields
-	handles           []*asyncSignalModelHandle
-	pending           []asyncSignalModelEvent
+	asyncHandleModel[*asyncSignalModelHandle]
 	sessionSignals    []codecs.RecordingSignalEventFields
 	hasSessionHandler bool
-}
-
-// slot returns the index of the newest build while that handle is open, else -1.
-func (m *asyncSignalModel) slot() int {
-	last := len(m.handles) - 1
-	if last >= 0 && !m.handles[last].closed {
-		return last
-	}
-	return -1
-}
-
-// applyResponse mirrors one response delivery. The filter drops a foreign
-// response. Returns false when an earlier response still holds the latch.
-func (m *asyncSignalModel) applyResponse(fields codecs.ControlResponseFields) bool {
-	if m.filter != 0 && m.filter != fields.CorrelationID {
-		return true
-	}
-	if m.latched {
-		return false
-	}
-	m.latched = true
-	m.latchedFields = fields
-	return true
-}
-
-// poll mirrors one Client.Poll. A disarmed latch clears first. The poll reads
-// at most DefaultControlResponseFragmentLimit fragments. A held response stops
-// the read. Returns the consumed fragment count.
-func (m *asyncSignalModel) poll() int {
-	if m.latched && m.filter == 0 {
-		m.latched = false
-	}
-	consumed := 0
-	for consumed < min(len(m.pending), DefaultControlResponseFragmentLimit) {
-		event := m.pending[consumed]
-		if event.isSignal {
-			m.applySignal(event.signal)
-		} else if !m.applyResponse(event.response) {
-			break
-		}
-		consumed++
-	}
-	m.pending = m.pending[consumed:]
-	return consumed
 }
 
 func (m *asyncSignalModel) applySignal(event codecs.RecordingSignalEventFields) {
 	if m.hasSessionHandler {
 		m.sessionSignals = append(m.sessionSignals, event)
 	}
-	slot := m.slot()
-	if slot < 0 {
-		return
-	}
-	handle := m.handles[slot]
-	if !handle.isCompletedBy(event) || handle.signalLatched {
+	handle, ok := m.open()
+	if !ok || !handle.isCompletedBy(event) || handle.signalLatched {
 		return
 	}
 	handle.signalLatched = true
@@ -191,21 +117,21 @@ func newAsyncSignalModelHandle(
 			[]byte(lifecycleRecordingChannel),
 		)
 		return &asyncSignalModelHandle{
+			asyncModelHandle:     asyncModelHandle{correlationID: handle.request.correlationID},
 			kind:                 kind,
 			handle:               handle,
 			tracker:              &handle.tracker,
 			trackerLatched:       handle.tracker.Extended,
-			correlationID:        handle.request.correlationID,
 			requestedRecordingID: requestedRecordingID,
 		}
 	}
 	handle := newAsyncStartRecordingForTest(client)
 	return &asyncSignalModelHandle{
-		kind:           kind,
-		handle:         handle,
-		tracker:        &handle.tracker,
-		trackerLatched: handle.tracker.Started,
-		correlationID:  handle.request.correlationID,
+		asyncModelHandle: asyncModelHandle{correlationID: handle.request.correlationID},
+		kind:             kind,
+		handle:           handle,
+		tracker:          &handle.tracker,
+		trackerLatched:   handle.tracker.Started,
 	}
 }
 
@@ -233,19 +159,6 @@ func requireOfferedRequest(rt *rapid.T, offer []byte, handle *asyncSignalModelHa
 	require.Equal(rt, handle.correlationID, correlationID)
 }
 
-func (m *asyncSignalModel) latchedFor(correlationID int64) bool {
-	return m.latched && m.latchedFields.CorrelationID == correlationID
-}
-
-// drawCorrelationID picks a handle correlation id or a foreign id.
-func (m *asyncSignalModel) drawCorrelationID(rt *rapid.T) int64 {
-	index := rapid.IntRange(0, len(m.handles)).Draw(rt, "correlationIndex")
-	if index == len(m.handles) {
-		return asyncSignalRapidForeignCorrelationID
-	}
-	return m.handles[index].correlationID
-}
-
 // drawSignal picks a signal event. A draw at a start handle forces START half
 // the time. A draw at an extend handle forces a matching EXTEND a third of the
 // time. A third more carry EXTEND with the other recording id. Other draws
@@ -253,7 +166,7 @@ func (m *asyncSignalModel) drawCorrelationID(rt *rapid.T) int64 {
 func (m *asyncSignalModel) drawSignal(rt *rapid.T) codecs.RecordingSignalEventFields {
 	event := codecs.RecordingSignalEventFields{
 		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    asyncSignalRapidForeignCorrelationID,
+		CorrelationID:    asyncRapidForeignCorrelationID,
 		SubscriptionID:   asyncStartRecordingTestSubscriptionID,
 	}
 	index := rapid.IntRange(0, len(m.handles)).Draw(rt, "signalCorrelationIndex")
@@ -310,10 +223,6 @@ func asyncSignalRapidOtherRecordingIDFor(recordingID int64) int64 {
 	return lifecycleRecordingID
 }
 
-func (m *asyncSignalModel) drawHandle(rt *rapid.T) *asyncSignalModelHandle {
-	return m.handles[rapid.IntRange(0, len(m.handles)-1).Draw(rt, "handleIndex")]
-}
-
 func requireAsyncSignalModel(
 	rt *rapid.T,
 	m *asyncSignalModel,
@@ -322,20 +231,13 @@ func requireAsyncSignalModel(
 ) {
 	rt.Helper()
 
-	poller := client.controlPoller
-	require.Equal(rt, m.filter, poller.awaitCorrelationID)
-	require.Equal(rt, m.latched, poller.IsPollComplete())
-	if m.latched {
-		resp, ok := poller.Response()
-		require.True(rt, ok)
-		require.Equal(rt, m.latchedFields.CorrelationID, resp.CorrelationID)
-		require.Equal(rt, m.latchedFields.Code, resp.Code)
-	}
+	requireAsyncControlModel(rt, &m.asyncControlModel, client.controlPoller)
 
-	if slot := m.slot(); slot < 0 {
-		require.Nil(rt, client.pendingSignalTracker)
+	open, hasOpen := m.open()
+	if hasOpen {
+		require.Same(rt, open.tracker, client.pendingSignalTracker)
 	} else {
-		require.Same(rt, m.handles[slot].tracker, client.pendingSignalTracker)
+		require.Nil(rt, client.pendingSignalTracker)
 	}
 
 	for _, handle := range m.handles {
@@ -355,24 +257,11 @@ func requireAsyncSignalModel(
 // sequences.
 func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 	aeronClient := aeron.NewAsyncConnectTestHarness(t).Client
-	sub := aeron.NewTestSubscriptionForHooks(t)
-	image := aeron.NewTestImageForHooks(t, sub, 0)
-	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
-	termBuffer := aeron.ImageTermBufferForHooks(image)
+	term := newAsyncRapidTerm(t)
 
 	rapid.Check(t, func(rt *rapid.T) {
-		termBuffer.SetBytes(0, termBuffer.Capacity(), 0)
-		aeron.ImageSetSubscriberPositionForHooks(image, 0)
 		pub, proxy := newTestProxy(Config{})
-		client := &Client{
-			controlSessionID:    controlResponseTestControlSessionID,
-			proxy:               proxy,
-			controlPoller:       newControlResponsePollerForTest(sub),
-			descriptorPoller:    NewRecordingDescriptorPoller(),
-			controlSubscription: sub,
-			controlAssembler:    NewFragmentAssembler(nil),
-			aeronClient:         aeronClient,
-		}
+		client := term.newClient(aeronClient, proxy)
 		model := &asyncSignalModel{}
 		var received []codecs.RecordingSignalEventFields
 		if rapid.Bool().Draw(rt, "sessionHandler") {
@@ -384,29 +273,24 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 			)
 		}
 
-		var prefix []asyncSignalOp
-		if rapid.Bool().Draw(rt, "disarmedPrefix") {
-			prefix = asyncSignalRapidDisarmedPrefix
-		}
-		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
-		for step := range len(prefix) + stepCount {
-			var op asyncSignalOp
-			if step < len(prefix) {
-				op = prefix[step]
-			} else {
-				op = asyncSignalOp(
-					rapid.IntRange(int(asyncSignalOpBuild), int(asyncSignalOpClose)).Draw(rt, "op"),
-				)
-			}
+		ops := drawAsyncOps(
+			rt,
+			asyncSignalOpBuild,
+			asyncSignalOpResponse,
+			asyncSignalOpClientPoll,
+			asyncSignalOpClose,
+		)
+		for _, op := range ops {
 			if len(model.handles) == 0 {
 				op = asyncSignalOpBuild
 			}
 
 			switch op {
 			case asyncSignalOpBuild:
-				if len(model.handles) == asyncSignalRapidMaxHandles {
+				if len(model.handles) == asyncRapidMaxBuilds {
 					break
 				}
+				model.closeOpen()
 				kind := rapid.SampledFrom([]asyncSignalHandleKind{
 					asyncSignalHandleStart,
 					asyncSignalHandleExtend,
@@ -418,13 +302,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 						lifecycleRecordingID,
 					}).Draw(rt, "requestedRecordingID")
 				}
-				handle := newAsyncSignalModelHandle(client, kind, requestedRecordingID)
-				for _, prior := range model.handles {
-					require.Less(rt, prior.correlationID, handle.correlationID)
-				}
-				model.handles = append(model.handles, handle)
-				model.latched = false
-				model.filter = handle.correlationID
+				model.add(rt, newAsyncSignalModelHandle(client, kind, requestedRecordingID))
 
 			case asyncSignalOpOffer:
 				handle := model.drawHandle(rt)
@@ -463,8 +341,8 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					archivewire.ControlResponseCode_ERROR,
 				}).Draw(rt, "code")
 				fields := codecs.ControlResponseFields{
-					ControlSessionID: controlResponseTestControlSessionID,
-					CorrelationID:    model.drawCorrelationID(rt),
+					ControlSessionID: drawAsyncControlSessionID(rt),
+					CorrelationID:    model.drawCorrelationID(rt, "correlationIndex"),
 					RelevantID:       asyncStartRecordingTestSubscriptionID,
 					Code:             code,
 					Version:          520,
@@ -472,13 +350,13 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				if code == archivewire.ControlResponseCode_ERROR {
 					fields.ErrorMessage = []byte("refused")
 				}
-				appendUnfragmentedWireToTerm(t, termBuffer, encodeControlResponseWire(t, fields))
-				model.pending = append(model.pending, asyncSignalModelEvent{response: fields})
+				model.queueResponse(t, term, fields)
 
 			case asyncSignalOpSignal:
 				event := model.drawSignal(rt)
-				appendUnfragmentedWireToTerm(t, termBuffer, encodeRecordingSignalEventWire(t, event))
-				model.pending = append(model.pending, asyncSignalModelEvent{signal: event, isSignal: true})
+				model.queueEvent(t, term, encodeRecordingSignalEventWire(t, event), func() {
+					model.applySignal(event)
+				})
 
 			case asyncSignalOpClientPoll:
 				require.Equal(rt, model.poll(), client.Poll())
@@ -494,9 +372,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 					require.NoError(rt, err)
 					require.True(rt, done, "latched signal must complete")
 					handle.proven = true
-					if model.latchedFor(handle.correlationID) {
-						model.latched = false
-					}
+					model.clearMatching(handle.correlationID)
 				case model.latchedFor(handle.correlationID):
 					if model.latchedFields.Code == archivewire.ControlResponseCode_ERROR {
 						require.True(rt, done, "own error must fail the handle")
@@ -513,18 +389,7 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 				}
 
 			case asyncSignalOpClose:
-				handle := model.drawHandle(rt)
-				handle.handle.Close()
-				if handle.closed {
-					break
-				}
-				handle.closed = true
-				if model.latchedFor(handle.correlationID) {
-					model.latched = false
-				}
-				if model.filter == handle.correlationID {
-					model.filter = 0
-				}
+				model.closeHandle(model.drawHandle(rt))
 			}
 
 			requireAsyncSignalModel(rt, model, client, received)
