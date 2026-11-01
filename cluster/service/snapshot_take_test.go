@@ -542,7 +542,7 @@ func TestSnapshotTake_brokenState(t *testing.T) {
 
 			tt.corrupt(h.agent)
 			h.agent.DoWork(0)
-			require.ErrorIs(t, h.agent.ServiceFailure(), errSnapshotWrite)
+			require.ErrorIs(t, h.agent.ServiceFailure(), ErrSnapshotWrite)
 			acks := decodeServiceAcksFromPub(t, h.pub)
 			require.Len(t, acks, 1)
 			require.Equal(t, end, acks[0].LogPosition)
@@ -740,17 +740,17 @@ func TestSnapshotTake_failures(t *testing.T) {
 		{
 			name:  "noPublicationAdder",
 			setup: func(_ testing.TB, h *takeHarness) { h.agent.snapshotPublications = nil },
-			cause: errSnapshotNoArchive,
+			cause: ErrSnapshotNoArchive,
 		},
 		{
 			name:        "noTimeUnit",
 			noTermEvent: true,
-			cause:       errSnapshotTimeUnitUnknown,
+			cause:       ErrSnapshotTimeUnitUnknown,
 		},
 		{
 			name:    "addOfferError",
 			setup:   func(_ testing.TB, h *takeHarness) { h.fake.addOffers = []error{addErr} },
-			cause:   errSnapshotPublicationAdd,
+			cause:   ErrSnapshotPublicationAdd,
 			wrapped: addErr,
 		},
 		{
@@ -758,7 +758,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.addPolls = []snapshotTakeFakeAddPoll{{err: addErr}, {err: addErr}}
 			},
-			cause:         errSnapshotPublicationAdd,
+			cause:         ErrSnapshotPublicationAdd,
 			wrapped:       addErr,
 			wantCancelled: []int64{1},
 		},
@@ -769,7 +769,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.addPolls = []snapshotTakeFakeAddPoll{{err: addErr}, {done: true}}
 			},
-			cause:   errSnapshotPublicationAdd,
+			cause:   ErrSnapshotPublicationAdd,
 			wrapped: addErr,
 		},
 		{
@@ -780,7 +780,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 					err:  timeoutErr,
 				}}
 			},
-			cause:   errSnapshotPublicationAdd,
+			cause:   ErrSnapshotPublicationAdd,
 			wrapped: timeoutErr,
 		},
 		{
@@ -788,7 +788,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.startOffers = []snapshotTakeFakeStep{{err: startErr}}
 			},
-			cause:   errSnapshotRecordingStart,
+			cause:   ErrSnapshotRecordingStart,
 			wrapped: startErr,
 		},
 		{
@@ -796,14 +796,14 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.startOffers = make([]snapshotTakeFakeStep, 8)
 			},
-			cause: errSnapshotRecordingStart,
+			cause: ErrSnapshotRecordingStart,
 		},
 		{
 			name: "archiveErrorBeforeStart",
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.startSignals = []snapshotTakeFakeStep{{done: true, err: startErr}}
 			},
-			cause:   errSnapshotRecordingStart,
+			cause:   ErrSnapshotRecordingStart,
 			wrapped: startErr,
 		},
 		{
@@ -811,14 +811,14 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.startSignals = make([]snapshotTakeFakeStep, 8)
 			},
-			cause: errSnapshotRecordingStart,
+			cause: ErrSnapshotRecordingStart,
 		},
 		{
 			name: "terminalRowOffer",
 			setup: func(_ testing.TB, h *takeHarness) {
 				h.fake.rowOffers = []int64{aeron.MaxPositionExceeded}
 			},
-			cause: errSnapshotWrite,
+			cause: ErrSnapshotWrite,
 		},
 		{
 			name: "rowDeadlineUnderBackPressure",
@@ -829,7 +829,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 					publication: aeron.NewTestExclusivePublicationForHooksWithLimit(tb, 0, true),
 				}}
 			},
-			cause: errSnapshotWrite,
+			cause: ErrSnapshotWrite,
 		},
 		{
 			name: "earlyStopWhileWriting",
@@ -837,28 +837,28 @@ func TestSnapshotTake_failures(t *testing.T) {
 				h.fake.stopEarly = true
 				h.fake.rowOffers = []int64{aeron.BackPressured}
 			},
-			cause: errSnapshotWrite,
+			cause: ErrSnapshotWrite,
 		},
 		{
 			name:    "handlerError",
 			svc:     &snapshotRecordingService{hookErr: hookErr},
-			cause:   errTakeSnapshot,
+			cause:   ErrTakeSnapshot,
 			wrapped: hookErr,
 		},
 		{
 			name:  "handlerClosesPublication",
 			svc:   &snapshotRecordingService{closePublication: true},
-			cause: errSnapshotWrite,
+			cause: ErrSnapshotWrite,
 		},
 		{
 			name:  "stopBelowClosePosition",
 			setup: func(_ testing.TB, h *takeHarness) { h.fake.stopDelta = -1 },
-			cause: errSnapshotRecordingStop,
+			cause: ErrSnapshotRecordingStop,
 		},
 		{
 			name:  "stopDeadline",
 			setup: func(_ testing.TB, h *takeHarness) { h.fake.stopNever = true },
-			cause: errSnapshotRecordingStop,
+			cause: ErrSnapshotRecordingStop,
 		},
 	}
 	for _, tt := range tests {
@@ -868,6 +868,8 @@ func TestSnapshotTake_failures(t *testing.T) {
 				svc = &snapshotRecordingService{}
 			}
 			h := newTakeHarness(t, svc)
+			var got []error
+			h.agent.errorHandler = collectErrors(&got)
 			h.fake.offerRetryTimeout = time.Duration(takeFailureTickNs)
 			h.fake.responseTimeout = time.Duration(takeFailureTickNs)
 			if tt.setup != nil {
@@ -886,10 +888,16 @@ func TestSnapshotTake_failures(t *testing.T) {
 				require.Empty(t, decodeServiceAcksFromPub(t, h.pub), "tick %d acks before mark", tick)
 			}
 			failure := h.agent.ServiceFailure()
+			require.ErrorIs(t, failure, ErrFailed)
 			require.ErrorIs(t, failure, tt.cause)
 			if tt.wrapped != nil {
 				require.ErrorIs(t, failure, tt.wrapped)
 			}
+
+			// The error handler reports when the -1 ack sends. The addPollError
+			// cleanup poll does not report again.
+			require.Len(t, got, 1)
+			require.Same(t, failure, got[0])
 			require.Equal(t, []codecs.ServiceAckFields{{
 				LogPosition: end,
 				Timestamp:   9,

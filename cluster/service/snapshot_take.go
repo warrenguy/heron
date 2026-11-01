@@ -12,16 +12,28 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// Snapshot take failure causes. Each failed take acks RelevantID nullValue,
-// then marks its cause. With no ack sender, the cause marks at once.
-var (
-	errSnapshotNoArchive       = errors.New("service: snapshot archive not configured")
-	errSnapshotTimeUnitUnknown = errors.New("service: snapshot time unit unknown")
-	errSnapshotPublicationAdd  = errors.New("service: add snapshot publication")
-	errSnapshotRecordingStart  = errors.New("service: start snapshot recording")
-	errSnapshotWrite           = errors.New("service: write snapshot")
-	errSnapshotRecordingStop   = errors.New("service: stop snapshot recording")
-)
+// ErrSnapshotNoArchive marks a snapshot take with no archive client. The error
+// is fatal.
+var ErrSnapshotNoArchive = errors.New("service: snapshot archive not configured")
+
+// ErrSnapshotTimeUnitUnknown marks a snapshot take with no known time unit. The
+// error is fatal.
+var ErrSnapshotTimeUnitUnknown = errors.New("service: snapshot time unit unknown")
+
+// ErrSnapshotPublicationAdd wraps a snapshot publication add error. The error
+// is fatal.
+var ErrSnapshotPublicationAdd = errors.New("service: add snapshot publication")
+
+// ErrSnapshotRecordingStart wraps a snapshot recording start error. The error
+// is fatal.
+var ErrSnapshotRecordingStart = errors.New("service: start snapshot recording")
+
+// ErrSnapshotWrite wraps a snapshot write error. The error is fatal.
+var ErrSnapshotWrite = errors.New("service: write snapshot")
+
+// ErrSnapshotRecordingStop wraps a snapshot recording stop error. The error is
+// fatal.
+var ErrSnapshotRecordingStop = errors.New("service: stop snapshot recording")
 
 // snapshotArchiveControl is the archive client surface the agent holds.
 // DoWork calls Poll once per tick. The take sets its STOP tracker as the
@@ -108,8 +120,8 @@ type snapshotTake struct {
 // Order:
 //  1. append one unready snapshot entry at logPosition
 //  2. no archive client or no publication adder: fail the entry with
-//     errSnapshotNoArchive
-//  3. no known time unit: fail the entry with errSnapshotTimeUnitUnknown
+//     ErrSnapshotNoArchive
+//  3. no known time unit: fail the entry with ErrSnapshotTimeUnitUnknown
 //  4. otherwise store a new take
 func (a *Agent) startSnapshotTake(logPosition, leadershipTermID int64) {
 	a.coordinationAcks = append(a.coordinationAcks, coordinationAck{
@@ -118,11 +130,11 @@ func (a *Agent) startSnapshotTake(logPosition, leadershipTermID int64) {
 		relevantID:  nullValue,
 	})
 	if a.archive == nil || a.newSnapshotStart == nil || a.snapshotPublications == nil {
-		a.failAckEntry(ackKindSnapshot, errSnapshotNoArchive)
+		a.failAckEntry(ackKindSnapshot, ErrSnapshotNoArchive)
 		return
 	}
 	if a.timeUnit == clusterwire.ClusterTimeUnit_NULL_VALUE {
-		a.failAckEntry(ackKindSnapshot, errSnapshotTimeUnitUnknown)
+		a.failAckEntry(ackKindSnapshot, ErrSnapshotTimeUnitUnknown)
 		return
 	}
 
@@ -185,7 +197,7 @@ func (a *Agent) stepSnapshotTake(take *snapshotTake, nowNs int64) (bool, error) 
 	case takeAwaitingStop:
 		return a.awaitSnapshotStop(take, nowNs)
 	}
-	return false, fmt.Errorf("%w: unknown take state %d", errSnapshotWrite, take.state)
+	return false, fmt.Errorf("%w: unknown take state %d", ErrSnapshotWrite, take.state)
 }
 
 // addSnapshotPublication offers the add once, then polls it once per call.
@@ -197,7 +209,7 @@ func (a *Agent) addSnapshotPublication(take *snapshotTake, nowNs int64) (bool, e
 			a.snapshotChannel,
 		)
 		if err != nil {
-			return false, fmt.Errorf("%w: %w", errSnapshotPublicationAdd, err)
+			return false, fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err)
 		}
 		take.addCorrelationID = id
 		take.addPending = true
@@ -210,11 +222,11 @@ func (a *Agent) addSnapshotPublication(take *snapshotTake, nowNs int64) (bool, e
 	}
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("%w: %w", errSnapshotPublicationAdd, err)
+		return false, fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err)
 	case !done:
 		return false, nil
 	case publication == nil:
-		return false, fmt.Errorf("%w: adder returned no publication", errSnapshotPublicationAdd)
+		return false, fmt.Errorf("%w: adder returned no publication", ErrSnapshotPublicationAdd)
 	}
 
 	take.publication = publication
@@ -230,13 +242,13 @@ func offerSnapshotStart(take *snapshotTake, nowNs int64) (bool, error) {
 	offered, err := take.start.TryOffer()
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("%w: %w", errSnapshotRecordingStart, err)
+		return false, fmt.Errorf("%w: %w", ErrSnapshotRecordingStart, err)
 	case offered:
 		take.deadlineNs = nowNs + take.responseTimeoutNs
 		take.state = takeAwaitingStart
 		return true, nil
 	case nowNs >= take.deadlineNs:
-		return false, fmt.Errorf("%w: offer timed out", errSnapshotRecordingStart)
+		return false, fmt.Errorf("%w: offer timed out", ErrSnapshotRecordingStart)
 	}
 	return false, nil
 }
@@ -247,9 +259,9 @@ func (a *Agent) awaitSnapshotStart(take *snapshotTake, nowNs int64) (bool, error
 	signalled, err := take.start.PollSignal()
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("%w: %w", errSnapshotRecordingStart, err)
+		return false, fmt.Errorf("%w: %w", ErrSnapshotRecordingStart, err)
 	case !signalled && nowNs >= take.deadlineNs:
-		return false, fmt.Errorf("%w: response timed out", errSnapshotRecordingStart)
+		return false, fmt.Errorf("%w: response timed out", ErrSnapshotRecordingStart)
 	case !signalled:
 		return false, nil
 	}
@@ -272,7 +284,7 @@ func (a *Agent) awaitSnapshotStart(take *snapshotTake, nowNs int64) (bool, error
 // the recording early.
 func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 	if take.stop.Stopped() {
-		return false, fmt.Errorf("%w: recording stopped early", errSnapshotWrite)
+		return false, fmt.Errorf("%w: recording stopped early", ErrSnapshotWrite)
 	}
 	rowCount := len(take.sessionIDs) + 2
 	for take.nextRow < rowCount {
@@ -287,16 +299,16 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 			take.deadlineNs = nowNs + take.responseTimeoutNs
 			continue
 		case !aeron.IsOfferRetriable(result):
-			return false, fmt.Errorf("%w: row offer code %d", errSnapshotWrite, result)
+			return false, fmt.Errorf("%w: row offer code %d", ErrSnapshotWrite, result)
 		case nowNs >= take.deadlineNs:
-			return false, fmt.Errorf("%w: row offer timed out", errSnapshotWrite)
+			return false, fmt.Errorf("%w: row offer timed out", ErrSnapshotWrite)
 		}
 		return false, nil
 	}
 
 	if a.snapshotHandler != nil {
 		if err := a.snapshotHandler.TakeSnapshot(take.publication); err != nil {
-			return false, fmt.Errorf("%w: %w", errTakeSnapshot, err)
+			return false, fmt.Errorf("%w: %w", ErrTakeSnapshot, err)
 		}
 	}
 
@@ -305,12 +317,12 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 	if take.closePosition < 0 {
 		return false, fmt.Errorf(
 			"%w: publication closed, position code %d",
-			errSnapshotWrite,
+			ErrSnapshotWrite,
 			take.closePosition,
 		)
 	}
 	if err := take.publication.Close(); err != nil {
-		return false, fmt.Errorf("%w: close publication: %w", errSnapshotWrite, err)
+		return false, fmt.Errorf("%w: close publication: %w", ErrSnapshotWrite, err)
 	}
 	take.deadlineNs = nowNs + take.responseTimeoutNs
 	take.state = takeAwaitingStop
@@ -322,14 +334,14 @@ func (a *Agent) writeSnapshot(take *snapshotTake, nowNs int64) (bool, error) {
 func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error) {
 	if !take.stop.Stopped() {
 		if nowNs >= take.deadlineNs {
-			return false, fmt.Errorf("%w: stop signal timed out", errSnapshotRecordingStop)
+			return false, fmt.Errorf("%w: stop signal timed out", ErrSnapshotRecordingStop)
 		}
 		return false, nil
 	}
 	if stopped := take.stop.StoppedPosition(); stopped < take.closePosition {
 		return false, fmt.Errorf(
 			"%w: stop position %d below close position %d",
-			errSnapshotRecordingStop,
+			ErrSnapshotRecordingStop,
 			stopped,
 			take.closePosition,
 		)
@@ -383,7 +395,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 			},
 		)
 		if !ok {
-			return nil, fmt.Errorf("%w: encode snapshot marker", errSnapshotWrite)
+			return nil, fmt.Errorf("%w: encode snapshot marker", ErrSnapshotWrite)
 		}
 		return buf[:end], nil
 	}
@@ -391,7 +403,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 	sessionID := take.sessionIDs[index-1]
 	session, found := a.sessions[sessionID]
 	if !found {
-		return nil, fmt.Errorf("%w: client session %d missing", errSnapshotWrite, sessionID)
+		return nil, fmt.Errorf("%w: client session %d missing", ErrSnapshotWrite, sessionID)
 	}
 	length, ok := codecs.ClusterWireMessageLen(
 		clusterwire.ClientSessionSbeBlockLength,
@@ -399,7 +411,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 		len(session.encodedPrincipal),
 	)
 	if !ok {
-		return nil, fmt.Errorf("%w: client session %d too long", errSnapshotWrite, sessionID)
+		return nil, fmt.Errorf("%w: client session %d too long", ErrSnapshotWrite, sessionID)
 	}
 	a.snapshotScratch = slices.Grow(a.snapshotScratch[:0], length)[:length]
 	buf := a.snapshotScratch
@@ -415,7 +427,7 @@ func (a *Agent) encodeSnapshotRow(take *snapshotTake, index int) ([]byte, error)
 		},
 	)
 	if !ok {
-		return nil, fmt.Errorf("%w: encode client session %d", errSnapshotWrite, sessionID)
+		return nil, fmt.Errorf("%w: encode client session %d", ErrSnapshotWrite, sessionID)
 	}
 	return buf[:end], nil
 }
@@ -433,6 +445,10 @@ func (a *Agent) failSnapshotTake(cause error) {
 // closeSnapshotTake polls a pending add once before a cancel. A ready poll
 // closes the publication instead. A conductor tick outside the take can read
 // the ready reply, and CancelPending alone then leaks that publication.
+//
+// A poll error does not reach the error handler. On a failed take, the
+// poll error repeats the take cause. During Close, the poll error is a
+// teardown error.
 func (a *Agent) closeSnapshotTake() {
 	take := a.take
 	if take == nil {

@@ -13,17 +13,56 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// Sticky failure causes marked once on the service path. Unexported: tests
-// match with errors.Is against the package-level values.
-var (
-	errLogNotContiguous       = errors.New("service: log not contiguous")
-	errSessionClash           = errors.New("service: session id clash")
-	errTimerPublish           = errors.New("service: timer publish failed")
-	errCloseSessionPublish    = errors.New("service: close session publish failed")
-	errTakeSnapshot           = errors.New("service: take snapshot failed")
-	errActionPositionMismatch = errors.New("service: cluster action log position mismatch")
-	errUnknownClusterAction   = errors.New("service: unknown cluster action")
-)
+// ErrFailed wraps the first fatal service error.
+var ErrFailed = errors.New("service: failed")
+
+// ErrStart wraps a Start error. The error is fatal.
+var ErrStart = errors.New("service: start")
+
+// ErrLogSubscriptionAdd wraps a log subscription add error. The error is fatal.
+var ErrLogSubscriptionAdd = errors.New("service: add log subscription")
+
+// ErrLogNotContiguous marks a join whose log position is not contiguous. The
+// error is fatal.
+var ErrLogNotContiguous = errors.New("service: log not contiguous")
+
+// ErrSessionClash marks a SessionOpen whose id is already open. The error is
+// fatal.
+var ErrSessionClash = errors.New("service: session id clash")
+
+// ErrTimerPublish marks a terminal timer offer code. The error is fatal.
+var ErrTimerPublish = errors.New("service: timer publish failed")
+
+// ErrCloseSessionPublish marks a terminal close-session offer code. The error
+// is fatal.
+var ErrCloseSessionPublish = errors.New("service: close session publish failed")
+
+// ErrTakeSnapshot wraps a TakeSnapshot error. The error is fatal.
+var ErrTakeSnapshot = errors.New("service: take snapshot failed")
+
+// ErrActionPositionMismatch marks a cluster action at the wrong log position.
+// The error is fatal.
+var ErrActionPositionMismatch = errors.New("service: cluster action log position mismatch")
+
+// ErrUnknownClusterAction marks a cluster action the agent does not dispatch.
+// The error is fatal.
+var ErrUnknownClusterAction = errors.New("service: unknown cluster action")
+
+// ErrResponsePublicationAdd wraps a response publication add error. The error
+// is not fatal.
+var ErrResponsePublicationAdd = errors.New("service: add response publication")
+
+// ErrUnknownSessionClose reports a SessionClose for an unknown id. The error is
+// not fatal.
+var ErrUnknownSessionClose = errors.New("service: unknown session close")
+
+// ErrCloseUnknownSession reports CloseClientSession for an unknown id. The
+// error is not fatal.
+var ErrCloseUnknownSession = errors.New("service: close unknown client session")
+
+// ErrUnknownTimeUnit reports an unknown NewLeadershipTermEvent time unit. The
+// error is not fatal.
+var ErrUnknownTimeUnit = errors.New("service: unknown time unit")
 
 // AgentConfig configures NewAgent. Zero-value fields have the defaults stated
 // per field.
@@ -90,6 +129,30 @@ type AgentConfig struct {
 	// session that holds none. Nil is allowed: ClientSession.Offer then
 	// returns aeron.NotConnected. Agent does not own the adder.
 	ResponsePublications ResponsePublicationAdder
+
+	// ErrorHandler receives service-path errors.
+	//
+	// Behaviour:
+	//   - A non-fatal error reaches the handler once. The duty cycle keeps
+	//     running.
+	//   - The first fatal error reaches the handler once. The error wraps
+	//     ErrFailed. ServiceFailure returns the same error. DoWork returns
+	//     0 after the fatal error.
+	//   - An error after the first fatal error does not reach the handler.
+	//   - A Close teardown error does not reach the handler.
+	//   - An error after Close does not reach the handler.
+	//   - A nil ErrorHandler drops every report. The agent still records a
+	//     fatal error.
+	//
+	// Concurrency: invoker-only. ErrorHandler must not:
+	//   - panic
+	//   - call Agent.DoWork or Agent.Close
+	//   - call ScheduleTimer, CancelTimer or CloseClientSession
+	//   - call ClientSession.Offer or ClientSession.Close
+	//
+	// ErrorHandler may call every other Agent method and every other
+	// ClientSession method. Those methods do not change state.
+	ErrorHandler func(error)
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -153,9 +216,11 @@ type Agent struct {
 
 	adapter *BoundedLogAdapter
 
-	// serviceFailure is the first fatal service-path failure, or nil.
-	// Marked once; never cleared. DoWork returns 0 while marked.
+	// serviceFailure holds the first fatal service error, or nil. The stored
+	// error wraps ErrFailed. The duty cycle never clears the field.
 	serviceFailure error
+
+	errorHandler func(error)
 
 	// pendingJoin is the last JoinLog not yet bound, or nil. One slot. A newer
 	// join supersedes an unbound older join and marks the prior join entry
@@ -275,10 +340,6 @@ const (
 //   - snapshot: ready when the take resolves, on success or failure
 //
 // failure stores the cause of a failed Start or a failed snapshot take.
-// The drain marks the cause once the ack sends. The drain also marks
-// the cause on a terminal offer code. The agent marks a Start error when
-// startAckDeadlineNs passes. With no ack sender, failAckEntry marks the
-// cause at once. With no ack sender, the entry stays queued.
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
@@ -307,6 +368,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		subscriptions:           cfg.Subscriptions,
 		control:                 cfg.Control,
 		moduleProxy:             cfg.ModuleProxy,
+		errorHandler:            cfg.ErrorHandler,
 		snapshotChannel:         cfg.SnapshotChannel,
 		snapshotStreamID:        cfg.SnapshotStreamID,
 		timeUnit:                clusterwire.ClusterTimeUnit_NULL_VALUE,
@@ -412,7 +474,7 @@ func (a *Agent) DoWork(nowNs int64) int {
 		work++
 		if a.service != nil {
 			if err := a.service.Start(a); err != nil {
-				a.failAckEntry(ackKindStart, err)
+				a.failAckEntry(ackKindStart, fmt.Errorf("%w: %w", ErrStart, err))
 				if a.serviceFailure != nil {
 					return work
 				}
@@ -472,11 +534,12 @@ func (a *Agent) DoWork(nowNs int64) int {
 	return work
 }
 
-// Close marks a Start error that still waits for its start ack. That ack
-// does not send. Close then ends any snapshot take. A take that Close ends
-// does not send an ack. Close then disconnects the egress of every session.
-// Close then unbinds the log image. Close then closes the owned log
-// subscription. Registry entries stay.
+// Close marks a Start error or a snapshot take failure that still waits for
+// its ack, unless the agent has already failed. The waiting ack does not
+// send. Close does not report teardown errors. A take that Close ends does
+// not send an ack.
+//
+// Registry entries stay.
 //
 // Idempotent. The Agent is inert after Close.
 //
@@ -488,7 +551,7 @@ func (a *Agent) Close() {
 	if a.closed {
 		return
 	}
-	if err := a.pendingStartFailure(); err != nil {
+	if err := a.pendingAckFailure(); err != nil {
 		a.markFailure(err)
 	}
 	a.closed = true
@@ -534,7 +597,7 @@ func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
 		CorrelationID: correlationID,
 		Deadline:      deadline,
 	})
-	return a.acceptOffer(result, errTimerPublish)
+	return a.acceptOffer(result, ErrTimerPublish, nil)
 }
 
 // CancelTimer implements [Cluster.CancelTimer].
@@ -545,21 +608,19 @@ func (a *Agent) CancelTimer(correlationID int64) bool {
 	result := a.moduleProxy.PublishCancelTimer(codecs.CancelTimerFields{
 		CorrelationID: correlationID,
 	})
-	return a.acceptOffer(result, errTimerPublish)
+	return a.acceptOffer(result, ErrTimerPublish, nil)
 }
 
-// acceptOffer maps a module-proxy offer result to a sent bool.
-//
-//   - Positive result: returns true.
-//   - Terminal publication code: marks cause once, wrapped with the offer
-//     code, and returns false.
-//   - Retriable code: returns false without marking.
-func (a *Agent) acceptOffer(result int64, cause error) bool {
+func (a *Agent) acceptOffer(result int64, cause, inner error) bool {
 	if result > 0 {
 		return true
 	}
 	if !aeron.IsOfferRetriable(result) {
-		a.markFailure(fmt.Errorf("%w: %d", cause, result))
+		if inner != nil {
+			a.markFailure(fmt.Errorf("%w: %d: %w", cause, result, inner))
+		} else {
+			a.markFailure(fmt.Errorf("%w: %d", cause, result))
+		}
 	}
 	return false
 }
@@ -650,7 +711,8 @@ func (a *Agent) LastSnapshotRecordingID() int64 {
 	return a.lastSnapshotRecordingID
 }
 
-// ServiceFailure returns the first marked service-path failure, or nil.
+// Returns the first fatal service error, or nil. The result wraps ErrFailed
+// and the cause. A non-nil ErrorHandler receives the same non-nil result.
 func (a *Agent) ServiceFailure() error {
 	return a.serviceFailure
 }
@@ -754,9 +816,6 @@ func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 //
 // Behaviour: a bind runs the join egress rule (joinEgress) after it marks
 // the join ack ready.
-//
-// Returns 1 when the join binds; 0 otherwise. Marks sticky failure on
-// subscription add error or contiguity mismatch.
 func (a *Agent) joinWork() int {
 	event := a.pendingJoin
 	if event == nil {
@@ -776,7 +835,7 @@ func (a *Agent) joinWork() int {
 		}
 		sub, err := a.subscriptions.AddSubscription(event.logStreamID, event.logChannel)
 		if err != nil {
-			a.markFailure(err)
+			a.markFailure(fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err))
 			return 0
 		}
 		a.logSubscription = sub
@@ -787,10 +846,8 @@ func (a *Agent) joinWork() int {
 		return 0
 	}
 
-	// Contiguity: event position matches consumed position; image join matches
-	// event position. Mismatch marks sticky failure and does not bind.
 	if event.logPosition != a.logPosition || image.JoinPosition() != event.logPosition {
-		a.markFailure(errLogNotContiguous)
+		a.markFailure(ErrLogNotContiguous)
 		return 0
 	}
 
@@ -829,10 +886,34 @@ func (a *Agent) maybeUnbind(polled int) {
 	a.role = codecs.RoleFollower
 }
 
+// markFailure stores the first fatal error, wrapped with ErrFailed, and
+// reports it. Does nothing after Close or an earlier mark.
 func (a *Agent) markFailure(err error) {
-	if a.serviceFailure == nil {
-		a.serviceFailure = err
+	if a.closed || a.serviceFailure != nil {
+		return
 	}
+	a.serviceFailure = fmt.Errorf("%w: %w", ErrFailed, err)
+	if a.errorHandler != nil {
+		a.errorHandler(a.serviceFailure)
+	}
+}
+
+// reportError passes a non-fatal error to the error handler. Does nothing
+// after Close or a mark.
+func (a *Agent) reportError(err error) {
+	if a.closed || a.serviceFailure != nil || a.errorHandler == nil {
+		return
+	}
+	a.errorHandler(err)
+}
+
+func (a *Agent) pendingAckFailure() error {
+	for i := range a.coordinationAcks {
+		if err := a.coordinationAcks[i].failure; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // seedRecovery runs in [Open] before the first bind. memberID and role keep
@@ -881,10 +962,10 @@ func (a *Agent) handleSessionOpen(
 	logPosition int64,
 	fields codecs.SessionOpenEventFields,
 ) aeron.ControlledAction {
-	// Clash: mark sticky failure and abort before stamping position so the
-	// unconsumed frame end is not adopted.
+	// Abort before adoptConsumed. Otherwise the unconsumed frame end becomes
+	// the log position.
 	if _, exists := a.sessions[fields.ClusterSessionID]; exists {
-		a.markFailure(errSessionClash)
+		a.markFailure(ErrSessionClash)
 		return aeron.ControlledAbort
 	}
 
@@ -914,7 +995,12 @@ func (a *Agent) handleSessionClose(
 
 	session := a.removeClientSession(fields.ClusterSessionID)
 	if session == nil {
-		// Unknown session: skip callback, continue (upstream continues).
+		a.reportError(fmt.Errorf(
+			"%w: session %d: %d",
+			ErrUnknownSessionClose,
+			fields.ClusterSessionID,
+			fields.CloseReason,
+		))
 		return aeron.ControlledContinue
 	}
 	a.disconnectClientSession(session)
@@ -940,7 +1026,11 @@ func (a *Agent) handleNewLeadershipTermEvent(
 	fields codecs.NewLeadershipTermEventFields,
 ) aeron.ControlledAction {
 	a.adoptConsumed(logPosition, fields.Timestamp)
-	a.timeUnit, _ = resolveTimeUnit(fields.TimeUnit)
+	unit, ok := resolveTimeUnit(fields.TimeUnit)
+	a.timeUnit = unit
+	if !ok {
+		a.reportError(fmt.Errorf("%w: %d", ErrUnknownTimeUnit, fields.TimeUnit))
+	}
 	a.appVersion = fields.AppVersion
 	a.egressLeadershipTermID = fields.LeadershipTermID
 	if a.leadershipHandler != nil {
@@ -996,7 +1086,7 @@ func (a *Agent) handleClusterAction(
 	a.adoptConsumed(logPosition, fields.Timestamp)
 
 	if fields.LogPosition != logPosition {
-		return a.handleDispatchFailure(errActionPositionMismatch)
+		return a.handleDispatchFailure(ErrActionPositionMismatch)
 	}
 
 	switch fields.Action {
@@ -1011,7 +1101,7 @@ func (a *Agent) handleClusterAction(
 	case clusterwire.ClusterAction_NULL_VALUE:
 		fallthrough
 	default:
-		return a.handleDispatchFailure(errUnknownClusterAction)
+		return a.handleDispatchFailure(ErrUnknownClusterAction)
 	}
 }
 

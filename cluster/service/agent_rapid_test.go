@@ -3,6 +3,7 @@
 package service
 
 import (
+	"errors"
 	"maps"
 	"slices"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -266,5 +268,288 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 			assertInvariants()
 		}
 		require.Equal(rt, len(messages), nextMsg)
+	})
+}
+
+type inflightAdd struct {
+	sessionID     int64
+	correlationID int64
+}
+
+func TestAgent_errorHandler_rapid(t *testing.T) {
+	t.Parallel()
+	const okStream = testResponseStreamID + 1
+	const (
+		opPlain = iota
+		opOfferFail
+		opPollFail
+		opUnknownLogClose
+		opControlFault
+		opUnknownCloseRequest
+		opTeardownAdd
+		opUnknownTime
+		opDispatch
+		opMismatch
+		opNullAction
+		opClash
+		opTimer
+		opAckPassed
+		opTick
+		opCloseAgent
+	)
+	offerBoom := errors.New("offer boom")
+	pollBoom := errors.New("poll boom")
+	responseChannel := []byte(testResponseChannel)
+	badSchema := encodeMessageHeader(
+		t, 8, clusterwire.JoinLogSbeTemplateID, 999, 16,
+	)
+	shortAck := encodeRequestServiceAckControl(t, 1)
+	shortAck = shortAck[:len(shortAck)-4]
+	dispatchSentinels := []error{
+		ErrLogDispatchHeader,
+		ErrLogDispatchSchema,
+		ErrLogDispatchDecode,
+	}
+	closedOps := []int{opTimer, opUnknownCloseRequest, opTick}
+	failedOps := []int{opTimer, opUnknownCloseRequest, opTick, opCloseAgent}
+
+	rapid.Check(t, func(rt *rapid.T) {
+		rt.Helper()
+
+		adder := newFakeResponseAdder()
+		adder.offerErrs = map[int32]error{testResponseStreamID: offerBoom}
+		proxy, _ := boundModuleProxy(t)
+		closedPub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+		require.NoError(t, closedPub.Close())
+		var got []error
+		agent, _, _ := bindImage(t, AgentConfig{
+			Service:              &recordingService{},
+			ResponsePublications: adder,
+			ModuleProxy:          proxy,
+			ErrorHandler:         collectErrors(&got),
+		}, 0)
+		agent.role = codecs.RoleLeader
+		agent.started = true
+
+		var openIDs []int64
+		var inFlight []inflightAdd
+		var want []error
+		var failedSentinel error
+		logPos := int64(0)
+		nextSession := int64(1)
+		nextUnknown := int64(-1)
+		closed := false
+
+		advance := func() int64 {
+			logPos += 64
+			return logPos
+		}
+		note := func(sentinel error, fatal bool) {
+			if failedSentinel != nil || closed {
+				return
+			}
+			want = append(want, sentinel)
+			if fatal {
+				failedSentinel = sentinel
+			}
+		}
+		unknownSession := func() int64 {
+			id := nextUnknown
+			nextUnknown--
+			return id
+		}
+		closeSession := func(id int64) {
+			pos := advance()
+			agent.handleSessionClose(pos, codecs.SessionCloseEventFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: id,
+				Timestamp:        pos,
+				CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+			})
+		}
+		dropAdd := func(i int) {
+			inFlight = slices.Delete(inFlight, i, i+1)
+		}
+		dropSession := func(id int64) {
+			i := slices.Index(openIDs, id)
+			if i < 0 {
+				return
+			}
+			openIDs = slices.Delete(openIDs, i, i+1)
+		}
+		openSession := func(stream int32) {
+			rt.Helper()
+			id := nextSession
+			nextSession++
+			pos := advance()
+			correlationID := adder.nextID
+			action := agent.handleSessionOpen(pos, codecs.SessionOpenEventFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: id,
+				Timestamp:        pos,
+				ResponseStreamID: stream,
+				ResponseChannel:  responseChannel,
+			})
+			require.Equal(rt, aeron.ControlledContinue, action)
+			openIDs = append(openIDs, id)
+			if stream == okStream {
+				inFlight = append(inFlight, inflightAdd{
+					sessionID:     id,
+					correlationID: correlationID,
+				})
+			}
+		}
+		check := func() {
+			rt.Helper()
+			require.Len(rt, got, len(want))
+			failedReports := 0
+			for i, sentinel := range want {
+				require.ErrorIs(rt, got[i], sentinel)
+				if errors.Is(got[i], ErrFailed) {
+					failedReports++
+					require.ErrorIs(rt, got[i], failedSentinel)
+					require.Same(rt, agent.ServiceFailure(), got[i])
+				}
+			}
+			if failedSentinel != nil {
+				require.Equal(rt, 1, failedReports)
+				require.ErrorIs(rt, agent.ServiceFailure(), failedSentinel)
+			} else {
+				require.Zero(rt, failedReports)
+				require.NoError(rt, agent.ServiceFailure())
+			}
+			require.Equal(rt, len(openIDs), agent.SessionCount())
+			require.Equal(rt, len(inFlight), agent.PendingResponsePublicationAdds())
+			require.Equal(rt, logPos, agent.LogPosition())
+		}
+
+		stepCount := rapid.IntRange(1, 40).Draw(rt, "steps")
+		for range stepCount {
+			var op int
+			switch {
+			case closed:
+				op = closedOps[rapid.IntRange(0, len(closedOps)-1).Draw(rt, "closedOp")]
+			case failedSentinel != nil:
+				op = failedOps[rapid.IntRange(0, len(failedOps)-1).Draw(rt, "failedOp")]
+			default:
+				op = rapid.IntRange(opPlain, opCloseAgent).Draw(rt, "op")
+			}
+			switch op {
+			case opPlain:
+				openSession(okStream)
+			case opOfferFail:
+				note(ErrResponsePublicationAdd, false)
+				openSession(testResponseStreamID)
+			case opPollFail:
+				if len(inFlight) == 0 {
+					break
+				}
+				i := rapid.IntRange(0, len(inFlight)-1).Draw(rt, "addPoll")
+				adder.next(inFlight[i].correlationID, responsePoll{err: pollBoom})
+				note(ErrResponsePublicationAdd, false)
+				agent.responseAddWork()
+				dropAdd(i)
+			case opUnknownLogClose:
+				id := unknownSession()
+				note(ErrUnknownSessionClose, false)
+				closeSession(id)
+			case opControlFault:
+				switch rapid.IntRange(0, 2).Draw(rt, "controlFault") {
+				case 0:
+					note(ErrControlMessageSchema, false)
+					agent.handleControlFragment(badSchema, 0)
+				case 1:
+					note(ErrControlMessageDecode, false)
+					agent.handleControlFragment([]byte{1, 2, 3, 4}, 0)
+				default:
+					note(ErrControlMessageDecode, false)
+					agent.handleControlFragment(shortAck, 0)
+				}
+			case opUnknownCloseRequest:
+				id := unknownSession()
+				note(ErrCloseUnknownSession, false)
+				require.False(rt, agent.CloseClientSession(id))
+			case opTeardownAdd:
+				if len(inFlight) == 0 {
+					break
+				}
+				i := rapid.IntRange(0, len(inFlight)-1).Draw(rt, "teardownAdd")
+				add := inFlight[i]
+				adder.next(add.correlationID, responsePoll{err: pollBoom})
+				note(ErrResponsePublicationAdd, false)
+				closeSession(add.sessionID)
+				dropSession(add.sessionID)
+				dropAdd(i)
+			case opUnknownTime:
+				pos := advance()
+				note(ErrUnknownTimeUnit, false)
+				agent.handleNewLeadershipTermEvent(pos, codecs.NewLeadershipTermEventFields{
+					Timestamp: pos,
+					TimeUnit:  clusterwire.ClusterTimeUnit(99),
+				})
+			case opDispatch:
+				sentinel := rapid.SampledFrom(dispatchSentinels).Draw(rt, "dispatch")
+				note(sentinel, true)
+				action := agent.handleDispatchFailure(sentinel)
+				require.Equal(rt, aeron.ControlledAbort, action)
+			case opMismatch:
+				pos := advance()
+				note(ErrActionPositionMismatch, true)
+				action := agent.handleClusterAction(pos, codecs.ClusterActionRequestFields{
+					LogPosition: pos - 1,
+					Timestamp:   pos,
+					Action:      clusterwire.ClusterAction_SNAPSHOT,
+				})
+				require.Equal(rt, aeron.ControlledAbort, action)
+			case opNullAction:
+				pos := advance()
+				note(ErrUnknownClusterAction, true)
+				action := agent.handleClusterAction(pos, codecs.ClusterActionRequestFields{
+					LogPosition: pos,
+					Timestamp:   pos,
+					Action:      clusterwire.ClusterAction_NULL_VALUE,
+				})
+				require.Equal(rt, aeron.ControlledAbort, action)
+			case opClash:
+				if len(openIDs) == 0 {
+					break
+				}
+				id := rapid.SampledFrom(openIDs).Draw(rt, "clashID")
+				note(ErrSessionClash, true)
+				action := agent.handleSessionOpen(logPos, codecs.SessionOpenEventFields{
+					LeadershipTermID: 1,
+					ClusterSessionID: id,
+					Timestamp:        logPos,
+					ResponseStreamID: okStream,
+					ResponseChannel:  responseChannel,
+				})
+				require.Equal(rt, aeron.ControlledAbort, action)
+			case opTimer:
+				proxy.SetPublication(closedPub)
+				note(ErrTimerPublish, true)
+				require.False(rt, agent.ScheduleTimer(1, 2))
+			case opAckPassed:
+				if logPos == 0 {
+					break
+				}
+				note(ErrAckRequestPassed, true)
+				agent.handleRequestServiceAck(logPos - 1)
+				agent.sweepRequestAckReadiness()
+			case opTick:
+				if failedSentinel != nil || closed {
+					require.Zero(rt, agent.DoWork(0))
+					break
+				}
+				agent.DoWork(0)
+			case opCloseAgent:
+				for _, add := range inFlight {
+					adder.next(add.correlationID, responsePoll{err: pollBoom})
+				}
+				agent.Close()
+				closed = true
+				inFlight = nil
+			}
+			check()
+		}
 	})
 }

@@ -602,9 +602,15 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 	client := newFakeTransport(t)
 	cfg := openConfig(client)
 	cfg.ServiceID = 3
+	var got []error
+	cfg.ErrorHandler = collectErrors(&got)
 	c := openContainer(t, cfg)
 
 	agent := c.Agent()
+	require.False(t, agent.CloseClientSession(99))
+	require.Len(t, got, 1)
+	require.ErrorIs(t, got[0], ErrCloseUnknownSession)
+	require.NoError(t, agent.ServiceFailure())
 	require.NotNil(t, agent.control)
 	require.NotNil(t, agent.moduleProxy)
 	require.Same(t, client, agent.subscriptions)

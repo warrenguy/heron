@@ -160,7 +160,7 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 			if !m.addPending {
 				if err := m.script.addOffer; err != nil {
 					m.script.addOffer = nil
-					return true, errSnapshotPublicationAdd
+					return true, ErrSnapshotPublicationAdd
 				}
 				m.addID = *m.nextAddID
 				*m.nextAddID++
@@ -171,7 +171,7 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 				m.addPending = false
 			}
 			if poll.err != nil {
-				return m.fail(errSnapshotPublicationAdd)
+				return m.fail(ErrSnapshotPublicationAdd)
 			}
 			if !poll.done {
 				return false, nil
@@ -183,12 +183,12 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 			done, err := popSnapshotTakeFakeStep(&m.script.startOffers)
 			switch {
 			case err != nil:
-				return m.fail(errSnapshotRecordingStart)
+				return m.fail(ErrSnapshotRecordingStart)
 			case done:
 				m.deadlineNs = nowNs + modelTimeoutNs
 				m.state = takeAwaitingStart
 			case nowNs >= m.deadlineNs:
-				return m.fail(errSnapshotRecordingStart)
+				return m.fail(ErrSnapshotRecordingStart)
 			default:
 				return false, nil
 			}
@@ -197,12 +197,12 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 			done, err := popSnapshotTakeFakeStep(&m.script.startSignals)
 			switch {
 			case err != nil:
-				return m.fail(errSnapshotRecordingStart)
+				return m.fail(ErrSnapshotRecordingStart)
 			case done:
 				m.deadlineNs = nowNs + modelTimeoutNs
 				m.state = takeWriting
 			case nowNs >= m.deadlineNs:
-				return m.fail(errSnapshotRecordingStart)
+				return m.fail(ErrSnapshotRecordingStart)
 			default:
 				return false, nil
 			}
@@ -220,18 +220,18 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 					m.deadlineNs = nowNs + modelTimeoutNs
 					continue
 				case !aeron.IsOfferRetriable(code):
-					return m.fail(errSnapshotWrite)
+					return m.fail(ErrSnapshotWrite)
 				case nowNs >= m.deadlineNs:
-					return m.fail(errSnapshotWrite)
+					return m.fail(ErrSnapshotWrite)
 				}
 				return false, nil
 			}
 			m.hookCalls++
 			switch m.script.handler {
 			case modelHandlerError:
-				return m.fail(errTakeSnapshot)
+				return m.fail(ErrTakeSnapshot)
 			case modelHandlerClose:
-				return m.fail(errSnapshotWrite)
+				return m.fail(ErrSnapshotWrite)
 			}
 			m.deadlineNs = nowNs + modelTimeoutNs
 			m.state = takeAwaitingStop
@@ -241,9 +241,9 @@ func (m *takeModel) tick(nowNs int64) (bool, error) {
 			case m.stopSeen && m.script.stopDelta >= 0:
 				return true, nil
 			case m.stopSeen:
-				return m.fail(errSnapshotRecordingStop)
+				return m.fail(ErrSnapshotRecordingStop)
 			case nowNs >= m.deadlineNs:
-				return m.fail(errSnapshotRecordingStop)
+				return m.fail(ErrSnapshotRecordingStop)
 			}
 			return false, nil
 		}
@@ -364,7 +364,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			if !termEvent {
 				require.NoError(rt, agent.ServiceFailure(), "mark before the ack")
 				require.Nil(rt, agent.take, "take without a time unit")
-				resolved, cause = true, errSnapshotTimeUnitUnknown
+				resolved, cause = true, ErrSnapshotTimeUnitUnknown
 				nowNs++
 				agent.DoWork(nowNs)
 			}

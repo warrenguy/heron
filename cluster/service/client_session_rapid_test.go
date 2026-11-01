@@ -106,6 +106,12 @@ func (s *pollScripter) drawPoll(
 //     model send, in order. A closing session does not add a frame.
 //   - a close request returns true only on a send or on a closing session.
 //     A close of an id that is not open returns false.
+//   - ErrorHandler receives only these reports, in order. A pollTerminal,
+//     pollNilPublication, or pollVanished outcome on a tick or a log close
+//     reports ErrResponsePublicationAdd. A close request for an id that is
+//     not open reports ErrCloseUnknownSession. A log close of an id that is
+//     not open reports ErrUnknownSessionClose. A poll at Close does not
+//     report.
 //   - no step marks a failure.
 //
 // Ops: open a free id, close any pool id, message any pool id, set the role,
@@ -122,10 +128,13 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 		svc := &recordingService{}
 		adder := newFakeResponseAdder()
 		proxy := NewConsensusModuleProxy()
+		var got []error
+		var wantReports []error
 		agent := NewAgent(AgentConfig{
 			Service:              svc,
 			ResponsePublications: adder,
 			ModuleProxy:          proxy,
+			ErrorHandler:         collectErrors(&got),
 		})
 		agent.started = true
 
@@ -155,18 +164,29 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 			return position
 		}
 
-		// disconnect applies one close-path poll outcome to the model.
-		disconnect := func(label string, id int64) {
+		noteResponseAdd := func(kind modelPollKind) {
+			switch kind {
+			case pollTerminal, pollNilPublication, pollVanished:
+				wantReports = append(wantReports, ErrResponsePublicationAdd)
+			}
+		}
+
+		// disconnect applies one close-path poll outcome to the model. The
+		// returned kind is pollPending when the session does not hold an
+		// in-flight add. noteResponseAdd does not record pollPending.
+		disconnect := func(label string, id int64) modelPollKind {
 			rt.Helper()
 			state := model[id]
+			kind := pollPending
 			if correlationID := state.addCorrelationID; correlationID != 0 {
-				kind, _ := scripter.drawPoll(rt, label, correlationID, id)
+				kind, _ = scripter.drawPoll(rt, label, correlationID, id)
 				if kind != pollReady {
 					wantCancels = append(wantCancels, correlationID)
 				}
 				state.addCorrelationID = 0
 			}
 			state.publication = nil
+			return kind
 		}
 
 		openIDs := func() []int64 {
@@ -222,6 +242,11 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 			}
 			require.Equal(rt, wantCloseFrames, closeFrames(rt, connectedProxy))
 			require.NoError(rt, agent.ServiceFailure())
+			require.Len(rt, got, len(wantReports))
+			for i, sentinel := range wantReports {
+				require.ErrorIs(rt, got[i], sentinel)
+				require.NotErrorIs(rt, got[i], ErrFailed)
+			}
 		}
 
 		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
@@ -256,8 +281,10 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 			case 1:
 				id := rapid.SampledFrom(sessionPool).Draw(rt, "closeID")
 				if model[id].open {
-					disconnect("closePoll", id)
+					noteResponseAdd(disconnect("closePoll", id))
 					model[id].open = false
+				} else {
+					wantReports = append(wantReports, ErrUnknownSessionClose)
 				}
 				at := nextPosition()
 				agent.handleSessionClose(at, codecs.SessionCloseEventFields{
@@ -297,6 +324,7 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 				id := rapid.SampledFrom(adding).Draw(rt, "pollID")
 				state := model[id]
 				kind, publication := scripter.drawPoll(rt, "tickPoll", state.addCorrelationID, id)
+				noteResponseAdd(kind)
 				wantWork := len(adding) - 1
 				switch kind {
 				case pollReady:
@@ -353,6 +381,9 @@ func TestAgent_clientSessions_rapid(t *testing.T) {
 				index := rapid.IntRange(0, len(proxyPublications)-1).Draw(rt, "proxyPublication")
 				proxy.SetPublication(proxyPublications[index])
 				state := model[id]
+				if !state.open {
+					wantReports = append(wantReports, ErrCloseUnknownSession)
+				}
 				var sent bool
 				if state.open && rapid.Bool().Draw(rt, "sessionClose") {
 					session, ok := agent.ClientSession(id)
