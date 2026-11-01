@@ -2,6 +2,7 @@ package service
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 
 	"github.com/warrenguy/heron/aeron"
@@ -145,6 +146,7 @@ func (s *containerClientSession) IsClosing() bool {
 func (a *Agent) CloseClientSession(id int64) bool {
 	session, ok := a.sessions[id]
 	if !ok {
+		a.reportError(fmt.Errorf("%w: session %d", ErrCloseUnknownSession, id))
 		return false
 	}
 	if session.closing {
@@ -156,7 +158,7 @@ func (a *Agent) CloseClientSession(id int64) bool {
 	result := a.moduleProxy.PublishCloseSession(codecs.CloseSessionFields{
 		ClusterSessionID: id,
 	})
-	if !a.acceptOffer(result, errCloseSessionPublish) {
+	if !a.acceptOffer(result, ErrCloseSessionPublish, nil) {
 		return false
 	}
 	session.closing = true
@@ -218,10 +220,10 @@ func (a *Agent) addClientSession(session *containerClientSession) {
 //
 // Behaviour: does not start a response add. Matches upstream addSession.
 //
-// Returns errSessionClash when the id is already open.
+// Returns ErrSessionClash when the id is already open.
 func (a *Agent) restoreClientSession(fields codecs.ClientSessionFields) error {
 	if _, exists := a.sessions[fields.ClusterSessionID]; exists {
-		return errSessionClash
+		return ErrSessionClash
 	}
 	a.addClientSession(newContainerClientSession(
 		a,
@@ -258,9 +260,8 @@ func (a *Agent) walkClientSessions(yield func(ClientSession) bool) {
 	}
 }
 
-// connectClientSession starts the response publication add of session. Does
-// nothing without an adder, with a held publication, or with an add in
-// flight. An add error leaves the session open with no publication.
+// connectClientSession starts the response publication add of session. An
+// add error reports ErrResponsePublicationAdd. The session stays open.
 func (a *Agent) connectClientSession(session *containerClientSession) {
 	if a.responsePublications == nil ||
 		session.publication != nil ||
@@ -272,30 +273,29 @@ func (a *Agent) connectClientSession(session *containerClientSession) {
 		session.responseChannel,
 	)
 	if err != nil {
+		a.reportError(responsePublicationAddError(session.id, err))
 		return
 	}
 	session.addCorrelationID = correlationID
 	a.responseAdds = append(a.responseAdds, session)
 }
 
-// responseAddWork polls each in-flight response publication add once. A
-// ready add stores its publication. An error, or done with no publication,
-// ends the add. The session then stays open with no publication.
+// responseAddWork polls each in-flight response publication add once. An
+// error, or a done poll that does not return a publication, reports
+// ErrResponsePublicationAdd. The session stays open.
 //
 // Returns the count of adds still in flight plus publications stored.
 func (a *Agent) responseAddWork() int {
 	work := 0
 	kept := a.responseAdds[:0]
 	for _, session := range a.responseAdds {
-		publication, done, err := a.responsePublications.PollAddPublication(
-			session.addCorrelationID,
-		)
-		if err == nil && !done {
+		publication, inFlight := a.pollResponseAdd(session)
+		if inFlight {
 			kept = append(kept, session)
 			work++
 			continue
 		}
-		if err == nil && publication != nil {
+		if publication != nil {
 			session.publication = publication
 			work++
 		}
@@ -342,16 +342,52 @@ func (a *Agent) disconnectEgress() {
 //
 // The add polls once before any cancel. CancelPending leaves a ready-marked
 // add registered, so the poll collects that publication and closes it. Any
-// other poll result cancels the add.
+// other poll result cancels the add. An error, or a done poll that does not
+// return a publication, reports ErrResponsePublicationAdd. An in-flight poll
+// does not report.
 func (a *Agent) endResponseAdd(session *containerClientSession) {
-	correlationID := session.addCorrelationID
-	publication, done, err := a.responsePublications.PollAddPublication(correlationID)
-	if err == nil && done && publication != nil {
+	publication, _ := a.pollResponseAdd(session)
+	if publication != nil {
 		_ = publication.Close()
 	} else {
-		a.responsePublications.CancelPending(correlationID)
+		a.responsePublications.CancelPending(session.addCorrelationID)
 	}
 	session.addCorrelationID = nullValue
+}
+
+// pollResponseAdd polls the in-flight add of session once. Returns the
+// publication of a ready add, or inFlight true while the add waits. An
+// error, or a done poll that does not return a publication, reports
+// ErrResponsePublicationAdd.
+func (a *Agent) pollResponseAdd(
+	session *containerClientSession,
+) (
+	publication *aeron.Publication,
+	inFlight bool,
+) {
+	publication, done, err := a.responsePublications.PollAddPublication(
+		session.addCorrelationID,
+	)
+	switch {
+	case err == nil && !done:
+		return nil, true
+	case err == nil && publication != nil:
+		return publication, false
+	}
+	a.reportError(responsePublicationAddError(session.id, err))
+	return nil, false
+}
+
+// A nil err means a done poll does not return a publication.
+func responsePublicationAddError(id int64, err error) error {
+	if err == nil {
+		return fmt.Errorf(
+			"%w: session %d: adder returned no publication",
+			ErrResponsePublicationAdd,
+			id,
+		)
+	}
+	return fmt.Errorf("%w: session %d: %w", ErrResponsePublicationAdd, id, err)
 }
 
 // closeResponsePublication closes the response publication of session, if

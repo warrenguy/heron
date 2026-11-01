@@ -31,9 +31,9 @@ type ClusteredService interface {
 	// queued start ack ready with RelevantID NULL_VALUE. The agent retries
 	// the start ack each tick until the ack sends, a terminal offer code
 	// returns, or [StartAckConfig.Timeout] passes. The agent then marks
-	// the service failure. With no queued start ack, or no bound control
-	// publication, the agent marks the service failure at once. The duty
-	// cycle stops.
+	// the service failure. The failure wraps [ErrStart] and the Start
+	// error. With no queued start ack, or no bound control publication,
+	// the agent marks the service failure at once. The duty cycle stops.
 	Start(cluster Cluster) error
 
 	// SessionOpen runs after the agent adds session to the registry.
@@ -91,8 +91,9 @@ type NewLeadershipTermEventHandler interface {
 // A non-nil error fails the take. The agent queues one ServiceAck with
 // RelevantID -1. The service failure marks once that ack sends. The mark
 // stops the duty cycle. With no bound ModuleProxy, the agent marks at once
-// and never sends that ack. An earlier mark or a terminal ack publish error
-// also stops the duty cycle before that ack.
+// and never sends that ack. Close marks the failure whose ack has not
+// sent, unless the agent has already failed. An earlier mark or a terminal
+// ack publish error also stops the duty cycle before that ack.
 //
 // Concurrency: invoker-only. TakeSnapshot blocks the duty cycle. Nothing
 // pumps the transport client meanwhile. A run past the transport client's
@@ -176,7 +177,8 @@ type Cluster interface {
 	//
 	// Returns:
 	//   - true when this member sent the frame, now or on an earlier call
-	//   - false when id is not an open session. Must not retry.
+	//   - false when id is not an open session. The call reports
+	//     [ErrCloseUnknownSession]. Must not retry.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.

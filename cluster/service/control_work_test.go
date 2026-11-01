@@ -4,6 +4,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -356,7 +357,7 @@ func TestControlWork_PassedAtDelivery(t *testing.T) {
 	// Request below current position.
 	h.control.Enqueue(encodeRequestServiceAckControl(t, 0))
 	work := h.agent.DoWork(0)
-	require.ErrorIs(t, h.agent.ServiceFailure(), errAckRequestPassed)
+	require.ErrorIs(t, h.agent.ServiceFailure(), ErrAckRequestPassed)
 	require.GreaterOrEqual(t, work, 1)
 	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
 	// Only join ack on the wire.
@@ -385,7 +386,7 @@ func TestControlWork_MidFrameRequest(t *testing.T) {
 	require.Equal(t, int64(span), h.agent.LogPosition())
 	// Sweep already ran before poll this tick. Next tick marks failure.
 	h.agent.DoWork(0)
-	require.ErrorIs(t, h.agent.ServiceFailure(), errAckRequestPassed)
+	require.ErrorIs(t, h.agent.ServiceFailure(), ErrAckRequestPassed)
 	require.Len(t, decodeServiceAcksFromPub(t, h.pub), 1)
 }
 
@@ -578,7 +579,8 @@ func TestControlWork_TerminalClosed(t *testing.T) {
 	require.NoError(t, h.pub.Close())
 
 	h.agent.DoWork(0)
-	require.ErrorIs(t, h.agent.ServiceFailure(), errAckPublish)
+	require.ErrorIs(t, h.agent.ServiceFailure(), ErrFailed)
+	require.ErrorIs(t, h.agent.ServiceFailure(), ErrAckPublish)
 	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
 	require.Equal(t, int64(0), h.agent.NextAckID())
 	require.Equal(t, 0, h.agent.DoWork(0))
@@ -654,14 +656,27 @@ func TestControlWork_UnknownTemplate42(t *testing.T) {
 
 func TestControlWork_WrongSchemaAndUndecodable(t *testing.T) {
 	h := newControlAgentHarness(t, 0)
+	var got []error
+	h.agent.errorHandler = collectErrors(&got)
 	// Wrong schema id.
 	h.control.Enqueue(encodeMessageHeader(t, 8, clusterwire.JoinLogSbeTemplateID, 999, 16))
 	// Truncated RequestServiceAck (known template, undecodable).
 	trunc := encodeRequestServiceAckControl(t, 1)
 	h.control.Enqueue(trunc[:len(trunc)-4])
+	h.control.Enqueue([]byte{1, 2, 3, 4})
 	h.agent.DoWork(0)
 	require.NoError(t, h.agent.ServiceFailure())
 	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+	want := []error{
+		ErrControlMessageSchema,
+		ErrControlMessageDecode,
+		ErrControlMessageDecode,
+	}
+	require.Len(t, got, len(want))
+	for i, sentinel := range want {
+		require.ErrorIs(t, got[i], sentinel, "error %d", i)
+		require.NotErrorIs(t, got[i], ErrFailed, "error %d", i)
+	}
 }
 
 func TestControlWork_SessionMessageNoAck(t *testing.T) {
@@ -947,11 +962,13 @@ func TestControlWork_StartAckStartErrorRetriableMarksFailure(t *testing.T) {
 	svc := &recordingService{startErr: startErr}
 	proxy := boundModuleProxyWithLimit(t, 0, false)
 	control := &QueueControlIngress{}
+	var got []error
 	agent := NewAgent(AgentConfig{
-		ServiceID:   1,
-		Service:     svc,
-		Control:     control,
-		ModuleProxy: proxy,
+		ServiceID:    1,
+		Service:      svc,
+		Control:      control,
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
 		StartAck: &StartAckConfig{
 			LogPosition: startPos,
 			RelevantID:  42,
@@ -962,7 +979,7 @@ func TestControlWork_StartAckStartErrorRetriableMarksFailure(t *testing.T) {
 		kind:        ackKindStart,
 		ready:       true,
 		relevantID:  nullValue,
-		failure:     startErr,
+		failure:     fmt.Errorf("%w: %w", ErrStart, startErr),
 	}}
 
 	// Phase 1: the module stream is not connected. The ack stays queued.
@@ -986,7 +1003,7 @@ func TestControlWork_StartAckStartErrorRetriableMarksFailure(t *testing.T) {
 	connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
 	proxy.SetPublication(connected)
 	require.Equal(t, 1, agent.DoWork(2))
-	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	requireFailureReported(t, agent, got, ErrStart, startErr)
 	require.Equal(t, int64(1), agent.NextAckID())
 	require.Empty(t, agent.coordinationAcks)
 	require.Equal(t, []codecs.ServiceAckFields{
@@ -1016,10 +1033,12 @@ func TestControlWork_StartAckStartErrorTimeoutMarksFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			startErr := errors.New("start boom")
 			proxy := boundModuleProxyWithLimit(t, 0, false)
+			var got []error
 			agent := NewAgent(AgentConfig{
-				ServiceID:   1,
-				Service:     &recordingService{startErr: startErr},
-				ModuleProxy: proxy,
+				ServiceID:    1,
+				Service:      &recordingService{startErr: startErr},
+				ModuleProxy:  proxy,
+				ErrorHandler: collectErrors(&got),
 				StartAck: &StartAckConfig{
 					LogPosition: 0,
 					RelevantID:  42,
@@ -1039,7 +1058,7 @@ func TestControlWork_StartAckStartErrorTimeoutMarksFailure(t *testing.T) {
 			// Phase 2: at the deadline the tick marks the Start error. The ack
 			// stays queued. The ack does not send.
 			require.Equal(t, 0, agent.DoWork(startNs+tt.wantWaitNs))
-			require.ErrorIs(t, agent.ServiceFailure(), startErr)
+			requireFailureReported(t, agent, got, ErrStart, startErr)
 			require.Equal(t, int64(0), agent.NextAckID())
 			require.Equal(t, 1, agent.PendingCoordinationAcks())
 
@@ -1057,16 +1076,19 @@ func TestControlWork_StartAckStartErrorClosedMarksFailure(t *testing.T) {
 	require.NoError(t, closed.Close())
 	proxy := NewConsensusModuleProxy()
 	proxy.SetPublication(closed)
+	var got []error
 	agent := NewAgent(AgentConfig{
-		ServiceID:   1,
-		Service:     &recordingService{startErr: startErr},
-		ModuleProxy: proxy,
-		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+		ServiceID:    1,
+		Service:      &recordingService{startErr: startErr},
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
+		StartAck:     &StartAckConfig{LogPosition: 0, RelevantID: 42},
 	})
 
 	require.Equal(t, 1, agent.DoWork(0))
 	failure := agent.ServiceFailure()
-	require.ErrorIs(t, failure, startErr)
+	require.ErrorIs(t, failure, ErrAckPublish)
+	requireFailureReported(t, agent, got, ErrStart, startErr)
 	require.ErrorContains(t, failure, strconv.FormatInt(aeron.Closed, 10))
 	require.Equal(t, int64(0), agent.NextAckID())
 	require.Equal(t, 1, agent.PendingCoordinationAcks())
@@ -1075,21 +1097,24 @@ func TestControlWork_StartAckStartErrorClosedMarksFailure(t *testing.T) {
 func TestControlWork_StartAckStartErrorAgentCloseMarksFailure(t *testing.T) {
 	startErr := errors.New("start boom")
 	proxy := boundModuleProxyWithLimit(t, 0, false)
+	var got []error
 	agent := NewAgent(AgentConfig{
-		ServiceID:   1,
-		Service:     &recordingService{startErr: startErr},
-		ModuleProxy: proxy,
-		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+		ServiceID:    1,
+		Service:      &recordingService{startErr: startErr},
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
+		StartAck:     &StartAckConfig{LogPosition: 0, RelevantID: 42},
 	})
 
 	// Phase 1: the stream is not connected. The agent does not mark the
 	// Start error.
 	require.Equal(t, 1, agent.DoWork(0))
 	require.NoError(t, agent.ServiceFailure())
+	require.Empty(t, got)
 
 	// Phase 2: Close marks the Start error. The ack does not send.
 	agent.Close()
-	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	requireFailureReported(t, agent, got, ErrStart, startErr)
 	require.Equal(t, int64(0), agent.NextAckID())
 
 	connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
@@ -1101,15 +1126,17 @@ func TestControlWork_StartAckStartErrorAgentCloseMarksFailure(t *testing.T) {
 func TestControlWork_StartAckStartErrorSendsInTheSameTick(t *testing.T) {
 	startErr := errors.New("start boom")
 	proxy, pub := boundModuleProxy(t)
+	var got []error
 	agent := NewAgent(AgentConfig{
-		ServiceID:   1,
-		Service:     &recordingService{startErr: startErr},
-		ModuleProxy: proxy,
-		StartAck:    &StartAckConfig{LogPosition: 0, RelevantID: 42},
+		ServiceID:    1,
+		Service:      &recordingService{startErr: startErr},
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
+		StartAck:     &StartAckConfig{LogPosition: 0, RelevantID: 42},
 	})
 
 	require.Equal(t, 2, agent.DoWork(0), "Start + start drain")
-	require.ErrorIs(t, agent.ServiceFailure(), startErr)
+	requireFailureReported(t, agent, got, ErrStart, startErr)
 	require.Equal(t, []codecs.ServiceAckFields{
 		serviceAckFields(0, 0, nullValue),
 	}, decodeServiceAcksFromPub(t, pub))
@@ -1134,14 +1161,16 @@ func TestControlWork_StartErrorWithoutAckSenderMarksAtOnce(t *testing.T) {
 			if tt.bound {
 				proxy, _ = boundModuleProxy(t)
 			}
+			var got []error
 			agent := NewAgent(AgentConfig{
-				ServiceID:   1,
-				Service:     &recordingService{startErr: startErr},
-				ModuleProxy: proxy,
-				StartAck:    tt.startAck,
+				ServiceID:    1,
+				Service:      &recordingService{startErr: startErr},
+				ModuleProxy:  proxy,
+				ErrorHandler: collectErrors(&got),
+				StartAck:     tt.startAck,
 			})
 			require.Equal(t, 1, agent.DoWork(0))
-			require.ErrorIs(t, agent.ServiceFailure(), startErr)
+			requireFailureReported(t, agent, got, ErrStart, startErr)
 			require.Equal(t, int64(0), agent.NextAckID())
 			require.Equal(t, 0, agent.DoWork(0))
 		})

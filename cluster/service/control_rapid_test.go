@@ -114,6 +114,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 		}
 
+		var handlerLog []error
 		agent := NewAgent(AgentConfig{
 			ServiceID:         1,
 			Service:           svc,
@@ -123,6 +124,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			ModuleProxy:       proxy,
 			FragmentLimit:     DefaultLogFragmentLimit,
 			StartAck:          startAck,
+			ErrorHandler:      collectErrors(&handlerLog),
 		})
 		InstallSnapshotTakeFakeForTest(t, agent)
 
@@ -140,6 +142,10 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		modelFailed := false
 		// modelMark mirrors markFailure: the first cause wins.
 		var modelCause error
+		// The agent marks ErrAckPublish for a closed sender. The mark wraps
+		// the entry cause when the entry holds a cause. The model does not
+		// store ErrAckPublish wrapping the entry cause.
+		modelClosedFirst := false
 		modelMark := func(cause error) {
 			modelFailed = true
 			if modelCause == nil {
@@ -153,7 +159,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if modelCause == nil {
 				modelTakeMarkSender = modelSender
 			}
-			modelMark(errTakeSnapshot)
+			modelMark(ErrTakeSnapshot)
 		}
 		markFailedEntry := func(e modelAckEntry) {
 			if e.kind == ackKindStart {
@@ -243,16 +249,11 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				case modelLogPos == e.logPosition:
 					e.ready = true
 				case modelLogPos > e.logPosition:
-					modelMark(errAckRequestPassed)
+					modelMark(ErrAckRequestPassed)
 				}
 			}
 		}
 
-		// modelDrain mirrors drainReadyCoordinationAck: runs after sweep even
-		// when sweep marked failure. Subsequent ticks freeze at modelDoWork top.
-		// The accepting sender pops the entry and marks a failed one. The
-		// closed sender marks the entry cause, else errAckPublish, and keeps
-		// the entry. NotConnected and no sender change nothing.
 		modelDrain := func() {
 			if modelDrained >= len(model) || !model[modelDrained].ready {
 				return
@@ -265,10 +266,13 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					markFailedEntry(entry)
 				}
 			case modelSenderClosed:
+				if modelCause == nil {
+					modelClosedFirst = true
+				}
 				if entry.failed {
 					markFailedEntry(entry)
 				} else {
-					modelMark(errAckPublish)
+					modelMark(ErrAckPublish)
 				}
 			}
 		}
@@ -451,7 +455,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 			require.Len(rt, svc.pubs, modelHookCalls, "hook calls")
 			failure := agent.ServiceFailure()
-			if errors.Is(failure, errTakeSnapshot) {
+			if errors.Is(failure, ErrTakeSnapshot) {
 				switch modelTakeMarkSender {
 				case modelSenderAccept:
 					require.Positive(rt, modelDrained, "take mark before any ack")
@@ -465,10 +469,19 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				}
 			}
 			if modelFailed {
+				require.Len(rt, handlerLog, 1)
+				require.Same(rt, failure, handlerLog[0])
+				require.ErrorIs(rt, failure, ErrFailed)
 				require.ErrorIs(rt, failure, modelCause)
+				if modelClosedFirst {
+					require.ErrorIs(rt, failure, ErrAckPublish)
+				} else {
+					require.NotErrorIs(rt, failure, ErrAckPublish)
+				}
 				require.Equal(rt, len(model)-modelDrained, agent.PendingCoordinationAcks())
 				return
 			}
+			require.Empty(rt, handlerLog)
 			require.NoError(rt, agent.ServiceFailure())
 			require.Equal(rt, len(model)-modelDrained, agent.PendingCoordinationAcks())
 			require.Equal(rt, modelTake != nil, agent.take != nil, "take in flight")

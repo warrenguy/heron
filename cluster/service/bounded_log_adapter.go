@@ -13,12 +13,17 @@ import (
 // DefaultLogFragmentLimit matches upstream LOG_FRAGMENT_LIMIT_DEFAULT (50).
 const DefaultLogFragmentLimit = 50
 
-// Dispatch failure causes returned to handleDispatchFailure.
-var (
-	errLogDispatchHeader = errors.New("service: log message header invalid")
-	errLogDispatchSchema = errors.New("service: log message schema id mismatch")
-	errLogDispatchDecode = errors.New("service: log message undecodable")
-)
+// ErrLogDispatchHeader marks a log message whose header does not decode. The
+// error is fatal.
+var ErrLogDispatchHeader = errors.New("service: log message header invalid")
+
+// ErrLogDispatchSchema marks a log message with a foreign schema id. The error
+// is fatal.
+var ErrLogDispatchSchema = errors.New("service: log message schema id mismatch")
+
+// ErrLogDispatchDecode marks a log message whose body does not decode. The
+// error is fatal.
+var ErrLogDispatchDecode = errors.New("service: log message undecodable")
 
 // logEventSink receives decoded log events and decides the poll action.
 // Implemented by Agent. Unexported: the adapter and the agent share the
@@ -179,7 +184,7 @@ func (b *BoundedLogAdapter) dispatch(
 ) aeron.ControlledAction {
 	raw := buffer.Bytes()
 	if offset < 0 || length < 0 || offset > len(raw)-length {
-		return b.sink.handleDispatchFailure(errLogDispatchHeader)
+		return b.sink.handleDispatchFailure(ErrLogDispatchHeader)
 	}
 	frag := raw[offset : offset+length]
 	logPosition := header.Position()
@@ -193,11 +198,11 @@ func (b *BoundedLogAdapter) dispatch(
 	case clusterwire.SessionMessageHeaderSbeTemplateID:
 		fields, decoded := codecs.SessionMessageHeaderFieldsFromLayout(frag, layout)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		payload := codecs.SessionMessagePayloadFromLayout(frag, layout)
 		if payload == nil {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleSessionMessage(
 			logPosition,
@@ -209,7 +214,7 @@ func (b *BoundedLogAdapter) dispatch(
 	case clusterwire.TimerEventSbeTemplateID:
 		fields, decoded := codecs.TimerEventFieldsFromLayout(frag, layout)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleTimerEvent(logPosition, fields)
 
@@ -218,28 +223,28 @@ func (b *BoundedLogAdapter) dispatch(
 		// FieldsFromLayout alone does not fail closed on corrupt var lengths.
 		fields, decoded := codecs.TryDecodeSessionOpenEventAt(frag, 0)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleSessionOpen(logPosition, fields)
 
 	case clusterwire.SessionCloseEventSbeTemplateID:
 		fields, decoded := codecs.SessionCloseEventFieldsFromLayout(frag, layout)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleSessionClose(logPosition, fields)
 
 	case clusterwire.NewLeadershipTermEventSbeTemplateID:
 		fields, decoded := codecs.NewLeadershipTermEventFieldsFromLayout(frag, layout)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleNewLeadershipTermEvent(logPosition, fields)
 
 	case clusterwire.ClusterActionRequestSbeTemplateID:
 		fields, decoded := codecs.ClusterActionRequestFieldsFromLayout(frag, layout)
 		if !decoded {
-			return b.sink.handleDispatchFailure(errLogDispatchDecode)
+			return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 		}
 		return b.sink.handleClusterAction(logPosition, fields)
 
@@ -255,14 +260,14 @@ func (b *BoundedLogAdapter) dispatch(
 func (b *BoundedLogAdapter) classifyLayoutFailure(frag []byte) aeron.ControlledAction {
 	_, templateID, schemaID, version, ok := codecs.DecodeMessageHeader(frag, 0)
 	if !ok {
-		return b.sink.handleDispatchFailure(errLogDispatchHeader)
+		return b.sink.handleDispatchFailure(ErrLogDispatchHeader)
 	}
 	if schemaID != clusterwire.MessageHeaderSbeSchemaID {
-		return b.sink.handleDispatchFailure(errLogDispatchSchema)
+		return b.sink.handleDispatchFailure(ErrLogDispatchSchema)
 	}
 	// Header and schema OK. Layout failed on block bounds or a short body.
 	if _, _, known := codecs.ClusterRootBlockLengthBounds(templateID, version); !known {
 		return aeron.ControlledContinue
 	}
-	return b.sink.handleDispatchFailure(errLogDispatchDecode)
+	return b.sink.handleDispatchFailure(ErrLogDispatchDecode)
 }

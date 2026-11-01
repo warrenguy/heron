@@ -653,7 +653,7 @@ func TestBoundedLogAdapter_undecodableClusterAction_aborts(t *testing.T) {
 		clusterwire.ClusterActionRequestSbeSchemaVersion,
 	)
 	writeAndPollAbort(t, a, image, payload)
-	requireOneDispatchFail(t, sink, errLogDispatchDecode)
+	requireOneDispatchFail(t, sink, ErrLogDispatchDecode)
 	require.Equal(t, 0, sink.clusterActions)
 }
 
@@ -791,7 +791,7 @@ func snapshotTemplateCases() []snapshotTemplateCase {
 //   - template absent from ClusterRootBlockLengthBounds: skips through
 //     classifyLayoutFailure
 //   - malformed frame, template known to ClusterRootBlockLengthBounds:
-//     aborts with errLogDispatchDecode
+//     aborts with ErrLogDispatchDecode
 func TestBoundedLogAdapter_templateOutsideDispatch(t *testing.T) {
 	type row struct {
 		name      string
@@ -849,7 +849,7 @@ func TestBoundedLogAdapter_templateOutsideDispatch(t *testing.T) {
 			a, image, sink := boundAdapter(t)
 			if tt.wantAbort {
 				writeAndPollAbort(t, a, image, tt.payload)
-				requireOneDispatchFail(t, sink, errLogDispatchDecode)
+				requireOneDispatchFail(t, sink, ErrLogDispatchDecode)
 				return
 			}
 			writeAndPollOne(t, a, image, tt.payload)
@@ -877,7 +877,7 @@ func TestBoundedLogAdapter_SessionOpen_varOverCap_aborts(t *testing.T) {
 	)
 
 	writeAndPollAbort(t, a, image, buf)
-	requireOneDispatchFail(t, sink, errLogDispatchDecode)
+	requireOneDispatchFail(t, sink, ErrLogDispatchDecode)
 	require.Equal(t, 0, sink.sessionOpens)
 }
 
@@ -886,7 +886,7 @@ func TestBoundedLogAdapter_wrongSchema_aborts(t *testing.T) {
 	// Schema 112 is not cluster schema 111.
 	payload := encodeMessageHeader(t, 0, 1, 112, 0)
 	join, span := writeAndPollAbort(t, a, image, payload)
-	requireOneDispatchFail(t, sink, errLogDispatchSchema)
+	requireOneDispatchFail(t, sink, ErrLogDispatchSchema)
 
 	// Repeat poll redelivers the same frame.
 	require.Equal(t, 0, a.Poll(span+32))
@@ -906,7 +906,7 @@ func TestBoundedLogAdapter_undecodable_aborts(t *testing.T) {
 		clusterwire.SessionMessageHeaderSbeSchemaVersion,
 	)
 	writeAndPollAbort(t, a, image, payload)
-	requireOneDispatchFail(t, sink, errLogDispatchDecode)
+	requireOneDispatchFail(t, sink, ErrLogDispatchDecode)
 }
 
 func TestBoundedLogAdapter_shortHeader_aborts(t *testing.T) {
@@ -914,7 +914,7 @@ func TestBoundedLogAdapter_shortHeader_aborts(t *testing.T) {
 	payload := []byte{0x01, 0x02, 0x03, 0x04}
 	require.Less(t, len(payload), codecs.MessageHeaderEncodedLen())
 	writeAndPollAbort(t, a, image, payload)
-	requireOneDispatchFail(t, sink, errLogDispatchHeader)
+	requireOneDispatchFail(t, sink, ErrLogDispatchHeader)
 }
 
 func TestBoundedLogAdapter_Poll_boundBeforeFirstFrame(t *testing.T) {

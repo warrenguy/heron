@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -11,12 +12,20 @@ import (
 // NULL_VALUE (-1). Producers with no RelevantID set nullValue on the entry.
 const nullValue int64 = -1
 
-// Failure causes for the control and ack path. Marked once on the service path.
-// Unexported: tests match with errors.Is against the package-level values.
-var (
-	errAckRequestPassed = errors.New("service: ack request position passed")
-	errAckPublish       = errors.New("service: ack publish failed")
-)
+// ErrAckRequestPassed marks an ack request below the log position. The error is
+// fatal.
+var ErrAckRequestPassed = errors.New("service: ack request position passed")
+
+// ErrAckPublish marks a terminal service-ack offer code. The error is fatal.
+var ErrAckPublish = errors.New("service: ack publish failed")
+
+// ErrControlMessageSchema reports a control message with a foreign schema id.
+// The error is not fatal.
+var ErrControlMessageSchema = errors.New("service: control message schema id mismatch")
+
+// ErrControlMessageDecode reports a control message that does not decode. The
+// error is not fatal.
+var ErrControlMessageDecode = errors.New("service: control message undecodable")
 
 // controlWork runs one control duty step:
 //  1. Poll Control when non-nil (defaultControlFragmentLimit); dispatch each
@@ -41,15 +50,14 @@ func (a *Agent) controlWork() int {
 
 // handleControlFragment routes one whole control message at MessageHeader
 // offset.
-//
-// Behaviour:
-//   - Not ok or wrong schema: skip silently
-//   - JoinLog (40): decode, map to logJoinEvent, call handleJoinLog
-//   - RequestServiceAck (108): decode, append one request-kind entry
-//   - Other templates and undecodable known templates: skip silently
 func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	_, templateID, schemaID, _, ok := codecs.DecodeMessageHeader(buf, offset)
-	if !ok || schemaID != clusterwire.MessageHeaderSbeSchemaID {
+	if !ok {
+		a.reportError(fmt.Errorf("%w: short header", ErrControlMessageDecode))
+		return
+	}
+	if schemaID != clusterwire.MessageHeaderSbeSchemaID {
+		a.reportError(fmt.Errorf("%w: schema id %d", ErrControlMessageSchema, schemaID))
 		return
 	}
 
@@ -57,6 +65,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	case clusterwire.JoinLogSbeTemplateID:
 		fields, decOK := codecs.TryDecodeJoinLogAt(buf, offset)
 		if !decOK {
+			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
 			return
 		}
 		a.handleJoinLog(logJoinEvent{
@@ -73,6 +82,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		fields, decOK := codecs.TryDecodeRequestServiceAckAt(buf, offset)
 		if !decOK {
+			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
 			return
 		}
 		a.handleRequestServiceAck(fields.LogPosition)
@@ -102,7 +112,7 @@ func (a *Agent) handleRequestServiceAck(logPosition int64) {
 // bound. One walk covers readiness and the lowest unready request position.
 //
 // A passed entry stays unready so the prefix gate blocks drain of later
-// entries. markFailure runs once; later ticks freeze on serviceFailure.
+// entries.
 func (a *Agent) sweepRequestAckReadiness() {
 	pos := a.logPosition
 	lowest := int64(0)
@@ -117,7 +127,7 @@ func (a *Agent) sweepRequestAckReadiness() {
 			case pos == e.logPosition:
 				e.ready = true
 			case pos > e.logPosition:
-				a.markFailure(errAckRequestPassed)
+				a.markFailure(ErrAckRequestPassed)
 			}
 		}
 		if !e.ready {
@@ -146,8 +156,8 @@ func (a *Agent) canPublish() bool {
 //     failure when set, return 1. A snapshot entry also stores its
 //     RelevantID in lastSnapshotRecordingID
 //   - retriable offer code: keep the first entry and ackID, return 0
-//   - terminal offer code: mark the entry failure when set, else
-//     errAckPublish. Return 0
+//   - terminal offer code: mark ErrAckPublish with the code, then the entry
+//     failure when set. Return 0
 //
 // Send fields:
 //   - LogPosition from the entry
@@ -178,11 +188,7 @@ func (a *Agent) drainReadyCoordinationAck() int {
 		RelevantID:  entry.relevantID,
 		ServiceID:   a.serviceID,
 	})
-	cause := errAckPublish
-	if entry.failure != nil {
-		cause = entry.failure
-	}
-	if !a.acceptOffer(result, cause) {
+	if !a.acceptOffer(result, ErrAckPublish, entry.failure) {
 		return 0
 	}
 	a.coordinationAcks = a.coordinationAcks[1:]

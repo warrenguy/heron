@@ -92,7 +92,7 @@ var _ TransportClient = (*aeron.Client)(nil)
 
 // Config configures [Open]. Zero-value channel and stream id fields take the
 // defaults stated per field. Open passes FragmentLimit, StartAck,
-// SnapshotChannel, and SnapshotStreamID to [NewAgent].
+// SnapshotChannel, SnapshotStreamID, and ErrorHandler to [NewAgent].
 type Config struct {
 	// Aeron is the borrowed transport client. Required. The container does not
 	// own Aeron. Open uses Aeron for the control pair. The agent uses Aeron to
@@ -171,6 +171,15 @@ type Config struct {
 	// DefaultSnapshotStreamID. Must differ from ServiceStreamID and
 	// ConsensusModuleStreamID after defaulting.
 	SnapshotStreamID int32
+
+	// ErrorHandler receives service-path errors. [AgentConfig.ErrorHandler]
+	// states the contract.
+	//
+	// cluster.Runner does not tick the service agent. A fatal error does not
+	// end Runner.Run. A fatal error only makes Agent.DoWork return 0. The
+	// caller of DoWork reads [Agent.ServiceFailure], or watches ErrorHandler
+	// for ErrFailed.
+	ErrorHandler func(error)
 }
 
 // StartAckConfig configures the spontaneous start ack a Java consensus module
@@ -398,6 +407,7 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 		SnapshotChannel:      cfg.SnapshotChannel,
 		SnapshotStreamID:     cfg.SnapshotStreamID,
 		ResponsePublications: cfg.Aeron,
+		ErrorHandler:         cfg.ErrorHandler,
 	})
 	container := &Container{
 		agent:         agent,
