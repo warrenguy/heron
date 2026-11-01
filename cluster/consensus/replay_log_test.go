@@ -354,6 +354,34 @@ func replayLogFollower(
 	return a, q, aeron.NewTestImageForHooks(t, sub, 0)
 }
 
+func TestReplayLogPoll_moduleState(t *testing.T) {
+	t.Parallel()
+
+	const nowNs int64 = 555
+	for _, state := range allModuleStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			a, _, image := replayLogFollower(t, 0)
+			messageEnd := writeSessionMessageFrame(t, image, 0, 9)
+			a.BindReplayLog(image)
+			a.setModuleState(state, "test")
+
+			got := a.ReplayLogPoll(messageEnd, nowNs)
+			if state == ModuleStateActive || state == ModuleStateSuspended {
+				require.Equal(t, 1, got)
+				require.Equal(t, messageEnd, a.LogAdapter().Position())
+				require.Equal(t, messageEnd, a.CommitPosition())
+				return
+			}
+			require.Equal(t, 0, got)
+			require.Equal(t, int64(0), a.LogAdapter().Position())
+			require.Equal(t, int64(0), a.CommitPosition())
+			require.Zero(t, a.logPollNowNs)
+		})
+	}
+}
+
 func TestReplayLogPoll(t *testing.T) {
 	t.Parallel()
 

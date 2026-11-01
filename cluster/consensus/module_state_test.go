@@ -7,6 +7,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var allModuleStates = []ModuleState{
+	ModuleStateInit,
+	ModuleStateActive,
+	ModuleStateSuspended,
+	ModuleStateSnapshot,
+	ModuleStateQuitting,
+	ModuleStateTerminating,
+	ModuleStateClosed,
+}
+
 func TestModuleState_codes(t *testing.T) {
 	t.Parallel()
 

@@ -76,16 +76,18 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 	const nowNs int64 = 1_000_000_000_000
 	const followedLeader int32 = 1
 
-	tests := []struct {
+	type logStopCase struct {
 		name           string
 		role           Role
 		leaderMemberID int32
 		adapter        logStopAdapter
 		stopSignalled  bool
 		stopPosition   int64
+		state          ModuleState
 		wantTrigger    ElectionTrigger
 		wantGraceful   int32
-	}{
+	}
+	tests := []logStopCase{
 		{
 			name:           "follower_stop_at_end_of_stream",
 			role:           RoleFollower,
@@ -93,6 +95,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			adapter:        openLogImage(logStopEndOfStream),
 			stopSignalled:  true,
 			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogRecordingStopped,
 			wantGraceful:   followedLeader,
 		},
@@ -103,6 +106,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			adapter:        openLogImage(logStopEndOfStream),
 			stopSignalled:  true,
 			stopPosition:   logStopEndOfStream - 32,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogRecordingStopped,
 			wantGraceful:   nullMemberID,
 		},
@@ -113,6 +117,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			adapter:        openLogImage(logStopEndOfStream),
 			stopSignalled:  true,
 			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogRecordingStopped,
 			wantGraceful:   nullMemberID,
 		},
@@ -121,6 +126,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			role:           RoleFollower,
 			leaderMemberID: followedLeader,
 			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogImageClosed,
 			wantGraceful:   followedLeader,
 		},
@@ -129,6 +135,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			role:           RoleFollower,
 			leaderMemberID: followedLeader,
 			adapter:        closedLogImage(math.MaxInt64),
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogImageClosed,
 			wantGraceful:   nullMemberID,
 		},
@@ -137,6 +144,7 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			role:           RoleFollower,
 			leaderMemberID: followedLeader,
 			adapter:        unboundLogImage,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogImageClosed,
 			wantGraceful:   nullMemberID,
 		},
@@ -145,12 +153,14 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			role:           RoleLeader,
 			leaderMemberID: nullMemberID,
 			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerNone,
 		},
 		{
 			name:           "follower_nil_adapter",
 			role:           RoleFollower,
 			leaderMemberID: followedLeader,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerNone,
 		},
 		{
@@ -160,7 +170,128 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			adapter:        closedLogImage(logStopEndOfStream),
 			stopSignalled:  true,
 			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateActive,
 			wantTrigger:    ElectionTriggerLogRecordingStopped,
+			wantGraceful:   followedLeader,
+		},
+		{
+			name:           "stop_in_INIT",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateInit,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_in_SUSPENDED",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateSuspended,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_in_SNAPSHOT",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateSnapshot,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_in_QUITTING",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateQuitting,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_in_TERMINATING",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateTerminating,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_in_CLOSED",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        openLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateClosed,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "closed_image_in_INIT",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateInit,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "closed_image_in_SUSPENDED",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateSuspended,
+			wantTrigger:    ElectionTriggerLogImageClosed,
+			wantGraceful:   followedLeader,
+		},
+		{
+			name:           "closed_image_in_SNAPSHOT",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateSnapshot,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "closed_image_in_QUITTING",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateQuitting,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "closed_image_in_TERMINATING",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateTerminating,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "closed_image_in_CLOSED",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			state:          ModuleStateClosed,
+			wantTrigger:    ElectionTriggerNone,
+		},
+		{
+			name:           "stop_and_closed_image_in_SUSPENDED",
+			role:           RoleFollower,
+			leaderMemberID: followedLeader,
+			adapter:        closedLogImage(logStopEndOfStream),
+			stopSignalled:  true,
+			stopPosition:   logStopEndOfStream,
+			state:          ModuleStateSuspended,
+			wantTrigger:    ElectionTriggerLogImageClosed,
 			wantGraceful:   followedLeader,
 		},
 	}
@@ -177,9 +308,11 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			fac := &recordingElectionFactory{}
 			a := newLogStopAgent(tc.role, tc.leaderMemberID, adapter, control, nowNs)
 			a.SetElectionFactory(fac.factory())
+			a.setModuleState(tc.state, "test")
 
 			work := a.DoWork(nowNs)
 			require.False(t, control.stopSignalled, "mark consumed")
+			require.Equal(t, tc.state, a.ModuleState())
 
 			if tc.wantTrigger == ElectionTriggerNone {
 				require.Zero(t, work)
@@ -201,6 +334,64 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			require.Equal(t, 1, fac.runners[0].calls)
 		})
 	}
+
+	t.Run("stop_during_snapshot_wait", func(t *testing.T) {
+		control := &fakeLogRecordingControl{
+			stopSignalled:      true,
+			stopSignalPosition: logStopEndOfStream,
+		}
+		fac := &recordingElectionFactory{}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleFollower,
+			Commit:                   new(atomic.Int64),
+			LogAdapter:               openLogImage(logStopEndOfStream)(t),
+			LeadershipTermID:         3,
+			LeaderMemberID:           followedLeader,
+			LeaderHeartbeatTimeoutNs: DefaultLeaderHeartbeatTimeoutNs,
+			ServiceCount:             1,
+		})
+		a.SetLogRecordingControl(control)
+		a.timeOfLastLogUpdateNs = nowNs
+		a.SetElectionFactory(fac.factory())
+		a.queueSnapshotWait(logStopEndOfStream, 3, nowNs)
+		require.Equal(t, ModuleStateSnapshot, a.ModuleState())
+
+		require.Zero(t, a.DoWork(nowNs))
+		require.False(t, control.stopSignalled, "mark consumed")
+		require.Nil(t, a.Election())
+		require.Zero(t, a.ElectionCount())
+		require.Equal(t, RoleFollower, a.Role())
+		require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+		require.Empty(t, fac.seeds)
+		require.Equal(t, ModuleStateSnapshot, a.ModuleState())
+	})
+
+	t.Run("stop_dropped_in_snapshot", func(t *testing.T) {
+		control := &fakeLogRecordingControl{
+			stopSignalled:      true,
+			stopSignalPosition: logStopEndOfStream,
+		}
+		fac := &recordingElectionFactory{}
+		a := newLogStopAgent(
+			RoleFollower,
+			followedLeader,
+			openLogImage(logStopEndOfStream)(t),
+			control,
+			nowNs,
+		)
+		a.SetElectionFactory(fac.factory())
+		a.setModuleState(ModuleStateSnapshot, "test")
+		require.Zero(t, a.DoWork(nowNs))
+
+		a.setModuleState(ModuleStateActive, "test")
+		require.Zero(t, a.DoWork(nowNs+slowTickIntervalNs))
+		require.Nil(t, a.Election())
+		require.Zero(t, a.ElectionCount())
+		require.Equal(t, RoleFollower, a.Role())
+		require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+		require.Empty(t, fac.seeds)
+		require.Equal(t, ModuleStateActive, a.ModuleState())
+	})
 
 	t.Run("stop_while_election_live", func(t *testing.T) {
 		control := &fakeLogRecordingControl{

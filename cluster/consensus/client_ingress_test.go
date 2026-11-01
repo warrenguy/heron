@@ -597,6 +597,31 @@ func TestDoWork_electionHoldsClientIngress(t *testing.T) {
 	}
 }
 
+func TestPollClientIngress_followerModuleState(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range allModuleStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			a := NewAgent(AgentConfig{Role: RoleFollower})
+			ingress := attachQueueClientIngress(a)
+			ingress.Enqueue(encodeSessionConnectWire(t, validConnectFields(1)))
+			a.setModuleState(state, "test")
+
+			const nowNs int64 = 50
+			polled := state == ModuleStateActive || state == ModuleStateSuspended
+			if polled {
+				require.Equal(t, 1, a.pollClientIngress(nowNs))
+				require.Equal(t, 0, ingress.Len())
+				return
+			}
+			require.Equal(t, 0, a.pollClientIngress(nowNs))
+			require.Equal(t, 1, ingress.Len())
+		})
+	}
+}
+
 func TestPollClientIngress_leaderHeld(t *testing.T) {
 	t.Parallel()
 

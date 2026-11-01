@@ -395,9 +395,10 @@ func (*countingSnapshotSeams) PollAddExclusivePublication(
 
 func (*countingSnapshotSeams) CancelPending(int64) {}
 
-func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
-	t.Parallel()
-
+// newClosedSnapshotModule requests a snapshot on a leader, settles the commit
+// at the ack position, then closes the module before the take runs.
+func newClosedSnapshotModule(t *testing.T) (*consensus.Agent, *countingSnapshotSeams) {
+	t.Helper()
 	logPub, _ := boundTimerLogPublisher(t)
 	commit := &atomic.Int64{}
 	agent := consensus.NewAgent(consensus.AgentConfig{
@@ -410,33 +411,50 @@ func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
 	agent.SetSnapshotPublicationAdder(seams)
 	agent.SetSnapshotRecordingLog(openTermLog(t, 1, 0), recordinglog.FileSyncData)
 	agent.SetSnapshotStream(DefaultSnapshotChannel, DefaultSnapshotStreamID)
-	module := &ConsensusModule{agent: agent}
 
-	// Phase 1: Close clears every seam, so the take fails before the add.
 	require.NoError(t, agent.RequestSnapshot(snapshotWireNowNs))
 	commit.Store(agent.ExpectedAckPosition())
+	module := &ConsensusModule{agent: agent}
 	require.NoError(t, module.Close())
-	agent.DoWork(snapshotWireNowNs)
+	return agent, seams
+}
 
+func requireSnapshotTakeFailedBeforeAdd(
+	t *testing.T,
+	agent *consensus.Agent,
+	seams *countingSnapshotSeams,
+) {
+	t.Helper()
 	require.Zero(t, seams.adds)
 	result, ok := agent.LastSnapshotTake()
 	require.True(t, ok)
 	require.Error(t, result.Err)
 	require.Equal(t, int64(-1), result.RecordingID)
 	require.False(t, agent.HasPendingSnapshotAction())
+}
 
-	// Phase 2: with the control and the adder back, the cleared recording
-	// log alone still fails the take before the add.
-	agent.SetSnapshotRecordingControl(seams)
-	agent.SetSnapshotPublicationAdder(seams)
-	require.NoError(t, agent.RequestSnapshot(snapshotWireNowNs))
-	commit.Store(agent.ExpectedAckPosition())
-	agent.DoWork(snapshotWireNowNs)
+func TestConsensusModule_Close_clearsSnapshotTakeSeams(t *testing.T) {
+	t.Parallel()
 
-	require.Zero(t, seams.adds)
-	result, ok = agent.LastSnapshotTake()
-	require.True(t, ok)
-	require.Error(t, result.Err)
-	require.Equal(t, int64(-1), result.RecordingID)
-	require.False(t, agent.HasPendingSnapshotAction())
+	t.Run("every seam", func(t *testing.T) {
+		t.Parallel()
+		agent, seams := newClosedSnapshotModule(t)
+
+		agent.DoWork(snapshotWireNowNs)
+
+		requireSnapshotTakeFailedBeforeAdd(t, agent, seams)
+	})
+
+	t.Run("recording log", func(t *testing.T) {
+		t.Parallel()
+		agent, seams := newClosedSnapshotModule(t)
+
+		// Close clears the recording log. A nil recording log fails the take
+		// before the publication add.
+		agent.SetSnapshotRecordingControl(seams)
+		agent.SetSnapshotPublicationAdder(seams)
+		agent.DoWork(snapshotWireNowNs)
+
+		requireSnapshotTakeFailedBeforeAdd(t, agent, seams)
+	})
 }

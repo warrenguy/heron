@@ -111,3 +111,7 @@ func (a *Agent) endSnapshotState(reason string) {
 func (a *Agent) isLeaderHeld() bool {
 	return a.role == RoleLeader && a.moduleState != ModuleStateActive
 }
+
+func (a *Agent) isActiveOrSuspended() bool {
+	return a.moduleState == ModuleStateActive || a.moduleState == ModuleStateSuspended
+}

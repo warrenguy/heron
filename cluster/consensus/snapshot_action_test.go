@@ -165,6 +165,29 @@ func TestRequestSnapshot_notSettledLeader(t *testing.T) {
 	}
 }
 
+func TestRequestSnapshot_moduleNotActive(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range allModuleStates {
+		if state == ModuleStateActive {
+			continue
+		}
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			a, pub := settledLeaderWithLog(t, 1)
+			a.setModuleState(state, "test")
+			pre := pub.Position()
+
+			err := a.RequestSnapshot(1000)
+			require.ErrorIs(t, err, errSnapshotModuleNotActive)
+			require.False(t, a.HasPendingSnapshotAction())
+			require.Equal(t, 0, a.PendingServiceAckWaits())
+			require.Equal(t, pre, pub.Position())
+		})
+	}
+}
+
 func TestRequestSnapshot_outstandingCoordination(t *testing.T) {
 	t.Parallel()
 

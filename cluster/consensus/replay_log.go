@@ -57,6 +57,7 @@ func (a *Agent) BindReplayLog(image *aeron.Image) {
 //
 // Behaviour:
 //   - A nil adapter or an adapter with no image returns 0.
+//   - Outside ACTIVE and SUSPENDED, the call does not poll and returns 0.
 //   - A pending snapshot wait lowers the bound to its log position. After
 //     the pop, the module snapshot take holds the bound there until the take
 //     resolves.
@@ -69,7 +70,7 @@ func (a *Agent) BindReplayLog(image *aeron.Image) {
 // Returns the fragment count.
 func (a *Agent) ReplayLogPoll(stopPosition, nowNs int64) int {
 	adapter := a.logAdapter
-	if adapter == nil || adapter.Image() == nil {
+	if adapter == nil || adapter.Image() == nil || !a.isActiveOrSuspended() {
 		return 0
 	}
 	return a.pollBoundLog(adapter, stopPosition, nowNs)

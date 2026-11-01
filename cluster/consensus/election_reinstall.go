@@ -287,16 +287,10 @@ func (a *Agent) slowTickWork(nowNs int64) int {
 }
 
 // activeQuorumTick re-enters election when a leader loses its active quorum.
-//
-// Behaviour:
-//   - nil positions: returns 0
-//   - HasActiveQuorum true: returns 0
-//   - refused enterElection: returns 0
-//   - HasActiveQuorum counts all members (this member included), not
-//     followers only
-//
-// Returns 1 when an election was installed.
 func (a *Agent) activeQuorumTick(nowNs int64) int {
+	if a.moduleState != ModuleStateActive {
+		return 0
+	}
 	if a.positions == nil {
 		return 0
 	}
@@ -308,41 +302,33 @@ func (a *Agent) activeQuorumTick(nowNs int64) int {
 
 // leaderWentQuietTick re-enters election when a non-leader's settled
 // log-update clock is older than the leader heartbeat timeout.
-//
-// Behaviour: returns 0 when nowNs is still inside the timeout window from
-// timeOfLastLogUpdateNs. That clock is not timeOfLastLeaderUpdateNs (canvass
-// base). A refused enterElection returns 0.
-//
-// Returns 1 when an election was installed.
 func (a *Agent) leaderWentQuietTick(nowNs int64) int {
+	if !a.isActiveOrSuspended() {
+		return 0
+	}
 	if nowNs < a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return 0
 	}
 	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false)
 }
 
-// logStopTick re-enters an election when the log recording stopped or a
-// non-leader's log image closed.
+// logStopTick re-enters an election on a recording STOP or a closed follower
+// log image.
 //
-// Behaviour:
-//   - consumes the recording STOP mark on every tick. The mark drops even
-//     when no runner installs
-//   - a STOP mark installs for any role. A closed or missing image installs
-//     for a non-leader only. A STOP mark wins in the same tick
-//   - end of stream seeds GracefulClosedLeaderID: the STOP position equals
-//     the image end-of-stream position, or the image reached it
-//
-// Returns: 1 when a runner was installed, else 0.
+// The method consumes a STOP before the install checks. A later tick does
+// not see a STOP that does not install an election. Outside ACTIVE, the STOP
+// check does not install an election. In SUSPENDED, the closed-image check
+// still installs an election in the same tick.
 func (a *Agent) logStopTick() int {
 	stopPosition, stopped := a.consumeLogRecordingStop()
 	if a.election != nil {
 		return 0
 	}
-	if stopped {
+	if stopped && a.moduleState == ModuleStateActive {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStreamAt(stopPosition)
 		return a.enterElection(ElectionTriggerLogRecordingStopped, isLogEndOfStream)
 	}
-	if a.isFollowerLogImageClosed() {
+	if a.isActiveOrSuspended() && a.isFollowerLogImageClosed() {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStream()
 		return a.enterElection(ElectionTriggerLogImageClosed, isLogEndOfStream)
 	}
