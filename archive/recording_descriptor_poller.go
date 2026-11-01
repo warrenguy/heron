@@ -52,6 +52,11 @@ func (poller *RecordingDescriptorPoller) disarm(correlationID int64) {
 	poller.ResetAwait(conductor.NullCorrelationID)
 }
 
+// isAwaiting reports whether the filter holds correlationID.
+func (poller *RecordingDescriptorPoller) isAwaiting(correlationID int64) bool {
+	return poller.awaitCorrelationID == correlationID
+}
+
 // IsPollComplete reports whether a matching RecordingDescriptor was captured, or a
 // non-OK ControlResponse latched terminal completion.
 func (poller *RecordingDescriptorPoller) IsPollComplete() bool {

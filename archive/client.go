@@ -71,6 +71,9 @@ type Client struct {
 	descriptorPoller *RecordingDescriptorPoller
 	signalHandler    RecordingSignalHandler
 
+	// Nil drops each unsolicited archive ERROR.
+	errorResponseHandler func(error)
+
 	// pendingSignalTracker receives each signal after signalHandler while an
 	// AsyncStartRecording or AsyncExtendRecording holds the slot. Nil marks an
 	// empty slot.
@@ -158,18 +161,19 @@ func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, e
 
 func newClient(result *ConnectResult) *Client {
 	client := &Client{
-		controlSessionID:    result.ControlSessionID,
-		archiveID:           result.ArchiveID,
-		proxy:               result.Proxy,
-		controlPoller:       result.Poller,
-		descriptorPoller:    NewRecordingDescriptorPoller(),
-		signalHandler:       result.Config.RecordingSignalHandler,
-		controlSubscription: result.ControlSubscription,
-		controlAssembler:    NewFragmentAssembler(nil),
-		aeronClient:         result.Aeron,
-		ownsAeronClient:     result.OwnsAeronClient,
-		cfg:                 result.Config,
-		transportFault:      result.transportFault,
+		controlSessionID:     result.ControlSessionID,
+		archiveID:            result.ArchiveID,
+		proxy:                result.Proxy,
+		controlPoller:        result.Poller,
+		descriptorPoller:     NewRecordingDescriptorPoller(),
+		signalHandler:        result.Config.RecordingSignalHandler,
+		errorResponseHandler: result.Config.ErrorResponseHandler,
+		controlSubscription:  result.ControlSubscription,
+		controlAssembler:     NewFragmentAssembler(nil),
+		aeronClient:          result.Aeron,
+		ownsAeronClient:      result.OwnsAeronClient,
+		cfg:                  result.Config,
+		transportFault:       result.transportFault,
 	}
 	if client.controlPoller != nil {
 		client.controlPoller.ResetCapture()
@@ -253,11 +257,27 @@ func (client *Client) IsClosed() bool {
 	return client.closed
 }
 
+// IsConnected reports whether the control response subscription has a
+// connected image.
+//
+// Returns false after Close, including when an owned transport client fault
+// closes the session. Returns false once the transport client force-closes
+// its subscriptions on termination.
+func (client *Client) IsConnected() bool {
+	if client == nil || client.closed || client.controlSubscription == nil {
+		return false
+	}
+	return client.controlSubscription.IsConnected()
+}
+
 // Poll runs one demux poll of the control-response subscription. Poll sends
 // control responses and recording descriptors to the session pollers. Poll
 // sends each recording signal to the session handler, then to the pending
 // signal tracker of an open AsyncStartRecording or AsyncExtendRecording. Poll
 // drops signals when neither exists. Poll never calls DoWork.
+//
+// Poll sends each unsolicited ERROR of this session to the error response
+// handler after the image poll.
 //
 // Poll closes the session when the owned transport client has terminated,
 // then returns 0. TransportFault returns the cause. The owned client Close
@@ -285,9 +305,10 @@ func (client *Client) pollControlEvents(targets ControlPollTargets) int {
 
 func (client *Client) listRecordingPollTargets() ControlPollTargets {
 	return ControlPollTargets{
-		SignalHandler:    client.signalTarget(),
-		ControlSessionID: client.controlSessionID,
-		DescriptorPoller: client.descriptorPoller,
+		SignalHandler:        client.signalTarget(),
+		ControlSessionID:     client.controlSessionID,
+		DescriptorPoller:     client.descriptorPoller,
+		ErrorResponseHandler: client.errorResponseHandler,
 	}
 }
 
@@ -311,6 +332,31 @@ func (client *Client) pollRecordingSignalAwait(targets ControlPollTargets) func(
 // AsyncStartRecording or AsyncExtendRecording.
 func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) {
 	client.signalHandler = handler
+}
+
+// SetErrorResponseHandler sets the handler for unsolicited archive ERROR
+// responses. Nil drops each ERROR. Config.ErrorResponseHandler sets the same
+// handler at connect.
+//
+// The handler receives each own-session ERROR whose correlation id does not
+// match an outstanding request. Poll and every blocking control call run the
+// handler.
+//
+// The error is an *Exception with the archive code, correlation id and
+// message. Match it with ExceptionCode or AsException.
+//
+// Concurrency: invoker-only. The handler runs on the goroutine that called
+// Poll or a blocking method.
+//
+// The handler may call Close and the accessors. The handler must not call
+// Poll, a blocking method or a New* request builder. A nested call can drop
+// the reply that a waiting call needs. The waiting call then returns
+// ControlResponseTimeoutError. The client does not check the rule.
+//
+// A Close from the handler can hold a waiting blocking call until the
+// response timeout.
+func (client *Client) SetErrorResponseHandler(handler func(error)) {
+	client.errorResponseHandler = handler
 }
 
 // StartRecording offers a StartRecordingRequest2 and blocks until the archive replies
@@ -639,9 +685,10 @@ func (client *Client) sessionPollTargets(
 	handler RecordingSignalHandler,
 ) ControlPollTargets {
 	return ControlPollTargets{
-		SignalHandler:    handler,
-		ControlSessionID: client.controlSessionID,
-		ResponsePoller:   client.controlPoller,
-		DescriptorPoller: client.descriptorPoller,
+		SignalHandler:        handler,
+		ControlSessionID:     client.controlSessionID,
+		ResponsePoller:       client.controlPoller,
+		DescriptorPoller:     client.descriptorPoller,
+		ErrorResponseHandler: client.errorResponseHandler,
 	}
 }

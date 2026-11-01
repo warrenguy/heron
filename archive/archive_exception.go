@@ -11,6 +11,9 @@ const (
 	// ErrorGeneric is the default archive error code.
 	ErrorGeneric = 0
 
+	// ErrorActiveListing matches Java ACTIVE_LISTING (code 1).
+	ErrorActiveListing = 1
+
 	// ErrorActiveRecording matches Java ACTIVE_RECORDING (code 2).
 	ErrorActiveRecording = 2
 
@@ -23,14 +26,35 @@ const (
 	// ErrorUnknownRecording matches Java UNKNOWN_RECORDING (code 5).
 	ErrorUnknownRecording = 5
 
+	// ErrorUnknownReplay matches Java UNKNOWN_REPLAY (code 6).
+	ErrorUnknownReplay = 6
+
+	// ErrorMaxReplays matches Java MAX_REPLAYS (code 7).
+	ErrorMaxReplays = 7
+
+	// ErrorMaxRecordings matches Java MAX_RECORDINGS (code 8).
+	ErrorMaxRecordings = 8
+
 	// ErrorInvalidExtension matches Java INVALID_EXTENSION (code 9).
 	ErrorInvalidExtension = 9
 
 	// ErrorAuthenticationRejected matches Java AUTHENTICATION_REJECTED (code 10).
 	ErrorAuthenticationRejected = 10
 
+	// ErrorStorageSpace matches Java STORAGE_SPACE (code 11).
+	ErrorStorageSpace = 11
+
 	// ErrorUnknownReplication matches Java UNKNOWN_REPLICATION (code 12).
 	ErrorUnknownReplication = 12
+
+	// ErrorUnauthorisedAction matches Java UNAUTHORISED_ACTION (code 13).
+	ErrorUnauthorisedAction = 13
+
+	// ErrorReplicationConnectionFailure matches Java REPLICATION_CONNECTION_FAILURE (code 14).
+	ErrorReplicationConnectionFailure = 14
+
+	// ErrorEmptyRecording matches Java EMPTY_RECORDING (code 15).
+	ErrorEmptyRecording = 15
 
 	// ErrorInvalidPosition matches Java INVALID_POSITION (code 16).
 	ErrorInvalidPosition = 16

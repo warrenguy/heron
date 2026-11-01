@@ -63,6 +63,15 @@ func TestMapControlResponse(t *testing.T) {
 			},
 		},
 		{
+			name: "error_storage_space",
+			resp: errorControlResponse(archive.ErrorStorageSpace, 31, "low storage"),
+			want: &mapControlResponseExpect{
+				code: archive.ErrorStorageSpace,
+				corr: 31,
+				msg:  "low storage",
+			},
+		},
+		{
 			name: "recording_unknown",
 			resp: controlResponse(archivewire.ControlResponseCode_RECORDING_UNKNOWN, 99, 17),
 			want: &mapControlResponseExpect{

@@ -51,14 +51,15 @@ type latchRapidFrame struct {
 	length int
 }
 
-// latchRapidModel mirrors the demux hold, the disarmed clear and the poller
-// latch over a frame queue.
+// latchRapidModel mirrors the demux hold, the disarmed clear, the poller
+// latch and the error route over a frame queue.
 type latchRapidModel struct {
 	emitted    []codecs.ControlResponseFields
 	queue      []latchRapidFrame
 	filter     int64
 	latched    bool
 	latchIndex int
+	routing    bool
 
 	latchLog      []int
 	filterDropLog []int
@@ -66,12 +67,23 @@ type latchRapidModel struct {
 	discardLog    []int
 	releaseLog    []int
 	signalLog     []int64
+	routedLog     []int
 }
 
 func (m *latchRapidModel) release(log *[]int) {
 	*log = append(*log, m.latchIndex)
 	m.releaseLog = append(m.releaseLog, m.latchIndex)
 	m.latched = false
+}
+
+func (m *latchRapidModel) unclaimedOwnSessionError(fields codecs.ControlResponseFields) bool {
+	if fields.Code != archivewire.ControlResponseCode_ERROR {
+		return false
+	}
+	if fields.ControlSessionID != controlResponseTestControlSessionID {
+		return false
+	}
+	return m.filter == 0 || m.filter != fields.CorrelationID
 }
 
 // poll applies one demux poll. Returns the consumed frames.
@@ -86,7 +98,13 @@ func (m *latchRapidModel) poll(fragmentLimit int) []latchRapidFrame {
 			m.signalLog = append(m.signalLog, int64(frame.index))
 		}
 		if frame.kind == latchRapidFrameResponse {
-			correlationID := m.emitted[frame.index].CorrelationID
+			fields := m.emitted[frame.index]
+			if m.routing && m.unclaimedOwnSessionError(fields) {
+				m.routedLog = append(m.routedLog, frame.index)
+				consumed++
+				break
+			}
+			correlationID := fields.CorrelationID
 			if m.filter != 0 && m.filter != correlationID {
 				m.filterDropLog = append(m.filterDropLog, frame.index)
 			} else if m.latched {
@@ -163,8 +181,8 @@ func appendLatchRapidFrames(
 }
 
 // TestPollControlEvents_latchOrder_rapid asserts that the demux latch, hold,
-// disarmed clear and latch copy match a frame queue model over random
-// operation sequences.
+// disarmed clear, error route and latch copy match a frame queue model over
+// random operation sequences.
 func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 	sub := aeron.NewTestSubscriptionForHooks(t)
 	image := aeron.NewTestImageForHooks(t, sub, 0)
@@ -178,6 +196,8 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 		poller := newControlResponsePollerForTest(sub)
 		assembler := NewFragmentAssembler(nil)
 		var signals []int64
+		var routedErrs []error
+		routing := rapid.Bool().Draw(rt, "routing")
 		targets := ControlPollTargets{
 			SignalHandler: RecordingSignalHandlerFunc(
 				func(event codecs.RecordingSignalEventFields) {
@@ -187,7 +207,12 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 			ControlSessionID: controlResponseTestControlSessionID,
 			ResponsePoller:   poller,
 		}
-		model := &latchRapidModel{}
+		if routing {
+			targets.ErrorResponseHandler = func(err error) {
+				routedErrs = append(routedErrs, err)
+			}
+		}
+		model := &latchRapidModel{routing: routing}
 		var reads []ControlResponseCapture
 		nextCorrelationID := latchRapidFirstCorrelationID
 		signalCount := 0
@@ -223,6 +248,10 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 			for i, capture := range reads {
 				requireLatchRapidCapture(rt, model.emitted[model.readLog[i]], capture)
 			}
+			require.Len(rt, routedErrs, len(model.routedLog))
+			for i, index := range model.routedLog {
+				require.Equal(rt, MapControlResponse(model.emitted[index]), routedErrs[i])
+			}
 		}
 
 		stepCount := rapid.IntRange(1, 40).Draw(rt, "stepCount")
@@ -234,7 +263,10 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 			case latchRapidOpResponse:
 				index := len(model.emitted)
 				fields := codecs.ControlResponseFields{
-					ControlSessionID: controlResponseTestControlSessionID,
+					ControlSessionID: rapid.SampledFrom([]int64{
+						controlResponseTestControlSessionID,
+						controlResponseTestControlSessionID + 1,
+					}).Draw(rt, "controlSessionID"),
 					CorrelationID: rapid.SampledFrom([]int64{
 						nextCorrelationID,
 						latchRapidForeignCorrelationID,
@@ -326,6 +358,10 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 			require.False(rt, seen[index], "response %d both latched and dropped", index)
 			seen[index] = true
 		}
-		require.Len(rt, seen, len(model.emitted), "every response latches or drops")
+		for _, index := range model.routedLog {
+			require.False(rt, seen[index], "response %d both latched and routed", index)
+			seen[index] = true
+		}
+		require.Len(rt, seen, len(model.emitted), "every response latches, drops, or routes")
 	})
 }

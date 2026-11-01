@@ -40,6 +40,9 @@ func (capture ControlResponseCapture) Challenged() bool {
 //   - PollControlEvents clears a latch before it polls only while the filter
 //     is disarmed. With an armed filter the latch stays until ResetCapture or
 //     ResetAwait
+//   - The demux routes an own-session ERROR the filter does not claim to a
+//     non-nil ErrorResponseHandler. An armed filter does not drop the ERROR.
+//     A disarmed filter does not latch the ERROR
 //
 // Lifetime: a capture owns its ErrorMessage and EncodedChallenge bytes. Values
 // from Capture, Response and Challenge stay valid after later polls.
@@ -237,8 +240,13 @@ func (poller *ControlResponsePoller) isArmed() bool {
 	return poller.awaitCorrelationID != 0
 }
 
+// isAwaiting reports whether the armed filter holds correlationID.
+func (poller *ControlResponsePoller) isAwaiting(correlationID int64) bool {
+	return poller.isArmed() && poller.awaitCorrelationID == correlationID
+}
+
 func (poller *ControlResponsePoller) matchesAwaitCorrelation(correlationID int64) bool {
-	return !poller.isArmed() || poller.awaitCorrelationID == correlationID
+	return !poller.isArmed() || poller.isAwaiting(correlationID)
 }
 
 // latchControlResponse latches resp. The caller runs the correlation filter

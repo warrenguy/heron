@@ -5,8 +5,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
@@ -112,7 +114,7 @@ func TestHandleRecordingDescriptorFragment(t *testing.T) {
 	}
 }
 
-func TestHandleDescriptorControlResponseFragment(t *testing.T) {
+func TestHandleControlFragment_descriptorControlResponse(t *testing.T) {
 	cases := []struct {
 		name         string
 		wire         func(t *testing.T) []byte
@@ -158,16 +160,6 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 			wantResponse: false,
 		},
 		{
-			name: "wrong template ignored",
-			wire: func(t *testing.T) []byte {
-				return encodeRecordingDescriptorWire(
-					t,
-					recordingDescriptorTestFields(recordingDescriptorTestCorrelationID),
-				)
-			},
-			wantResponse: false,
-		},
-		{
 			name: "foreign schema ignored",
 			wire: func(t *testing.T) []byte {
 				return overrideWireSchemaID(
@@ -188,7 +180,7 @@ func TestHandleDescriptorControlResponseFragment(t *testing.T) {
 			poller.ResetAwait(recordingDescriptorTestCorrelationID)
 
 			require.NotPanics(t, func() {
-				handleDescriptorControlResponseFragment(poller, tc.wire(t))
+				invokeHandleControlFragment(t, ControlPollTargets{DescriptorPoller: poller}, tc.wire(t))
 			})
 
 			fields, ok := poller.ControlResponse()
@@ -238,8 +230,9 @@ func TestRecordingDescriptorPoller_descriptorFirstRetainsChannelAfterBufferOverw
 	}
 	termBuffer.PutBytes(0, overwrite)
 
-	handleDescriptorControlResponseFragment(
-		poller,
+	invokeHandleControlFragment(
+		t,
+		ControlPollTargets{DescriptorPoller: poller},
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
@@ -266,6 +259,7 @@ func TestRecordingDescriptorPoller_completesOnResponseAndDescriptor(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			poller := NewRecordingDescriptorPoller()
 			poller.ResetAwait(recordingDescriptorTestCorrelationID)
+			targets := ControlPollTargets{DescriptorPoller: poller}
 
 			responseWire := recordingDescriptorControlResponseWire(
 				t,
@@ -278,14 +272,14 @@ func TestRecordingDescriptorPoller_completesOnResponseAndDescriptor(t *testing.T
 			)
 
 			if tc.descriptorLast {
-				handleDescriptorControlResponseFragment(poller, responseWire)
+				invokeHandleControlFragment(t, targets, responseWire)
 				require.False(t, poller.IsPollComplete())
 				handleRecordingDescriptorFragment(poller, descriptorWire)
 			} else {
 				handleRecordingDescriptorFragment(poller, descriptorWire)
 				require.True(t, poller.IsPollComplete())
 				// Java list-by-id completes on descriptor only; a trailing OK is ignored.
-				handleDescriptorControlResponseFragment(poller, responseWire)
+				invokeHandleControlFragment(t, targets, responseWire)
 			}
 
 			require.True(t, poller.IsPollComplete())
@@ -298,8 +292,9 @@ func TestRecordingDescriptorPoller_foreignDescriptorLeavesIncomplete(t *testing.
 	poller := NewRecordingDescriptorPoller()
 	poller.ResetAwait(recordingDescriptorTestCorrelationID)
 
-	handleDescriptorControlResponseFragment(
-		poller,
+	invokeHandleControlFragment(
+		t,
+		ControlPollTargets{DescriptorPoller: poller},
 		recordingDescriptorControlResponseWire(
 			t,
 			recordingDescriptorTestCorrelationID,
@@ -317,7 +312,7 @@ func TestRecordingDescriptorPoller_foreignDescriptorLeavesIncomplete(t *testing.
 	require.False(t, poller.IsPollComplete())
 }
 
-func TestHandleDescriptorControlResponseFragment_ZeroAllocs(t *testing.T) {
+func TestHandleControlFragment_descriptorControlResponse_ZeroAllocs(t *testing.T) {
 	poller := NewRecordingDescriptorPoller()
 	poller.ResetAwait(recordingDescriptorTestCorrelationID)
 	wire := recordingDescriptorControlResponseWire(
@@ -325,9 +320,16 @@ func TestHandleDescriptorControlResponseFragment_ZeroAllocs(t *testing.T) {
 		recordingDescriptorTestCorrelationID,
 		archivewire.ControlResponseCode_OK,
 	)
+	buffer := atomicbuffer.Wrap(wire)
+	header := &aeron.Header{}
+	targets := ControlPollTargets{
+		ControlSessionID:     controlResponseTestControlSessionID,
+		DescriptorPoller:     poller,
+		ErrorResponseHandler: func(error) {},
+	}
 
-	testutil.AssertZeroAllocs(t, "handleDescriptorControlResponseFragment", 100, func() {
-		handleDescriptorControlResponseFragment(poller, wire)
+	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
+		handleControlFragment(targets, nil, buffer, 0, len(wire), header)
 	})
 	_, ok := poller.ControlResponse()
 	require.True(t, ok)

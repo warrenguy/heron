@@ -86,6 +86,10 @@ type Config struct {
 	// EXTEND signal.
 	RecordingSignalHandler RecordingSignalHandler
 
+	// ErrorResponseHandler receives each unsolicited archive ERROR. Nil drops
+	// each one. See [Client.SetErrorResponseHandler].
+	ErrorResponseHandler func(error)
+
 	// ClientName is sent in AuthConnectRequest.clientInfo; empty defaults to
 	// archive-client at connect.
 	ClientName string

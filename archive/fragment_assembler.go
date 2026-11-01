@@ -31,6 +31,10 @@ type FragmentAssembler struct {
 	// demuxTargets holds the poll targets by value. PollControlEvents sets it
 	// each poll. A per-poll closure would allocate on the demux hot path.
 	demuxTargets ControlPollTargets
+
+	// errorResponse holds one routed ERROR for the current PollControlEvents
+	// call.
+	errorResponse error
 }
 
 // NewFragmentAssembler returns a FragmentAssembler with default options.
@@ -105,11 +109,24 @@ func (assembler *FragmentAssembler) handleDelegateFragment(
 	return aeron.ControlledContinue
 }
 
+func (assembler *FragmentAssembler) takeErrorResponse() error {
+	err := assembler.errorResponse
+	assembler.errorResponse = nil
+	return err
+}
+
 func (assembler *FragmentAssembler) handleDemuxFragment(
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
 	header *aeron.Header,
 ) aeron.ControlledAction {
-	return handleControlFragment(assembler.demuxTargets, buffer, offset, length, header)
+	return handleControlFragment(
+		assembler.demuxTargets,
+		&assembler.errorResponse,
+		buffer,
+		offset,
+		length,
+		header,
+	)
 }

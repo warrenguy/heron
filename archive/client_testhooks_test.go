@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -60,6 +61,32 @@ func TestNewClient_wiresConfigRecordingSignalHandler(t *testing.T) {
 	)
 	archive.Poll()
 	require.Equal(t, archivewire.RecordingSignal_START, gotSignal)
+}
+
+func TestNewClient_wiresConfigErrorResponseHandler(t *testing.T) {
+	var errs []error
+	handler := func(err error) {
+		errs = append(errs, err)
+	}
+	sub, termBuffer := setupControlResponsePollFixtures(t)
+	archiveClient := newClient(&ConnectResult{
+		ControlSessionID:    controlResponseTestControlSessionID,
+		Poller:              newControlResponsePollerForTest(sub),
+		ControlSubscription: sub,
+		Config: Config{
+			ErrorResponseHandler: handler,
+		},
+	})
+	writeUnfragmentedWireToTerm(
+		t,
+		termBuffer,
+		ownSessionErrorWire(t, 4242, ErrorStorageSpace, "low storage"),
+	)
+
+	require.Equal(t, 1, archiveClient.Poll())
+	require.Len(t, errs, 1)
+	requireRoutedError(t, errs[0], ErrorStorageSpace, 4242)
+	require.False(t, archiveClient.controlPoller.IsPollComplete())
 }
 
 func newClientForDemuxTest(
@@ -144,6 +171,65 @@ func TestClientPoll_routesThroughDemux(t *testing.T) {
 	require.Equal(t, 1, captured.calls)
 	require.Equal(t, archivewire.RecordingSignal_START, captured.signal)
 	require.False(t, archive.descriptorPoller.IsPollComplete())
+}
+
+type errorHandlerClient struct {
+	h      *lifecycleHarness
+	client *Client
+	errs   []error
+}
+
+func newErrorHandlerClient(t *testing.T) *errorHandlerClient {
+	t.Helper()
+
+	h := newLifecycleHarness(t)
+	client := h.newClient()
+	f := &errorHandlerClient{h: h, client: client}
+	client.SetErrorResponseHandler(func(err error) {
+		f.errs = append(f.errs, err)
+	})
+	return f
+}
+
+func ownSessionOKWire(t *testing.T, correlationID, relevantID int64) []byte {
+	t.Helper()
+
+	return ownSessionWire(t, codecs.ControlResponseFields{
+		CorrelationID: correlationID,
+		RelevantID:    relevantID,
+		Code:          archivewire.ControlResponseCode_OK,
+	})
+}
+
+// NewAsyncStopRecording calls ResetAwait. ResetAwait does not drop the
+// unsolicited ERROR the handler already received.
+func TestClientPoll_errorResponseSurvivesNextRequest(t *testing.T) {
+	f := newErrorHandlerClient(t)
+
+	const correlationID int64 = 4242
+	writeUnfragmentedWireToTerm(
+		t,
+		f.h.termBuffer,
+		ownSessionErrorWire(t, correlationID, ErrorStorageSpace, "low storage"),
+	)
+
+	require.Equal(t, 1, f.client.Poll())
+	require.False(
+		t,
+		f.client.controlPoller.IsPollComplete(),
+		"session poller latched the ERROR; handler has %d",
+		len(f.errs),
+	)
+	require.Len(t, f.errs, 1)
+	requireRoutedError(t, f.errs[0], ErrorStorageSpace, correlationID)
+
+	handle := f.client.NewAsyncStopRecording(
+		archiveProxyTestRecordingStreamID,
+		[]byte(lifecycleRecordingChannel),
+	)
+	handle.Close()
+	require.Equal(t, 0, f.client.Poll())
+	require.Len(t, f.errs, 1)
 }
 
 // TestClientPoll_signalsPassLatchedTerminal asserts that a recording signal
@@ -364,6 +450,63 @@ func TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll(t *testing.
 	require.False(t, client.controlPoller.IsPollComplete(), "matching OK must be consumed")
 }
 
+func TestAsyncStopRecording_PollResponse_unsolicitedErrorThroughClientPoll(t *testing.T) {
+	const otherID int64 = 4242
+
+	openStop := func(t *testing.T) (*errorHandlerClient, *AsyncStopRecording) {
+		t.Helper()
+
+		f := newErrorHandlerClient(t)
+		handle := f.client.NewAsyncStopRecording(
+			archiveProxyTestRecordingStreamID,
+			[]byte(lifecycleRecordingChannel),
+		)
+		t.Cleanup(handle.Close)
+		require.NotEqual(t, otherID, handle.correlationID)
+		return f, handle
+	}
+
+	t.Run("error_before_response", func(t *testing.T) {
+		f, handle := openStop(t)
+		writeTwoSequentialUnfragmentedWiresToTerm(
+			t,
+			f.h.termBuffer,
+			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
+			ownSessionOKWire(t, handle.correlationID, 1),
+		)
+
+		require.Equal(t, 1, f.client.Poll())
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, otherID)
+		done, err := handle.PollResponse()
+		require.NoError(t, err)
+		require.False(t, done)
+
+		require.Equal(t, 1, f.client.Poll())
+		done, err = handle.PollResponse()
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Len(t, f.errs, 1)
+	})
+
+	t.Run("error_behind_latched_response", func(t *testing.T) {
+		f, handle := openStop(t)
+		writeTwoSequentialUnfragmentedWiresToTerm(
+			t,
+			f.h.termBuffer,
+			ownSessionOKWire(t, handle.correlationID, 1),
+			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
+		)
+
+		require.Equal(t, 2, f.client.Poll())
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, otherID)
+		done, err := handle.PollResponse()
+		require.NoError(t, err)
+		require.True(t, done)
+	})
+}
+
 // TestClientStopRecordingAwaitSignal_routesSTOPToTracker proves the session method
 // routes STOP signals to the per-call tracker without SetRecordingSignalHandler.
 func TestClientStopRecordingAwaitSignal_routesSTOPToTracker(t *testing.T) {
@@ -556,6 +699,110 @@ func TestClientStartRecording_OK(t *testing.T) {
 			require.Equal(t, []byte(lifecycleRecordingChannel), fields.Channel)
 		})
 	}
+}
+
+// Each blocking call disarms the session filter on return when an ERROR for
+// another id arrives first.
+func TestClientBlockingCalls_errorResponseForOtherID(t *testing.T) {
+	const otherID int64 = 4242
+
+	nextCorrelationID := func(t *testing.T, f *errorHandlerClient) int64 {
+		t.Helper()
+
+		correlationID := f.h.client.NextCorrelationID() + 1
+		require.NotEqual(t, otherID, correlationID)
+		return correlationID
+	}
+	requireOtherIDRouted := func(t *testing.T, f *errorHandlerClient) {
+		t.Helper()
+
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, otherID)
+		require.Zero(t, f.client.controlPoller.awaitCorrelationID)
+	}
+
+	t.Run("start_recording", func(t *testing.T) {
+		const subscriptionID int64 = 2002
+		f := newErrorHandlerClient(t)
+		correlationID := nextCorrelationID(t, f)
+		writeTwoSequentialUnfragmentedWiresToTerm(
+			t,
+			f.h.termBuffer,
+			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
+			ownSessionOKWire(t, correlationID, subscriptionID),
+		)
+
+		got, err := f.client.StartRecording(
+			t.Context(),
+			archiveProxyTestRecordingStreamID,
+			archivewire.SourceLocation_LOCAL,
+			true,
+			[]byte(lifecycleRecordingChannel),
+		)
+		require.NoError(t, err)
+		require.Equal(t, subscriptionID, got)
+		requireOtherIDRouted(t, f)
+	})
+
+	t.Run("list_recording", func(t *testing.T) {
+		f := newErrorHandlerClient(t)
+		correlationID := nextCorrelationID(t, f)
+		writeTwoSequentialUnfragmentedWiresToTerm(
+			t,
+			f.h.termBuffer,
+			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
+			ownSessionOKWire(t, correlationID, 0),
+		)
+		appendUnfragmentedWireToTerm(
+			t,
+			f.h.termBuffer,
+			encodeRecordingDescriptorWire(t, codecs.RecordingDescriptorFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				RecordingID:      lifecycleRecordingID,
+				StartPosition:    4096,
+				StopPosition:     8192,
+				StrippedChannel:  []byte("aeron:ipc?alias=stripped"),
+				OriginalChannel:  []byte("aeron:ipc?alias=original"),
+				SourceIdentity:   []byte("source-identity"),
+			}),
+		)
+
+		got, err := f.client.ListRecording(t.Context(), lifecycleRecordingID)
+		require.NoError(t, err)
+		require.Equal(t, lifecycleRecordingID, got.RecordingID)
+		requireOtherIDRouted(t, f)
+	})
+
+	t.Run("stop_recording_await_signal", func(t *testing.T) {
+		f := newErrorHandlerClient(t)
+		correlationID := nextCorrelationID(t, f)
+		writeTwoSequentialUnfragmentedWiresToTerm(
+			t,
+			f.h.termBuffer,
+			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
+			encodeRecordingSignalEventWire(t, codecs.RecordingSignalEventFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    correlationID,
+				RecordingID:      lifecycleRecordingID,
+				SubscriptionID:   2002,
+				Position:         3003,
+				Signal:           archivewire.RecordingSignal_STOP,
+			}),
+		)
+		tracker := NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID)
+
+		err := f.client.StopRecordingAwaitSignal(
+			t.Context(),
+			archiveProxyTestRecordingStreamID,
+			[]byte(lifecycleRecordingChannel),
+			tracker,
+		)
+		require.NoError(t, err)
+		require.True(t, tracker.Stopped())
+		require.Equal(t, lifecycleRecordingID, tracker.StoppedRecordingID())
+		requireOtherIDRouted(t, f)
+	})
 }
 
 func TestClientReplicate_OK(t *testing.T) {
@@ -841,8 +1088,46 @@ func TestClientPoll_fullSlot_ZeroAllocs(t *testing.T) {
 	require.Equal(t, 1, captured.calls)
 	require.True(t, f.handle.tracker.Started())
 
+	f.client.SetErrorResponseHandler(func(error) {})
 	testutil.AssertZeroAllocs(t, "Client.Poll", 100, func() {
 		f.client.Poll()
+	})
+}
+
+func TestClient_IsConnected(t *testing.T) {
+	t.Run("nil_receiver", func(t *testing.T) {
+		var client *Client
+		require.False(t, client.IsConnected())
+	})
+
+	t.Run("open_image", func(t *testing.T) {
+		client, _ := newClientForDemuxTest(t, nil)
+		require.True(t, client.IsConnected())
+		testutil.AssertZeroAllocs(t, "Client.IsConnected", 100, func() {
+			client.IsConnected()
+		})
+	})
+
+	t.Run("no_image", func(t *testing.T) {
+		client := &Client{controlSubscription: aeron.NewTestSubscriptionForHooks(t)}
+		require.False(t, client.IsConnected())
+	})
+
+	t.Run("closed_image", func(t *testing.T) {
+		sub := aeron.NewTestSubscriptionForHooks(t)
+		image := aeron.NewTestImageForHooks(t, sub, 0)
+		require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
+		client := &Client{controlSubscription: sub}
+		require.True(t, client.IsConnected())
+		aeron.ImageInternalCloseForHooks(image)
+		require.False(t, client.IsConnected())
+	})
+
+	t.Run("after_close", func(t *testing.T) {
+		client, _ := newClientForDemuxTest(t, nil)
+		require.True(t, client.IsConnected())
+		require.NoError(t, client.Close())
+		require.False(t, client.IsConnected())
 	})
 }
 
