@@ -315,3 +315,7 @@ func setInMemImageSubscriberPosition(image *Image, position int64) {
 func setInMemImageEndOfStreamPosition(image *Image, position int64) {
 	image.metaBuffer.PutInt64Release(logbuffer.OffsetEndOfStreamPosition, position)
 }
+
+func setInMemImageActiveTransportCount(image *Image, count int32) {
+	image.metaBuffer.PutInt32Release(logbuffer.OffsetActiveTransportCount, count)
+}

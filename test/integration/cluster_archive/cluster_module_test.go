@@ -677,7 +677,7 @@ func openThreeNodeClusterWithConfig(
 		require.Nil(t, m.LogAdapter().Image())
 		sub := m.LogStreams().Subscription()
 		for _, session := range sessions {
-			img, ok := harness.ImageBySessionID(sub, session)
+			img, ok := sub.ImageBySessionID(session)
 			require.True(t, ok, "missing session %d on member %d", session, m.ThisMemberID())
 			require.Equal(t, int64(0), img.JoinPosition())
 		}

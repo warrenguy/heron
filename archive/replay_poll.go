@@ -10,12 +10,11 @@ var errFindReplayImageNilSubscription = errors.New(
 	"archive: find replay image: subscription is nil",
 )
 
-// FindReplayImage scans sub.ImageAt(i) for the first Image whose session id matches
+// FindReplayImage returns the first open Image whose session id matches
 // replaySessionID. Java Aeron Archive returns a composite replaySessionId of
 // (replayId << 32) | publication.sessionId(); subscription images expose only the
 // publication session id in the lower 32 bits. Matching therefore compares
 // image.SessionID() against int32(uint32(replaySessionID)), not the full int64.
-// Nil and closed image slots are skipped via ImageAt.
 //
 // Single-step: does not poll and does not call DoWork. Returns (nil, false, nil) when
 // no matching image is present yet. A nil subscription is a programmer error.
@@ -28,16 +27,8 @@ func FindReplayImage(
 	}
 	//nolint:gosec // G115: the image carries the low 32 bits of the replay session id
 	imageSessionID := int32(uint32(replaySessionID))
-	for index := 0; index < sub.ImageCount(); index++ {
-		image, ok := sub.ImageAt(index)
-		if !ok {
-			continue
-		}
-		if image.SessionID() == imageSessionID {
-			return image, true, nil
-		}
-	}
-	return nil, false, nil
+	image, ok := sub.ImageBySessionID(imageSessionID)
+	return image, ok, nil
 }
 
 // PollReplayFragments polls up to want-received fragments on image, delivering each

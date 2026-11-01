@@ -288,6 +288,21 @@ func (image *Image) EndOfStreamPosition() int64 {
 	return logbuffer.EndOfStreamPositionVolatile(image.metaBuffer)
 }
 
+// ActiveTransportCount returns the number of transports the media driver saw
+// within the image liveness timeout.
+//
+// A closed image returns 0. An open image may return 0 before the first
+// datagram. An IPC image returns 0.
+//
+// ActiveTransportCount is not thread-safe. Same concurrency contract as
+// [Image.Poll].
+func (image *Image) ActiveTransportCount() int32 {
+	if image.isClosed.Load() {
+		return 0
+	}
+	return logbuffer.ActiveTransportCountVolatile(image.metaBuffer)
+}
+
 func (image *Image) activeTermBuffer(position int64) atomicbuffer.AtomicBuffer {
 	termIndex := logbuffer.IndexByPosition(position, image.positionBitsToShift)
 	return image.termBuffers[termIndex]
@@ -471,16 +486,60 @@ func (image *Image) invokeFragmentHandler(
 // set, Poll reports the panic value to it as an error. Without one, the
 // panic propagates to the caller. Poll drops a panic raised by the error
 // handler.
-func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) (fragmentsRead int) {
+func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) int {
+	return image.pollBounded(handler, fragmentLimit, false, 0)
+}
+
+// BoundedPoll is [Image.Poll] with a stream-position upper bound.
+//
+// The call does not deliver a frame that starts at or past limitPosition.
+// The call delivers the whole frame when it starts below limitPosition, even
+// when it ends past limitPosition. A padding frame that starts below
+// limitPosition advances past its end.
+//
+// When the subscriber position is already at or past limitPosition, the call
+// returns 0 without storing the subscriber position.
+//
+// One call stays inside the current term, even when limitPosition is past the
+// term end.
+//
+// Returns 0 when:
+//   - The image is closed.
+//   - The handler is nil.
+//   - fragmentLimit is zero or less.
+//
+// BoundedPoll is not thread-safe. Same concurrency contract as [Image.Poll].
+func (image *Image) BoundedPoll(
+	handler FragmentHandler,
+	limitPosition int64,
+	fragmentLimit int,
+) int {
+	return image.pollBounded(handler, fragmentLimit, true, limitPosition)
+}
+
+func (image *Image) pollBounded(
+	handler FragmentHandler,
+	fragmentLimit int,
+	bounded bool,
+	limitPosition int64,
+) (fragmentsRead int) {
 	if image.isClosed.Load() || handler == nil || fragmentLimit <= 0 {
 		return 0
 	}
 
 	initialPosition := image.subscriberPos.Get()
+	if bounded && initialPosition >= limitPosition {
+		return 0
+	}
+
 	initialOffset := int(initialPosition) & int(image.termLengthMask)
 	offset := initialOffset
 	termBuffer := image.activeTermBuffer(initialPosition)
 	capacity := termBuffer.Capacity()
+	limitOffset := capacity
+	if bounded {
+		limitOffset = computeLimitOffset(capacity, offset, initialPosition, limitPosition)
+	}
 
 	header := &image.header
 
@@ -491,7 +550,7 @@ func (image *Image) Poll(handler FragmentHandler, fragmentLimit int) (fragmentsR
 		image.publishPollConsumePosition(initialPosition, initialOffset, offset)
 	}()
 
-	for fragmentsRead < fragmentLimit && offset < capacity && !image.isClosed.Load() {
+	for fragmentsRead < fragmentLimit && offset < limitOffset && !image.isClosed.Load() {
 		frameLength := logbuffer.CommittedFrameLengthVolatile(termBuffer, offset)
 		if advance, ok := termEndSlackAdvance(offset, capacity, frameLength); ok {
 			offset += advance

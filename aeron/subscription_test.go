@@ -94,6 +94,81 @@ func TestSubscription_ImageAt_closedSubscription(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestSubscription_ImageBySessionID(t *testing.T) {
+	const (
+		sessionA int32 = 11
+		missing  int32 = 33
+	)
+
+	add := func(
+		t *testing.T,
+		sub *aeron.Subscription,
+		sessionID int32,
+		correlationID int64,
+	) *aeron.Image {
+		t.Helper()
+		image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
+			t,
+			sub,
+			sessionID,
+			correlationID,
+			0,
+		)
+		aeron.SubscriptionAddImageForTest(sub, image)
+		return image
+	}
+
+	t.Run("firstAddedWins", func(t *testing.T) {
+		sub := testSubscription(t)
+		first := add(t, sub, sessionA, 1)
+		add(t, sub, sessionA, 2)
+
+		got, ok := sub.ImageBySessionID(sessionA)
+		require.True(t, ok)
+		require.Same(t, first, got)
+	})
+
+	t.Run("otherSession", func(t *testing.T) {
+		sub := testSubscription(t)
+		add(t, sub, sessionA, 1)
+
+		got, ok := sub.ImageBySessionID(missing)
+		require.False(t, ok)
+		require.Nil(t, got)
+	})
+
+	t.Run("closedFirstMatch", func(t *testing.T) {
+		sub := testSubscription(t)
+		first := add(t, sub, sessionA, 1)
+		second := add(t, sub, sessionA, 2)
+		aeron.ImageInternalCloseForTest(first)
+
+		got, ok := sub.ImageBySessionID(sessionA)
+		require.True(t, ok)
+		require.Same(t, second, got)
+	})
+
+	t.Run("nilSlot", func(t *testing.T) {
+		sub := testSubscription(t)
+		aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 0)
+		image := add(t, sub, sessionA, 1)
+
+		got, ok := sub.ImageBySessionID(sessionA)
+		require.True(t, ok)
+		require.Same(t, image, got)
+	})
+
+	t.Run("closedSubscription", func(t *testing.T) {
+		sub := testSubscription(t)
+		add(t, sub, sessionA, 1)
+		require.NoError(t, sub.Close())
+
+		got, ok := sub.ImageBySessionID(sessionA)
+		require.False(t, ok)
+		require.Nil(t, got)
+	})
+}
+
 func TestSubscription_ImageCountIsConnected(t *testing.T) {
 	sub := testSubscription(t)
 	openImage := testImage(t, sub)

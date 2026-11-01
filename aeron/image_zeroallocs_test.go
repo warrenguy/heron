@@ -13,6 +13,7 @@ var (
 	imagePollZeroAllocImage                       *aeron.Image
 	imageControlledPollZeroAllocImage             *aeron.Image
 	imageBoundedControlledPollZeroAllocImage      *aeron.Image
+	imageBoundedPollZeroAllocImage                *aeron.Image
 	imagePollErrorHandlerZeroAllocImage           *aeron.Image
 	imageControlledPollErrorHandlerZeroAllocImage *aeron.Image
 	subscriptionPollZeroAllocSub                  *aeron.Subscription
@@ -59,6 +60,15 @@ func imageBoundedControlledPollZeroAllocIteration() {
 	aeron.ImageSetSubscriberPositionForTest(imageBoundedControlledPollZeroAllocImage, 0)
 	imagePollSink = imageBoundedControlledPollZeroAllocImage.BoundedControlledPoll(
 		imageControlledPollZeroAllocHandler,
+		math.MaxInt64,
+		1,
+	)
+}
+
+func imageBoundedPollZeroAllocIteration() {
+	aeron.ImageSetSubscriberPositionForTest(imageBoundedPollZeroAllocImage, 0)
+	imagePollSink = imageBoundedPollZeroAllocImage.BoundedPoll(
+		imagePollZeroAllocHandler,
 		math.MaxInt64,
 		1,
 	)
@@ -119,6 +129,16 @@ func TestImage_BoundedControlledPoll_ZeroAllocs(t *testing.T) {
 		"Image.BoundedControlledPoll",
 		1000,
 		imageBoundedControlledPollZeroAllocIteration,
+	)
+}
+
+func TestImage_BoundedPoll_ZeroAllocs(t *testing.T) {
+	imageBoundedPollZeroAllocImage = setupZeroAllocPollImage(t)
+	testutil.AssertZeroAllocs(
+		t,
+		"Image.BoundedPoll",
+		1000,
+		imageBoundedPollZeroAllocIteration,
 	)
 }
 

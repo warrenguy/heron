@@ -19,6 +19,7 @@ func TestMetadataOffsets(t *testing.T) {
 		{"tail counters", logbuffer.OffsetTermTailCounters, 0},
 		{"active term count", logbuffer.OffsetActiveTermCount, 24},
 		{"end of stream", logbuffer.OffsetEndOfStreamPosition, 128},
+		{"active transport count", logbuffer.OffsetActiveTransportCount, 140},
 		{"correlation id", logbuffer.OffsetCorrelationID, 256},
 		{"term length", logbuffer.OffsetTermLength, 276},
 	}
@@ -89,9 +90,11 @@ func TestMetadataVolatileAccessors(t *testing.T) {
 	meta := atomicbuffer.Wrap(buf)
 	meta.PutInt32(logbuffer.OffsetMTULength, logbuffer.TestMTULength)
 	meta.PutInt32Release(logbuffer.OffsetIsConnected, 1)
+	meta.PutInt32Release(logbuffer.OffsetActiveTransportCount, 3)
 
 	require.Equal(t, int32(logbuffer.TestMTULength), logbuffer.MTULength(meta))
 	require.Equal(t, int32(1), logbuffer.IsConnectedVolatile(meta))
+	require.Equal(t, int32(3), logbuffer.ActiveTransportCountVolatile(meta))
 	require.Equal(t, logbuffer.DataHeaderLength, logbuffer.DefaultFrameHeaderBuffer(meta).Capacity())
 }
 

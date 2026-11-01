@@ -1064,22 +1064,6 @@ func RequireFirstImage(t testing.TB, sub *aeron.Subscription) *aeron.Image {
 	return image
 }
 
-// ImageBySessionID walks sub for an image whose SessionID matches sessionID.
-//
-// Does not wait. Returns false when no image with sessionID is present.
-func ImageBySessionID(sub *aeron.Subscription, sessionID int32) (*aeron.Image, bool) {
-	for i := range sub.ImageCount() {
-		img, ok := sub.ImageAt(i)
-		if !ok {
-			continue
-		}
-		if img.SessionID() == sessionID {
-			return img, true
-		}
-	}
-	return nil, false
-}
-
 func preparePollWant(t testing.TB, want int) bool {
 	t.Helper()
 	if want <= 0 {
