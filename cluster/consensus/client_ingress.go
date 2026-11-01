@@ -74,8 +74,7 @@ func (a *Agent) SetSessionConnectHandler(handler SessionConnectHandler) {
 	a.sessionConnectHandler = handler
 }
 
-// Frames stay in the image while an election is live or the leader is
-// outside ACTIVE ([Agent.isLeaderHeld]).
+// An early return leaves the frames in the image.
 func (a *Agent) pollClientIngress(nowNs int64) int {
 	if a.election != nil {
 		return 0
@@ -84,6 +83,9 @@ func (a *Agent) pollClientIngress(nowNs int64) int {
 		if a.moduleState == ModuleStateSnapshot {
 			a.refreshSessionActivity(nowNs)
 		}
+		return 0
+	}
+	if !a.isActiveOrSuspended() {
 		return 0
 	}
 	if a.clientIngress == nil {

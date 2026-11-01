@@ -282,8 +282,9 @@ type Agent struct {
 
 	// timeOfLastAppendPositionUpdateNs is the time of the last advancing
 	// follower AppendPosition publish, or of the catchup start, log join or
-	// new-leadership teardown. CatchupPoll fails when it is older than one
-	// leader heartbeat timeout.
+	// new-leadership teardown. In ACTIVE, with an append source, CatchupPoll
+	// returns an error when this time is older than one leader heartbeat
+	// timeout.
 	timeOfLastAppendPositionUpdateNs int64
 
 	// logPublisher appends leadership-term and session frames on the exclusive
@@ -296,9 +297,10 @@ type Agent struct {
 	// (AppendPosition interval path still runs). Nil also skips the closed
 	// log image check.
 	//
-	// CatchupPoll polls the same adapter and fails when it holds no Image.
-	// Election replay binds and polls the same adapter through BindReplayLog
-	// and ReplayLogPoll. A settled leader holds no Image after JoinLogAsLeader.
+	// In ACTIVE or SUSPENDED, CatchupPoll polls the same adapter and fails when
+	// it holds no Image. Election replay binds and polls the same adapter
+	// through BindReplayLog and ReplayLogPoll. A settled leader holds no Image
+	// after JoinLogAsLeader.
 	logAdapter *LogAdapter
 
 	// logPollNowNs is the duty-cycle clock for the current log adapter poll.
@@ -1033,8 +1035,8 @@ func isCatchupAppendPosition(flags uint8) bool {
 	return flags&AppendPositionFlagCatchup != 0
 }
 
-// CatchupPoll polls the catchup and live log, then publishes a ready recorded
-// position.
+// In ACTIVE or SUSPENDED, polls the catchup log and the live log, then
+// publishes a ready recorded position.
 //
 // Reads the append source once, before the poll. The read sets the poll bound:
 //   - nil source: limitPosition. Does not publish
@@ -1042,23 +1044,22 @@ func isCatchupAppendPosition(flags uint8) bool {
 //     [AppendPositionFlagCatchup]
 //   - not ready: the adapter position. Does not publish
 //
-// Each hold of [Agent.holdLogPollBound] lowers the bound. Advances commit via
-// [Agent.ProposeMaxCommit] from the adapter position.
-//
 // Returns an error when:
-//   - the local log recording stopped. The recording follows the merged
-//     catchup and live image, so a stop means the image ended
-//   - a poll reads no fragments and the image is closed or missing
-//   - with a source, the published append position has not advanced for one
-//     leader heartbeat timeout
+//   - the append source is not ready and the local log recording has stopped.
+//     The recording follows the merged catchup and live image, so a stop means
+//     the image ended
+//   - a poll reads no fragments on a closed or missing image
+//   - in ACTIVE, with a source, the published append position has not
+//     advanced for one leader heartbeat timeout
 //
-// Returns 0 and a nil error when adapter is nil.
+// Returns 0 and a nil error when the adapter is nil, or when the module is
+// neither ACTIVE nor SUSPENDED.
 //
 // Concurrency: invoker-only. Election-live catchup is the sole consumer while
 // an election runner is set. Steady followerConsensusWork does not run then.
 func (a *Agent) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	adapter := a.logAdapter
-	if adapter == nil {
+	if adapter == nil || !a.isActiveOrSuspended() {
 		return 0, nil
 	}
 	if a.appendSource == nil {
@@ -1079,7 +1080,8 @@ func (a *Agent) CatchupPoll(limitPosition, nowNs int64) (int, error) {
 	if ready {
 		work += a.updateFollowerPosition(nowNs, recorded, AppendPositionFlagCatchup)
 	}
-	if nowNs > a.timeOfLastAppendPositionUpdateNs+a.leaderHeartbeatTimeoutNs {
+	if a.moduleState == ModuleStateActive &&
+		nowNs > a.timeOfLastAppendPositionUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return work, fmt.Errorf(
 			"%w: commit=%d limit=%d last_append=%d position=%d",
 			errCatchupNoProgress,
@@ -2512,20 +2514,15 @@ func (a *Agent) leaderConsensusWork(nowNs int64) int {
 	return a.UpdateLeaderPosition(nowNs, quorum)
 }
 
-// followerConsensusWork polls the log under the commit/append bound, advances
-// local commit from adapter position, then publishes AppendPosition on interval.
+// Polls the log and raises local commit only in ACTIVE or SUSPENDED. Publishes
+// AppendPosition on the interval in every state.
 //
-// The append high-water is read once per tick. That value is shared by the poll
-// bound and the publish. The source may scan the log image's received frames, so
-// one read per tick is the budget.
-//
-// Not-ready read:
-//   - freezes the poll bound at the adapter position
-//   - publishes nothing
+// The call reads the append high-water once per tick. The source may scan the
+// log image's received frames, so one read per tick is the budget.
 func (a *Agent) followerConsensusWork(nowNs int64) int {
 	appendPos, ready := a.resolveAppendPosition(nowNs)
 	work := 0
-	if a.logAdapter != nil {
+	if a.isActiveOrSuspended() && a.logAdapter != nil {
 		a.logPollNowNs = nowNs
 		var bound int64
 		if ready {

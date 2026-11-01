@@ -699,6 +699,48 @@ func TestLogAdapter_fragmented_noHandler(t *testing.T) {
 	requireHandlerIdle(t, spy)
 }
 
+func TestFollowerConsensusWork_moduleState(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range allModuleStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+
+			adapter, image := boundLogAdapter(t)
+			span := writeSessionMessageAtJoin(t, image, codecs.SessionMessageHeaderFields{
+				LeadershipTermID: 1,
+				ClusterSessionID: 2,
+				Timestamp:        3,
+			})
+			eg := &recordingEgress{}
+			a := newFollowerLogPollAgent(span+100, adapter)
+			a.SetEgress(eg)
+			a.notifiedCommitPosition = span + 32
+			a.setModuleState(state, "test")
+
+			const nowNs int64 = 5
+			work := a.followerConsensusWork(nowNs)
+			polls := state == ModuleStateActive || state == ModuleStateSuspended
+			if polls {
+				require.Equal(t, span, adapter.Position())
+				require.Equal(t, span, a.CommitPosition())
+				require.Equal(t, nowNs, a.logPollNowNs)
+				require.Equal(t, 2, work)
+			} else {
+				require.Equal(t, int64(0), adapter.Position())
+				require.Equal(t, int64(0), a.CommitPosition())
+				require.Zero(t, a.logPollNowNs)
+				require.Equal(t, 1, work)
+			}
+			require.Equal(t, []appendPublishCall{{
+				term:  1,
+				pos:   span + 100,
+				flags: AppendPositionFlagNone,
+			}}, eg.appends)
+		})
+	}
+}
+
 func TestFollowerConsensusWork_pollAndProposeMax(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -457,6 +457,90 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		require.Equal(t, count, a.ElectionCount())
 		require.Equal(t, ElectionTriggerLeaderHeartbeatTimeout, a.LastElectionTrigger())
 	})
+
+	stateTriggers := []struct {
+		name      string
+		role      Role
+		positions PositionTable
+		nowNs     int64
+		trigger   ElectionTrigger
+		installs  func(ModuleState) bool
+	}{
+		{
+			name:    "heartbeat",
+			role:    RoleFollower,
+			nowNs:   timeoutNs,
+			trigger: ElectionTriggerLeaderHeartbeatTimeout,
+			installs: func(state ModuleState) bool {
+				return state == ModuleStateActive || state == ModuleStateSuspended
+			},
+		},
+		{
+			name:      "quorum",
+			role:      RoleLeader,
+			positions: &scriptedActiveQuorumTable{active: false},
+			nowNs:     42,
+			trigger:   ElectionTriggerInactiveFollowerQuorum,
+			installs: func(state ModuleState) bool {
+				return state == ModuleStateActive
+			},
+		},
+	}
+	for _, state := range allModuleStates {
+		for _, tc := range stateTriggers {
+			t.Run(tc.name+"/"+state.String(), func(t *testing.T) {
+				fac := &recordingElectionFactory{}
+				a := NewAgent(AgentConfig{
+					Role:                     tc.role,
+					Positions:                tc.positions,
+					LeaderHeartbeatTimeoutNs: timeoutNs,
+				})
+				a.SetElectionFactory(fac.factory())
+				a.setModuleState(state, "test")
+
+				work := a.DoWork(tc.nowNs)
+				require.Equal(t, state, a.ModuleState())
+				if tc.installs(state) {
+					require.Equal(t, 2, work)
+					require.NotNil(t, a.Election())
+					require.Equal(t, tc.trigger, a.LastElectionTrigger())
+					require.Equal(t, int64(1), a.ElectionCount())
+					require.Len(t, fac.seeds, 1)
+					return
+				}
+				require.Zero(t, work)
+				require.Nil(t, a.Election())
+				require.Zero(t, a.ElectionCount())
+				require.Empty(t, fac.seeds)
+				require.Equal(t, tc.role, a.Role())
+			})
+		}
+
+		t.Run("higher_term/"+state.String(), func(t *testing.T) {
+			fac := &recordingElectionFactory{}
+			a := NewAgent(AgentConfig{
+				Role:                     RoleFollower,
+				LeadershipTermID:         4,
+				LeaderMemberID:           1,
+				LeaderHeartbeatTimeoutNs: timeoutNs,
+			})
+			a.notifiedCommitPosition = 10
+			a.SetElectionFactory(fac.factory())
+			a.setModuleState(state, "test")
+
+			a.handleSteadyCommitPosition(codecs.CommitPositionFields{
+				LeadershipTermID: 9,
+				LogPosition:      999,
+				LeaderMemberID:   2,
+			}, 700)
+			require.NotNil(t, a.Election())
+			require.Equal(t, ElectionTriggerHigherTerm, a.LastElectionTrigger())
+			require.Equal(t, int64(1), a.ElectionCount())
+			require.Equal(t, int64(10), a.NotifiedCommitPosition())
+			require.Equal(t, state, a.ModuleState())
+			require.Len(t, fac.seeds, 1)
+		})
+	}
 }
 
 // TestElectionTrigger_String covers known and unknown trigger names.

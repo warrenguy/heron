@@ -14,6 +14,7 @@ var (
 	errSnapshotNotLeader       = errors.New("cluster: snapshot action requires a settled leader")
 	errCoordinationOutstanding = errors.New("cluster: coordination point outstanding")
 	errSnapshotActionPending   = errors.New("cluster: snapshot action pending")
+	errSnapshotModuleNotActive = errors.New("cluster: snapshot action requires module state ACTIVE")
 	errSnapshotAppend          = errors.New("cluster: snapshot action append failed")
 )
 
@@ -34,6 +35,7 @@ var (
 //   - a coordination wait is outstanding
 //   - a pending JoinLog publish is outstanding
 //   - a module snapshot take is in flight ([errSnapshotActionPending])
+//   - the module state is not ACTIVE ([errSnapshotModuleNotActive])
 //   - the log publisher is nil or unbound
 //   - the append fails
 func (a *Agent) RequestSnapshot(nowNs int64) error {
@@ -48,6 +50,9 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 	}
 	if a.snapshotTake != nil {
 		return errSnapshotActionPending
+	}
+	if a.moduleState != ModuleStateActive {
+		return errSnapshotModuleNotActive
 	}
 	pos, ok := a.logPublisher.AppendClusterAction(
 		a.leadershipTermID,

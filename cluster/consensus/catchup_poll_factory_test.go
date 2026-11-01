@@ -139,8 +139,8 @@ const (
 	catchupPollSourceNotReady
 )
 
-// Asserts the CatchupPoll bound for each append source state. Positions count
-// whole frames. Three frames sit in the image.
+// Asserts the CatchupPoll bound for each append source, in ACTIVE and
+// SUSPENDED. Positions count whole frames. Three frames sit in the image.
 func TestCatchupPoll_boundsPollBySource(t *testing.T) {
 	const recordingID int64 = 11
 
@@ -212,61 +212,61 @@ func TestCatchupPoll_boundsPollBySource(t *testing.T) {
 			wantFrames:  0,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			adapter, image := boundLogAdapter(t)
-			ends := writeCatchupPollFrames(t, image, 3)
+	for _, state := range []ModuleState{ModuleStateActive, ModuleStateSuspended} {
+		for _, tt := range tests {
+			t.Run(state.String()+"/"+tt.name, func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				ends := writeCatchupPollFrames(t, image, 3)
 
-			var source AppendPositionSource
-			switch tt.source {
-			case catchupPollSourceReady:
-				recorded := new(atomic.Int64)
-				recorded.Store(ends[tt.recordedFrames])
-				source = &AtomicAppendPosition{V: recorded}
-			case catchupPollSourceNotReady:
-				source = notReadyAppendSource{}
-			}
-			eg := &recordingEgress{}
-			a := NewAgent(AgentConfig{
-				Role:                      RoleFollower,
-				Commit:                    new(atomic.Int64),
-				LogAdapter:                adapter,
-				Egress:                    eg,
-				AppendSource:              source,
-				LeadershipTermID:          3,
-				LeaderHeartbeatIntervalNs: 1000,
-				LeaderMemberID:            1,
+				var source AppendPositionSource
+				switch tt.source {
+				case catchupPollSourceReady:
+					recorded := new(atomic.Int64)
+					recorded.Store(ends[tt.recordedFrames])
+					source = &AtomicAppendPosition{V: recorded}
+				case catchupPollSourceNotReady:
+					source = notReadyAppendSource{}
+				}
+				eg := &recordingEgress{}
+				a := NewAgent(AgentConfig{
+					Role:                      RoleFollower,
+					Commit:                    new(atomic.Int64),
+					LogAdapter:                adapter,
+					Egress:                    eg,
+					AppendSource:              source,
+					LeadershipTermID:          3,
+					LeaderHeartbeatIntervalNs: 1000,
+					LeaderMemberID:            1,
+				})
+				a.SetLogRecordingID(tt.recordingID)
+				if tt.control != nil {
+					a.SetLogRecordingControl(tt.control)
+				}
+				a.CatchupInitiated(0)
+				a.setModuleState(state, "test")
+
+				// The tick sits past the heartbeat interval, so a publish is due.
+				work, err := a.CatchupPoll(ends[tt.limitFrames], 2000)
+				require.ErrorIs(t, err, tt.wantErr)
+				want := ends[tt.wantFrames]
+				require.Equal(t, want, adapter.Position())
+				require.Equal(t, want, a.CommitPosition())
+				if tt.source == catchupPollSourceReady {
+					require.Equal(t, tt.wantFrames+1, work)
+					require.Equal(t, []appendPublishCall{
+						{term: 3, pos: ends[tt.recordedFrames], flags: AppendPositionFlagCatchup},
+					}, eg.appends)
+				} else {
+					require.Equal(t, tt.wantFrames, work)
+					require.Empty(t, eg.appends)
+				}
 			})
-			a.SetLogRecordingID(tt.recordingID)
-			if tt.control != nil {
-				a.SetLogRecordingControl(tt.control)
-			}
-			a.CatchupInitiated(0)
-
-			// The tick sits past the heartbeat interval, so a publish is due.
-			work, err := a.CatchupPoll(ends[tt.limitFrames], 2000)
-			require.ErrorIs(t, err, tt.wantErr)
-			want := ends[tt.wantFrames]
-			require.Equal(t, want, adapter.Position())
-			require.Equal(t, want, a.CommitPosition())
-			if tt.source == catchupPollSourceReady {
-				require.Equal(t, tt.wantFrames+1, work)
-				require.Equal(t, []appendPublishCall{
-					{term: 3, pos: ends[tt.recordedFrames], flags: AppendPositionFlagCatchup},
-				}, eg.appends)
-			} else {
-				require.Equal(t, tt.wantFrames, work)
-				require.Empty(t, eg.appends)
-			}
-		})
+		}
 	}
 }
 
-// Asserts CatchupPoll fails when a poll of a closed image reads no fragments,
-// and when the adapter holds no image. Covers a nil source and a not-ready
-// source over an active recording.
 func TestCatchupPoll_failsOnImageClose(t *testing.T) {
-	tests := []struct {
+	sources := []struct {
 		name   string
 		source AppendPositionSource
 		// unbind drops the image from the adapter instead of closing it.
@@ -277,57 +277,67 @@ func TestCatchupPoll_failsOnImageClose(t *testing.T) {
 		{name: "nil source without image", unbind: true},
 		{name: "not-ready source without image", source: notReadyAppendSource{}, unbind: true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			adapter, image := boundLogAdapter(t)
-			ends := writeCatchupPollFrames(t, image, 1)
-			a := NewAgent(AgentConfig{
-				Role:                     RoleFollower,
-				Commit:                   new(atomic.Int64),
-				LogAdapter:               adapter,
-				AppendSource:             tt.source,
-				LeaderHeartbeatTimeoutNs: 1000,
-			})
-			a.SetLogRecordingID(7)
-			a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
-			a.CatchupInitiated(0)
-			if tt.unbind {
-				adapter.SetImage(nil)
-			} else {
-				aeron.ImageInternalCloseForHooks(image)
-			}
 
-			work, err := a.CatchupPoll(ends[1], 1)
-			require.ErrorIs(t, err, errCatchupImageClosed)
-			require.Equal(t, 0, work)
-			require.Equal(t, int64(0), adapter.Position())
-		})
+	for _, state := range []ModuleState{ModuleStateActive, ModuleStateSuspended} {
+		for _, source := range sources {
+			t.Run(state.String()+"/"+source.name, func(t *testing.T) {
+				adapter, image := boundLogAdapter(t)
+				ends := writeCatchupPollFrames(t, image, 1)
+				a := NewAgent(AgentConfig{
+					Role:                     RoleFollower,
+					Commit:                   new(atomic.Int64),
+					LogAdapter:               adapter,
+					AppendSource:             source.source,
+					LeaderHeartbeatTimeoutNs: 1000,
+				})
+				a.SetLogRecordingID(7)
+				a.SetLogRecordingControl(&fakeLogRecordingControl{active: true})
+				a.CatchupInitiated(0)
+				a.setModuleState(state, "test")
+				if source.unbind {
+					adapter.SetImage(nil)
+				} else {
+					aeron.ImageInternalCloseForHooks(image)
+				}
+
+				work, err := a.CatchupPoll(ends[1], 1)
+				require.ErrorIs(t, err, errCatchupImageClosed)
+				require.Equal(t, 0, work)
+				require.Equal(t, int64(0), adapter.Position())
+			})
+		}
 	}
 }
 
 // Asserts CatchupPoll fails when the published append position has not
 // advanced for one leader heartbeat timeout. Each advancing publish restarts
-// the timeout.
+// the timeout. In SUSPENDED, the deadline does not fail the poll.
 func TestCatchupPoll_failsWithoutProgress(t *testing.T) {
 	const timeoutNs int64 = 100
+	newAgent := func(adapter *LogAdapter, recorded *atomic.Int64) (*Agent, *recordingEgress) {
+		eg := &recordingEgress{}
+		a := NewAgent(AgentConfig{
+			Role:                      RoleFollower,
+			Commit:                    new(atomic.Int64),
+			LogAdapter:                adapter,
+			Egress:                    eg,
+			AppendSource:              &AtomicAppendPosition{V: recorded},
+			LeadershipTermID:          3,
+			LeaderHeartbeatIntervalNs: 10,
+			LeaderHeartbeatTimeoutNs:  timeoutNs,
+			LeaderMemberID:            1,
+		})
+		a.CatchupInitiated(0)
+		return a, eg
+	}
+
 	adapter, image := boundLogAdapter(t)
 	ends := writeCatchupPollFrames(t, image, 2)
 	limit := ends[2]
 
 	recorded := new(atomic.Int64)
 	recorded.Store(ends[1])
-	a := NewAgent(AgentConfig{
-		Role:                      RoleFollower,
-		Commit:                    new(atomic.Int64),
-		LogAdapter:                adapter,
-		Egress:                    &recordingEgress{},
-		AppendSource:              &AtomicAppendPosition{V: recorded},
-		LeadershipTermID:          3,
-		LeaderHeartbeatIntervalNs: 10,
-		LeaderHeartbeatTimeoutNs:  timeoutNs,
-		LeaderMemberID:            1,
-	})
-	a.CatchupInitiated(0)
+	a, _ := newAgent(adapter, recorded)
 
 	// Phase: an advancing publish at 50 restarts the timeout.
 	require.Equal(t, 2, catchupPoll(t, a, limit, 50))
@@ -345,6 +355,61 @@ func TestCatchupPoll_failsWithoutProgress(t *testing.T) {
 	recorded.Store(ends[2])
 	require.Equal(t, 2, catchupPoll(t, a, limit, 52+timeoutNs))
 	require.Equal(t, ends[2], a.CommitPosition())
+
+	t.Run("SUSPENDED", func(t *testing.T) {
+		adapter, image := boundLogAdapter(t)
+		ends := writeCatchupPollFrames(t, image, 2)
+		limit := ends[2]
+		recorded := new(atomic.Int64)
+		recorded.Store(ends[1])
+		a, _ := newAgent(adapter, recorded)
+		a.setModuleState(ModuleStateSuspended, "test")
+
+		require.Equal(t, 2, catchupPoll(t, a, limit, 50))
+		catchupPoll(t, a, limit, 51+timeoutNs)
+	})
+}
+
+// Asserts CatchupPoll does nothing outside ACTIVE and SUSPENDED. In ACTIVE,
+// the stopped recording and the closed image fail the poll, and the tick
+// sits past the no-progress deadline.
+func TestCatchupPoll_skipsOutsideActiveOrSuspended(t *testing.T) {
+	const timeoutNs int64 = 100
+
+	for _, state := range []ModuleState{
+		ModuleStateInit,
+		ModuleStateSnapshot,
+		ModuleStateQuitting,
+		ModuleStateTerminating,
+		ModuleStateClosed,
+	} {
+		t.Run(state.String(), func(t *testing.T) {
+			adapter, image := boundLogAdapter(t)
+			ends := writeCatchupPollFrames(t, image, 1)
+			eg := &recordingEgress{}
+			a := NewAgent(AgentConfig{
+				Role:                      RoleFollower,
+				Commit:                    new(atomic.Int64),
+				LogAdapter:                adapter,
+				Egress:                    eg,
+				AppendSource:              notReadyAppendSource{},
+				LeadershipTermID:          3,
+				LeaderHeartbeatIntervalNs: 10,
+				LeaderHeartbeatTimeoutNs:  timeoutNs,
+				LeaderMemberID:            1,
+			})
+			a.SetLogRecordingID(7)
+			a.SetLogRecordingControl(&fakeLogRecordingControl{})
+			a.CatchupInitiated(0)
+			aeron.ImageInternalCloseForHooks(image)
+			a.setModuleState(state, "test")
+
+			require.Zero(t, catchupPoll(t, a, ends[1], 1+timeoutNs))
+			require.Zero(t, adapter.Position())
+			require.Zero(t, a.CommitPosition())
+			require.Empty(t, eg.appends)
+		})
+	}
 }
 
 func TestCatchupPoll_stubWhenNoAdapter(t *testing.T) {

@@ -101,6 +101,15 @@ func TestUpdateLeaderPosition_timeOfLastLogUpdate_monotonicOnPublish_rapid(t *te
 	})
 }
 
+// The draw omits CLOSED. setModuleState does not leave CLOSED.
+var rapidSetModuleStates = []ModuleState{
+	ModuleStateActive,
+	ModuleStateSuspended,
+	ModuleStateSnapshot,
+	ModuleStateQuitting,
+	ModuleStateTerminating,
+}
+
 // TestElectionInstall_countMonotonicAndSingleRunner_rapid asserts install
 // count, single runner, and seed term invariants over mixed duty steps.
 //
@@ -139,7 +148,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 		steps := []string{
 			"tick", "completeElection", "higherTerm",
 			"quorumLost", "quorumHeld", "setElection", "clearElection",
-			"recordingStop", "logImageClosed", "voteRequest",
+			"recordingStop", "logImageClosed", "voteRequest", "setState",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
@@ -148,12 +157,21 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			countBefore := a.ElectionCount()
 			seedsBefore := len(seeds)
 			liveBefore := a.Election() != nil
+			stateBefore := a.ModuleState()
+			activeOrSuspended := stateBefore == ModuleStateActive ||
+				stateBefore == ModuleStateSuspended
 
 			switch step {
 			case "tick":
+				roleBefore := a.Role()
+				due := nowNs >= a.slowTickDeadlineNs
+				quiet := nowNs >= a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs
 				_ = a.DoWork(nowNs)
-				if a.ElectionCount() > countBefore {
-					// Settled tick with active quorum table: only heartbeat.
+				installed := a.ElectionCount() > countBefore
+				wantHeartbeat := !liveBefore && roleBefore != RoleLeader &&
+					activeOrSuspended && due && quiet
+				require.Equal(rt, wantHeartbeat, installed)
+				if installed {
 					oracleTrigger = ElectionTriggerLeaderHeartbeatTimeout
 				}
 			case "completeElection":
@@ -167,17 +185,19 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 						LogPosition:      1,
 						LeaderMemberID:   2,
 					}, nowNs)
-					if a.ElectionCount() > countBefore {
-						oracleTrigger = ElectionTriggerHigherTerm
-					}
+					require.Greater(rt, a.ElectionCount(), countBefore)
+					oracleTrigger = ElectionTriggerHigherTerm
 				}
 			case "quorumLost":
 				if a.Election() == nil {
+					due := nowNs >= a.slowTickDeadlineNs
 					a.RoleSet(RoleLeader)
 					pt.active = false
 					_ = a.DoWork(nowNs)
 					pt.active = true
-					if a.ElectionCount() > countBefore {
+					installed := a.ElectionCount() > countBefore
+					require.Equal(rt, stateBefore == ModuleStateActive && due, installed)
+					if installed {
 						oracleTrigger = ElectionTriggerInactiveFollowerQuorum
 					}
 				}
@@ -200,8 +220,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				control.stopSignalPosition = rapid.Int64Range(0, 1000).Draw(rt, "stopPosition")
 				installed := a.logStopTick()
 				require.False(rt, control.stopSignalled)
-				// Any settled role installs on a STOP.
-				require.Equal(rt, !liveBefore, installed == 1)
+				require.Equal(rt, !liveBefore && stateBefore == ModuleStateActive, installed == 1)
 				if installed == 1 {
 					oracleTrigger = ElectionTriggerLogRecordingStopped
 				}
@@ -210,11 +229,14 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 				a.SetLogAdapter(NewLogAdapter(0))
 				installed := a.logStopTick()
 				a.SetLogAdapter(nil)
-				// A settled non-leader installs. A leader ignores the image.
-				require.Equal(rt, !liveBefore && !leaderBefore, installed == 1)
+				require.Equal(rt, !liveBefore && !leaderBefore && activeOrSuspended, installed == 1)
 				if installed == 1 {
 					oracleTrigger = ElectionTriggerLogImageClosed
 				}
+			case "setState":
+				next := rapid.SampledFrom(rapidSetModuleStates).Draw(rt, "moduleState")
+				a.setModuleState(next, "test")
+				require.Equal(rt, next, a.ModuleState())
 			case "voteRequest":
 				term := a.LeadershipTermID()
 				termDelta := rapid.Int64Range(-2, 3).Draw(rt, "candidateTermDelta")
@@ -231,6 +253,10 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 					oracleTrigger = ElectionTriggerVoteRequest
 					require.Equal(rt, RoleFollower, a.Role())
 				}
+			}
+
+			if step != "setState" {
+				require.Equal(rt, stateBefore, a.ModuleState())
 			}
 
 			// At most one runner; it is the newest install when non-nil.
@@ -278,14 +304,21 @@ func (p *heldClientIngressProbe) Poll(
 	onFragment func(buf []byte, offset int) aeron.ControlledAction,
 ) int {
 	require.Nil(p.rt, p.agent.Election())
+	state := p.agent.ModuleState()
+	if p.agent.Role() == RoleLeader {
+		require.Equal(p.rt, ModuleStateActive, state)
+	} else {
+		require.True(p.rt, state == ModuleStateActive || state == ModuleStateSuspended)
+	}
 	n := p.queue.Poll(fragmentLimit, onFragment)
 	p.delivered += n
 	return n
 }
 
-// TestClientIngress_heldWhileElectionLive_rapid asserts that no client ingress
-// frame leaves the image while an election is live. A settled tick delivers up
-// to the fragment limit.
+// TestClientIngress_heldWhileElectionLive_rapid asserts that a client ingress
+// frame does not leave the image while an election is live. A settled tick
+// delivers for a leader only in ACTIVE. A settled tick delivers for a
+// non-leader only in ACTIVE or SUSPENDED.
 func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -325,7 +358,14 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 				// The election installs before the client poll in the same tick.
 				require.Zero(rt, delivered)
 			default:
-				require.Equal(rt, min(queuedBefore, defaultClientIngressFragmentLimit), delivered)
+				state := a.ModuleState()
+				polls := state == ModuleStateActive ||
+					(a.Role() != RoleLeader && state == ModuleStateSuspended)
+				if polls {
+					require.Equal(rt, min(queuedBefore, defaultClientIngressFragmentLimit), delivered)
+				} else {
+					require.Zero(rt, delivered)
+				}
 			}
 		}
 
@@ -333,11 +373,12 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 		steps := []string{
 			"enqueue", "tick", "setElection", "completeElection",
 			"clearElection", "quorumLost", "higherTermFrame",
-			"recordingStop", "logImageClosed", "voteRequestFrame",
+			"recordingStop", "logImageClosed", "voteRequestFrame", "setState",
 		}
 		for range n {
 			step := rapid.SampledFrom(steps).Draw(rt, "step")
 			nowNs += rapid.Int64Range(1, timeoutNs).Draw(rt, "delta")
+			stateBefore := a.ModuleState()
 
 			switch step {
 			case "enqueue":
@@ -395,6 +436,14 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 						ElectionTriggerLeaderHeartbeatTimeout,
 					}, a.LastElectionTrigger())
 				}
+			case "setState":
+				next := rapid.SampledFrom(rapidSetModuleStates).Draw(rt, "moduleState")
+				a.setModuleState(next, "test")
+				require.Equal(rt, next, a.ModuleState())
+			}
+
+			if step != "setState" {
+				require.Equal(rt, stateBefore, a.ModuleState())
 			}
 
 			// Every frame is delivered or still queued.
