@@ -250,7 +250,7 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 			if streams1.Subscription().ImageCount() < 2 {
 				return false
 			}
-			img, found := harness.ImageBySessionID(streams1.Subscription(), sessionID)
+			img, found := streams1.Subscription().ImageBySessionID(sessionID)
 			if !found {
 				return false
 			}

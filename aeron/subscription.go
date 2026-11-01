@@ -124,6 +124,24 @@ func (subscription *Subscription) ImageAt(index int) (*Image, bool) {
 	return image, true
 }
 
+// ImageBySessionID returns the first open image in slice order whose session
+// id equals sessionID.
+//
+// A closed subscription returns nil, false.
+//
+// Concurrency: invoker-only. The call does not take a lock.
+func (subscription *Subscription) ImageBySessionID(sessionID int32) (*Image, bool) {
+	if subscription.closed {
+		return nil, false
+	}
+	for _, image := range subscription.images {
+		if image != nil && !image.IsClosed() && image.SessionID() == sessionID {
+			return image, true
+		}
+	}
+	return nil, false
+}
+
 // IsConnected reports whether any non-closed image is attached.
 //
 // Returns false when the subscription is closed, even if images remain in the slice.

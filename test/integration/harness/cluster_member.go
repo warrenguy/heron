@@ -836,7 +836,7 @@ func (s *ClusterMemberSet) AwaitLogImages(bound time.Duration) bool {
 		for m := range s.live() {
 			sub := m.LogStreams().Subscription()
 			for _, session := range sessions {
-				if _, ok := ImageBySessionID(sub, session); !ok {
+				if _, ok := sub.ImageBySessionID(session); !ok {
 					return false
 				}
 			}

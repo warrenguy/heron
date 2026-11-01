@@ -168,6 +168,31 @@ func TestImage_endOfStream(t *testing.T) {
 	}
 }
 
+func TestImage_activeTransportCount(t *testing.T) {
+	tests := []struct {
+		name   string
+		count  int32
+		closed bool
+		want   int32
+	}{
+		{name: "defaultWord", want: 0},
+		{name: "wordTwo", count: 2, want: 2},
+		{name: "closedWithWordTwo", count: 2, closed: true, want: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			image := aeron.NewImageForTest(t, testSubscription(t), 0)
+			aeron.ImageSetActiveTransportCountForTest(image, tc.count)
+			if tc.closed {
+				aeron.ImageInternalCloseForTest(image)
+			}
+
+			require.Equal(t, tc.want, image.ActiveTransportCount())
+		})
+	}
+}
+
 func TestImage_internalClose_idempotent(t *testing.T) {
 	sub := testSubscription(t)
 	image := aeron.NewImageForTest(t, sub, 100)
@@ -626,6 +651,153 @@ func TestImage_Poll_nilHandlerAndZeroLimit(t *testing.T) {
 	}
 }
 
+func TestImage_BoundedPoll_bounds(t *testing.T) {
+	payload := []byte("a")
+	frameSpan := logbuffer.AlignFragmentChunkLength(len(payload))
+	require.GreaterOrEqual(t, frameSpan, 2)
+
+	const termLength = aeron.TestPublicationTermLength
+	tailPayload := []byte("tail")
+	tailSpan := logbuffer.AlignFragmentChunkLength(len(tailPayload))
+	tailOffset := termLength - 2*tailSpan
+	require.GreaterOrEqual(t, tailOffset, 0)
+
+	writeTwoFramesAtZero := func(t *testing.T, image *aeron.Image) {
+		t.Helper()
+		writeDataFrameChain(t, aeron.ImageTermBuffer0ForTest(image), 0, 2, payload)
+	}
+
+	tests := []struct {
+		name          string
+		joinPosition  int64
+		limitPosition int64
+		setup         func(t *testing.T, image *aeron.Image)
+		wantFragments int
+		wantPayloads  [][]byte
+		wantPosition  int64
+	}{
+		{
+			name:          "positionAtLimit",
+			joinPosition:  0,
+			limitPosition: 0,
+			setup: func(t *testing.T, image *aeron.Image) {
+				t.Helper()
+				writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, []byte("x"))
+			},
+			wantPosition: 0,
+		},
+		{
+			name:          "positionPastLimit",
+			joinPosition:  128,
+			limitPosition: 96,
+			setup: func(t *testing.T, image *aeron.Image) {
+				t.Helper()
+				writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 128, []byte("x"))
+			},
+			wantPosition: 128,
+		},
+		{
+			name:          "limitInsideFrame",
+			joinPosition:  0,
+			limitPosition: int64(frameSpan / 2),
+			setup:         writeTwoFramesAtZero,
+			wantFragments: 1,
+			wantPayloads:  [][]byte{payload},
+			wantPosition:  int64(frameSpan),
+		},
+		{
+			name:          "limitAtFrameStart",
+			joinPosition:  0,
+			limitPosition: int64(frameSpan),
+			setup:         writeTwoFramesAtZero,
+			wantFragments: 1,
+			wantPayloads:  [][]byte{payload},
+			wantPosition:  int64(frameSpan),
+		},
+		{
+			name:          "limitPastTermEnd",
+			joinPosition:  int64(tailOffset),
+			limitPosition: int64(tailOffset) + int64(termLength),
+			setup: func(t *testing.T, image *aeron.Image) {
+				t.Helper()
+				termBuffer := aeron.ImageTermBuffer0ForTest(image)
+				padOffset := writePollTestPayloads(termBuffer, tailOffset, tailPayload)
+				aeron.WriteCommittedPaddingFrameForTest(
+					termBuffer,
+					padOffset,
+					aeron.TestPublicationInitialTermID,
+					int32(padOffset),
+					int32(termLength-padOffset),
+				)
+			},
+			wantFragments: 1,
+			wantPayloads:  [][]byte{tailPayload},
+			wantPosition:  int64(termLength),
+		},
+		{
+			name:          "paddingStartsBelowLimit",
+			joinPosition:  0,
+			limitPosition: int64(pollTestWidePaddingLength / 2),
+			setup: func(t *testing.T, image *aeron.Image) {
+				t.Helper()
+				aeron.WriteCommittedPaddingFrameForTest(
+					aeron.ImageTermBuffer0ForTest(image),
+					0,
+					aeron.TestPublicationInitialTermID,
+					0,
+					pollTestWidePaddingLength,
+				)
+			},
+			wantPosition: int64(pollTestWidePaddingLength),
+		},
+		{
+			name:          "joinOffsetAboveZero",
+			joinPosition:  int64(frameSpan),
+			limitPosition: int64(2 * frameSpan),
+			setup: func(t *testing.T, image *aeron.Image) {
+				t.Helper()
+				writeDataFrameChain(
+					t,
+					aeron.ImageTermBuffer0ForTest(image),
+					frameSpan,
+					2,
+					payload,
+				)
+			},
+			wantFragments: 1,
+			wantPayloads:  [][]byte{payload},
+			wantPosition:  int64(2 * frameSpan),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			image, capture := newPollImage(t, tc.joinPosition)
+			tc.setup(t, image)
+
+			fragments := image.BoundedPoll(capture.handler, tc.limitPosition, 10)
+
+			require.Equal(t, tc.wantFragments, fragments)
+			require.Equal(t, tc.wantPayloads, capture.payloads)
+			require.Equal(t, tc.wantPosition, image.Position())
+		})
+	}
+}
+
+func TestImage_BoundedPoll_guards(t *testing.T) {
+	image, capture := newPollImage(t, 0)
+	writePollTestPayloads(aeron.ImageTermBuffer0ForTest(image), 0, []byte("x"))
+
+	require.Equal(t, 0, image.BoundedPoll(nil, 100, 1))
+	require.Equal(t, 0, image.BoundedPoll(capture.handler, 100, 0))
+	require.Equal(t, 0, image.BoundedPoll(capture.handler, 100, -1))
+	require.Zero(t, image.Position())
+	require.Empty(t, capture.payloads)
+
+	aeron.ImageInternalCloseForTest(image)
+	require.Equal(t, 0, image.BoundedPoll(capture.handler, 100, 1))
+}
+
 func TestImage_Poll_handlerPanic(t *testing.T) {
 	const wantErr = "poll handler failed"
 	panicPayload := []byte("panic")
@@ -650,6 +822,27 @@ func TestImage_Poll_handlerPanic(t *testing.T) {
 		fragments = image.Poll(capture.handler, 1)
 		require.Equal(t, 1, fragments)
 		require.Equal(t, []byte("after"), capture.payloads[0])
+	})
+
+	t.Run("boundedPollFirstFrameWithErrorHandler", func(t *testing.T) {
+		image, _, handledErr := newPollImageWithErrorHandler(t, 0)
+		writePollTestPayloads(
+			aeron.ImageTermBuffer0ForTest(image),
+			0,
+			panicPayload,
+			[]byte("after"),
+		)
+		limitPosition := panicSpan / 2
+		require.Positive(t, limitPosition)
+		require.Less(t, limitPosition, panicSpan)
+
+		fragments := image.BoundedPoll(pollPanicHandler, limitPosition, 10)
+
+		require.Equal(t, 1, fragments)
+		require.Equal(t, panicSpan, image.Position())
+		handled := handledErr()
+		require.Error(t, handled)
+		require.Equal(t, wantErr, handled.Error())
 	})
 
 	t.Run("fragmentedEndPanicDropsMessage", func(t *testing.T) {

@@ -228,6 +228,58 @@ func pollRecovering(poll func() int) (fragments int, panicked bool) {
 	return poll(), false
 }
 
+func TestImage_BoundedPoll_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		capacity := aeron.TestPublicationTermLength
+		joinOffset := drawJoinOffset(rt, capacity)
+		joinPosition := int64(joinOffset)
+
+		errorHandlerSet := rapid.Bool().Draw(rt, "errorHandlerSet")
+		image, errorCount := newRapidPollImage(t, joinPosition, errorHandlerSet)
+		termBuffer := aeron.ImageTermBuffer0ForTest(image)
+		schedule := drawControlledPollSchedule(rt, termBuffer, joinOffset)
+
+		limitPosition := rapid.Int64Range(joinPosition, int64(capacity)+64).Draw(rt, "limitPosition")
+		fragmentLimit := rapid.IntRange(1, 16).Draw(rt, "fragmentLimit")
+		panics := drawControlledPollPanics(rt, scheduleDataCount(schedule))
+
+		deliveredStarts := make([]int64, 0, fragmentLimit+1)
+		handler := func(_ atomicbuffer.AtomicBuffer, _, _ int, header *aeron.Header) {
+			deliveredStarts = append(deliveredStarts, int64(header.TermOffset()))
+			index := len(deliveredStarts) - 1
+			if index < len(panics) && panics[index] {
+				panic("poll handler failed")
+			}
+		}
+
+		positionBefore := image.Position()
+		fragments, panicked := pollRecovering(func() int {
+			return image.BoundedPoll(handler, limitPosition, fragmentLimit)
+		})
+		positionAfter := image.Position()
+
+		requireControlledPollMatchesOracle(
+			rt,
+			joinPosition,
+			positionBefore,
+			positionAfter,
+			fragments,
+			fragmentLimit,
+			deliveredStarts,
+			limitPosition,
+			schedule,
+			nil,
+			panics,
+			controlledPollPanicOutcome{
+				errorHandlerSet: errorHandlerSet,
+				panicked:        panicked,
+				errorCount:      *errorCount,
+			},
+		)
+	})
+}
+
 func TestImage_Poll_handlerPanicDrain_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {

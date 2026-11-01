@@ -1456,6 +1456,10 @@ func ImageSetEndOfStreamPositionForTest(image *Image, position int64) {
 	setInMemImageEndOfStreamPosition(image, position)
 }
 
+func ImageSetActiveTransportCountForTest(image *Image, count int32) {
+	setInMemImageActiveTransportCount(image, count)
+}
+
 func ImageTermBuffer0CapacityForTest(image *Image) int {
 	return ImageTermBufferForTest(image, 0).Capacity()
 }
