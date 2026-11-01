@@ -22,6 +22,8 @@ import "github.com/warrenguy/heron/archive/codecs/archivewire"
 //     tracker slot.
 //   - Do not run a blocking call while a handle is open. A blocking call can
 //     drop the handle's response or signal.
+//   - Close the handle once PollSignal returns true. Until Close, the handle
+//     claims ERROR responses for its correlation id.
 //   - After Client.Close, TryOffer returns a terminal error. PollSignal and
 //     Close stay safe.
 //

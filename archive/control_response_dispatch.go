@@ -66,24 +66,47 @@ func handleControlResponseFromFragment(
 	switch templateID {
 	case archivewire.ControlResponseSbeTemplateID:
 		resp, ok := codecs.TryDecodeControlResponseAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
-		if !ok || !poller.matchesAwaitCorrelation(resp.CorrelationID) {
+		if !ok {
 			return aeron.ControlledContinue
 		}
-		if poller.ready {
-			return aeron.ControlledAbort
-		}
-		poller.latchControlResponse(resp)
+		return handleControlResponseFields(poller, resp)
 
 	case archivewire.ChallengeSbeTemplateID:
-		challenge, ok := codecs.TryDecodeChallengeAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
-		if !ok || !poller.matchesAwaitCorrelation(challenge.CorrelationID) {
-			return aeron.ControlledContinue
-		}
-		if poller.ready {
-			return aeron.ControlledAbort
-		}
-		poller.latchChallenge(challenge)
+		return handleChallengeFragment(poller, fragment)
 	}
+	return aeron.ControlledContinue
+}
+
+func handleChallengeFragment(
+	poller *ControlResponsePoller,
+	fragment []byte,
+) aeron.ControlledAction {
+	if poller == nil {
+		return aeron.ControlledContinue
+	}
+	challenge, ok := codecs.TryDecodeChallengeAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
+	if !ok || !poller.matchesAwaitCorrelation(challenge.CorrelationID) {
+		return aeron.ControlledContinue
+	}
+	if poller.ready {
+		return aeron.ControlledAbort
+	}
+	poller.latchChallenge(challenge)
+	return aeron.ControlledContinue
+}
+
+// handleControlResponseFields requires a non-nil poller.
+func handleControlResponseFields(
+	poller *ControlResponsePoller,
+	resp codecs.ControlResponseFields,
+) aeron.ControlledAction {
+	if !poller.matchesAwaitCorrelation(resp.CorrelationID) {
+		return aeron.ControlledContinue
+	}
+	if poller.ready {
+		return aeron.ControlledAbort
+	}
+	poller.latchControlResponse(resp)
 	return aeron.ControlledContinue
 }
 

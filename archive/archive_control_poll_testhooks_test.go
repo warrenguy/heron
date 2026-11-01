@@ -91,9 +91,10 @@ func TestPollControlEvents_ZeroAllocs(t *testing.T) {
 	assembler := NewFragmentAssembler(nil)
 	var captured capturedRecordingSignal
 	targets := ControlPollTargets{
-		SignalHandler:    recordingSignalCapture(&captured),
-		ControlSessionID: controlResponseTestControlSessionID,
-		ResponsePoller:   poller,
+		SignalHandler:        recordingSignalCapture(&captured),
+		ControlSessionID:     controlResponseTestControlSessionID,
+		ResponsePoller:       poller,
+		ErrorResponseHandler: func(error) {},
 	}
 
 	// Warm the once-wired delegate bind so AllocsPerRun measures only steady-state polls.
@@ -146,6 +147,420 @@ func TestPollControlEvents_ArmAwait_staleThenMatchSameBatch(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, controlResponseTestCorrelationID, resp.CorrelationID)
 	require.Equal(t, int64(7700), resp.RelevantID)
+}
+
+func ownSessionWire(t *testing.T, fields codecs.ControlResponseFields) []byte {
+	t.Helper()
+
+	fields.ControlSessionID = controlResponseTestControlSessionID
+	fields.Version = 520
+	return encodeControlResponseWire(t, fields)
+}
+
+func ownSessionErrorWire(
+	t *testing.T,
+	correlationID int64,
+	relevantID int64,
+	message string,
+) []byte {
+	t.Helper()
+
+	return ownSessionWire(t, codecs.ControlResponseFields{
+		CorrelationID: correlationID,
+		RelevantID:    relevantID,
+		Code:          archivewire.ControlResponseCode_ERROR,
+		ErrorMessage:  []byte(message),
+	})
+}
+
+func requireRoutedError(t *testing.T, err error, code int32, correlationID int64) {
+	t.Helper()
+
+	archiveErr, ok := AsException(err)
+	require.True(t, ok, "err=%v", err)
+	require.Equal(t, code, archiveErr.ErrorCode)
+	require.Equal(t, correlationID, archiveErr.CorrelationID)
+}
+
+type errorRouteFixture struct {
+	sub       *aeron.Subscription
+	term      atomicbuffer.AtomicBuffer
+	poller    *ControlResponsePoller
+	assembler *FragmentAssembler
+	errs      []error
+	captured  capturedRecordingSignal
+}
+
+func newErrorRouteFixture(t *testing.T) *errorRouteFixture {
+	t.Helper()
+
+	sub, term := setupControlResponsePollFixtures(t)
+	return &errorRouteFixture{
+		sub:       sub,
+		term:      term,
+		poller:    newControlResponsePollerForTest(sub),
+		assembler: NewFragmentAssembler(nil),
+	}
+}
+
+func (f *errorRouteFixture) targets() ControlPollTargets {
+	return ControlPollTargets{
+		ControlSessionID:     controlResponseTestControlSessionID,
+		ResponsePoller:       f.poller,
+		SignalHandler:        recordingSignalCapture(&f.captured),
+		ErrorResponseHandler: func(err error) { f.errs = append(f.errs, err) },
+	}
+}
+
+func (f *errorRouteFixture) pollWith(targets ControlPollTargets) int {
+	return PollControlEvents(
+		f.sub,
+		DefaultControlResponseFragmentLimit,
+		f.assembler,
+		targets,
+	)
+}
+
+func (f *errorRouteFixture) poll() int {
+	return f.pollWith(f.targets())
+}
+
+func TestPollControlEvents_errorResponseRouting(t *testing.T) {
+	const (
+		corrA int64 = controlResponseTestCorrelationID
+		corrB int64 = 4242
+		corrC int64 = 4243
+		corrL int64 = 8800
+	)
+
+	lowStorageWire := func(correlationID int64) func(*testing.T) []byte {
+		return func(t *testing.T) []byte {
+			return ownSessionErrorWire(t, correlationID, ErrorStorageSpace, "low storage")
+		}
+	}
+	cases := []struct {
+		name            string
+		arm             int64
+		descriptorAwait int64
+		nilHandler      bool
+		wire            func(t *testing.T) []byte
+		wantErr         int64
+		wantLatch       int64
+	}{
+		{
+			name:    "disarmed_error",
+			wire:    lowStorageWire(corrB),
+			wantErr: corrB,
+		},
+		{
+			name:    "armed_other_id_error",
+			arm:     corrA,
+			wire:    lowStorageWire(corrB),
+			wantErr: corrB,
+		},
+		{
+			name:      "armed_same_id_error",
+			arm:       corrA,
+			wire:      lowStorageWire(corrA),
+			wantLatch: corrA,
+		},
+		{
+			name: "foreign_session_error",
+			wire: func(t *testing.T) []byte {
+				return encodeControlResponseWire(t, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID + 1,
+					CorrelationID:    corrB,
+					RelevantID:       ErrorStorageSpace,
+					Code:             archivewire.ControlResponseCode_ERROR,
+					Version:          520,
+					ErrorMessage:     []byte("other session"),
+				})
+			},
+			wantLatch: corrB,
+		},
+		{
+			name: "other_id_ok",
+			arm:  corrA,
+			wire: func(t *testing.T) []byte {
+				return ownSessionWire(t, codecs.ControlResponseFields{
+					CorrelationID: corrB,
+					Code:          archivewire.ControlResponseCode_OK,
+				})
+			},
+		},
+		{
+			name: "other_id_recording_unknown",
+			arm:  corrA,
+			wire: func(t *testing.T) []byte {
+				return ownSessionWire(t, codecs.ControlResponseFields{
+					CorrelationID: corrB,
+					RelevantID:    99,
+					Code:          archivewire.ControlResponseCode_RECORDING_UNKNOWN,
+				})
+			},
+		},
+		{
+			name:       "nil_handler_keeps_latch",
+			nilHandler: true,
+			wire:       lowStorageWire(corrB),
+			wantLatch:  corrB,
+		},
+		{
+			name:            "descriptor_mode_other_id",
+			descriptorAwait: corrA,
+			wire:            lowStorageWire(corrB),
+			wantErr:         corrB,
+		},
+		{
+			name:            "descriptor_mode_open_handle_error",
+			arm:             corrA,
+			descriptorAwait: corrL,
+			wire:            lowStorageWire(corrA),
+			wantErr:         corrA,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newErrorRouteFixture(t)
+			if tc.arm != 0 {
+				f.poller.ArmAwait(tc.arm)
+			}
+			writeUnfragmentedWireToTerm(t, f.term, tc.wire(t))
+			targets := f.targets()
+			if tc.nilHandler {
+				targets.ErrorResponseHandler = nil
+			}
+			descriptor := NewRecordingDescriptorPoller()
+			if tc.descriptorAwait != 0 {
+				descriptor.ResetAwait(tc.descriptorAwait)
+				targets.ResponsePoller = nil
+				targets.DescriptorPoller = descriptor
+			}
+
+			require.Equal(t, 1, f.pollWith(targets))
+			if tc.wantErr != 0 {
+				require.Len(t, f.errs, 1)
+				requireRoutedError(t, f.errs[0], ErrorStorageSpace, tc.wantErr)
+			} else {
+				require.Empty(t, f.errs)
+			}
+			require.Equal(t, tc.wantLatch != 0, f.poller.IsPollComplete())
+			if tc.wantLatch != 0 {
+				resp, ok := f.poller.Response()
+				require.True(t, ok)
+				require.Equal(t, tc.wantLatch, resp.CorrelationID)
+			}
+			require.Equal(t, tc.arm, f.poller.awaitCorrelationID)
+			require.False(t, descriptor.IsPollComplete())
+		})
+	}
+
+	t.Run("error_passes_latched_terminal", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		f.poller.ArmAwait(corrA)
+		writeUnfragmentedWireToTerm(t, f.term, ownSessionWire(t, codecs.ControlResponseFields{
+			CorrelationID: corrA,
+			Code:          archivewire.ControlResponseCode_OK,
+		}))
+		appendUnfragmentedWireToTerm(
+			t,
+			f.term,
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "low storage"),
+		)
+		appendUnfragmentedWireToTerm(t, f.term, recordingSignalWire(t, archivewire.RecordingSignal_STOP))
+
+		require.Equal(t, 2, f.poll())
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, corrB)
+		require.Zero(t, f.captured.calls)
+		resp, ok := f.poller.Response()
+		require.True(t, ok)
+		require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
+
+		require.Equal(t, 1, f.poll())
+		require.Equal(t, 1, f.captured.calls)
+		require.Len(t, f.errs, 1)
+		require.True(t, f.poller.IsPollComplete())
+		resp, ok = f.poller.Response()
+		require.True(t, ok)
+		require.Equal(t, archivewire.ControlResponseCode_OK, resp.Code)
+	})
+
+	t.Run("one_error_per_poll", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		writeUnfragmentedWireToTerm(t, f.term, ownSessionErrorWire(t, corrB, ErrorStorageSpace, "b"))
+		appendUnfragmentedWireToTerm(t, f.term, ownSessionErrorWire(t, corrC, ErrorMaxRecordings, "c"))
+		appendUnfragmentedWireToTerm(t, f.term, recordingSignalWire(t, archivewire.RecordingSignal_STOP))
+
+		require.Equal(t, 1, f.poll())
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, corrB)
+		require.Zero(t, f.captured.calls)
+
+		require.Equal(t, 1, f.poll())
+		require.Len(t, f.errs, 2)
+		requireRoutedError(t, f.errs[1], ErrorMaxRecordings, corrC)
+		require.Zero(t, f.captured.calls)
+
+		require.Equal(t, 1, f.poll())
+		require.Equal(t, 1, f.captured.calls)
+		require.Len(t, f.errs, 2)
+	})
+
+	t.Run("full_slot_aborts_second_image", func(t *testing.T) {
+		sub := aeron.NewTestSubscriptionForHooks(t)
+		image0 := aeron.NewTestImageForSubscriptionHooksWithCorrelation(t, sub, 0, 1)
+		image1 := aeron.NewTestImageForSubscriptionHooksWithCorrelation(t, sub, 0, 2)
+		require.True(t, aeron.SubscriptionAddImageForHooks(sub, image0))
+		require.True(t, aeron.SubscriptionAddImageForHooks(sub, image1))
+		writeUnfragmentedWireToTerm(
+			t,
+			aeron.ImageTermBufferForHooks(image0),
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "b"),
+		)
+		writeUnfragmentedWireToTerm(
+			t,
+			aeron.ImageTermBufferForHooks(image1),
+			ownSessionErrorWire(t, corrC, ErrorUnknownReplay, "c"),
+		)
+		assembler := NewFragmentAssembler(nil)
+		var errs []error
+		targets := ControlPollTargets{
+			ControlSessionID: controlResponseTestControlSessionID,
+			ErrorResponseHandler: func(err error) {
+				errs = append(errs, err)
+			},
+		}
+		poll := func() int {
+			return PollControlEvents(sub, DefaultControlResponseFragmentLimit, assembler, targets)
+		}
+
+		require.Equal(t, 1, poll())
+		require.Len(t, errs, 1)
+		requireRoutedError(t, errs[0], ErrorStorageSpace, corrB)
+
+		require.Equal(t, 1, poll())
+		require.Len(t, errs, 2)
+		requireRoutedError(t, errs[1], ErrorUnknownReplay, corrC)
+	})
+
+	t.Run("descriptor_mode_complete", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		descriptor := NewRecordingDescriptorPoller()
+		descriptor.ResetAwait(corrA)
+		writeUnfragmentedWireToTerm(t, f.term, encodeRecordingDescriptorWire(
+			t,
+			codecs.RecordingDescriptorFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    corrA,
+				RecordingID:      lifecycleRecordingID,
+			},
+		))
+		targets := f.targets()
+		targets.ResponsePoller = nil
+		targets.DescriptorPoller = descriptor
+
+		require.Equal(t, 1, f.pollWith(targets))
+		require.True(t, descriptor.IsPollComplete())
+		require.Empty(t, f.errs)
+
+		appendUnfragmentedWireToTerm(
+			t,
+			f.term,
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "low storage"),
+		)
+		require.Equal(t, 1, f.pollWith(targets))
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, corrB)
+		require.True(t, descriptor.IsPollComplete())
+	})
+
+	t.Run("no_pollers_error", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		writeUnfragmentedWireToTerm(
+			t,
+			f.term,
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "low storage"),
+		)
+		targets := ControlPollTargets{
+			ControlSessionID:     controlResponseTestControlSessionID,
+			ErrorResponseHandler: f.targets().ErrorResponseHandler,
+		}
+
+		require.Equal(t, 1, f.pollWith(targets))
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, corrB)
+
+		g := newErrorRouteFixture(t)
+		writeUnfragmentedWireToTerm(
+			t,
+			g.term,
+			ownSessionErrorWire(t, corrC, ErrorStorageSpace, "dropped"),
+		)
+		sessionOnly := ControlPollTargets{ControlSessionID: controlResponseTestControlSessionID}
+		require.Equal(t, 1, g.pollWith(sessionOnly))
+		require.Len(t, f.errs, 1)
+		require.Zero(t, g.pollWith(sessionOnly))
+	})
+
+	t.Run("fragmented_error", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		writeFragmentedWireToTerm(
+			t,
+			f.term,
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "low storage"),
+		)
+
+		require.Positive(t, f.poll())
+		require.Len(t, f.errs, 1)
+		requireRoutedError(t, f.errs[0], ErrorStorageSpace, corrB)
+		require.False(t, f.poller.IsPollComplete())
+		require.Zero(t, f.poll())
+		require.Len(t, f.errs, 1)
+	})
+
+	t.Run("handler_polls_again", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		writeUnfragmentedWireToTerm(t, f.term, ownSessionErrorWire(t, corrB, ErrorStorageSpace, "b"))
+		appendUnfragmentedWireToTerm(t, f.term, ownSessionErrorWire(t, corrC, ErrorMaxReplays, "c"))
+		var errs []error
+		targets := ControlPollTargets{ControlSessionID: controlResponseTestControlSessionID}
+		targets.ErrorResponseHandler = func(err error) {
+			errs = append(errs, err)
+			f.pollWith(targets)
+		}
+
+		require.Equal(t, 1, f.pollWith(targets))
+		require.Len(t, errs, 2)
+		requireRoutedError(t, errs[0], ErrorStorageSpace, corrB)
+		requireRoutedError(t, errs[1], ErrorMaxReplays, corrC)
+	})
+
+	t.Run("handler_panics", func(t *testing.T) {
+		f := newErrorRouteFixture(t)
+		writeUnfragmentedWireToTerm(
+			t,
+			f.term,
+			ownSessionErrorWire(t, corrB, ErrorStorageSpace, "low storage"),
+		)
+		appendUnfragmentedWireToTerm(t, f.term, recordingSignalWire(t, archivewire.RecordingSignal_STOP))
+		calls := 0
+		targets := f.targets()
+		targets.ErrorResponseHandler = func(error) {
+			calls++
+			panic("handler panic")
+		}
+
+		require.Panics(t, func() {
+			f.pollWith(targets)
+		})
+		require.Equal(t, 1, calls)
+		require.Zero(t, f.captured.calls)
+
+		require.Equal(t, 1, f.pollWith(targets))
+		require.Equal(t, 1, calls)
+		require.Equal(t, 1, f.captured.calls)
+	})
 }
 
 // TestStandalonePollers_loseFragments documents the footgun the demux fixes: a

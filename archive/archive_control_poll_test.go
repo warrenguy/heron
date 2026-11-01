@@ -52,7 +52,7 @@ func invokeHandleControlFragment(
 	wire []byte,
 ) {
 	t.Helper()
-	handleControlFragment(targets, atomicbuffer.Wrap(wire), 0, len(wire), &aeron.Header{})
+	handleControlFragment(targets, nil, atomicbuffer.Wrap(wire), 0, len(wire), &aeron.Header{})
 }
 
 func TestHandleControlFragment_signalDispatch(t *testing.T) {
@@ -166,6 +166,20 @@ func TestHandleControlFragment_dropsUnroutable(t *testing.T) {
 					ControlSessionID: controlResponseTestControlSessionID,
 					CorrelationID:    controlResponseTestCorrelationID,
 					Code:             archivewire.ControlResponseCode_OK,
+				})
+			},
+		},
+		{
+			name: "nil_error_slot",
+			targets: ControlPollTargets{
+				ControlSessionID:     controlResponseTestControlSessionID,
+				ErrorResponseHandler: func(error) {},
+			},
+			wire: func(t *testing.T) []byte {
+				return encodeControlResponseWire(t, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    controlResponseTestCorrelationID,
+					Code:             archivewire.ControlResponseCode_ERROR,
 				})
 			},
 		},
@@ -307,34 +321,65 @@ func TestHandleControlFragment_DispatchSTART_ZeroAllocs(t *testing.T) {
 	targets := ControlPollTargets{SignalHandler: recordingSignalCapture(&captured)}
 
 	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
-		handleControlFragment(targets, buffer, 0, len(wire), header)
+		handleControlFragment(targets, nil, buffer, 0, len(wire), header)
 	})
 	require.Positive(t, captured.calls)
 }
 
-// TestHandleControlFragment_LatchOK_ZeroAllocs asserts that latching an OK
+// TestHandleControlFragment_LatchOK_ZeroAllocs asserts that routing an OK
 // response allocates nothing. An OK carries no error message to clone.
 func TestHandleControlFragment_LatchOK_ZeroAllocs(t *testing.T) {
-	wire := encodeControlResponseWire(t, codecs.ControlResponseFields{
-		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    controlResponseTestCorrelationID,
-		RelevantID:       7700,
-		Code:             archivewire.ControlResponseCode_OK,
-		Version:          520,
-	})
-	buffer := atomicbuffer.Wrap(wire)
-	header := &aeron.Header{}
-	poller := NewControlResponsePoller(nil, 1)
-	targets := ControlPollTargets{ResponsePoller: poller}
+	cases := []struct {
+		name          string
+		correlationID int64
+		wantLatch     bool
+	}{
+		{
+			name:          "claimed_ok_latches",
+			correlationID: controlResponseTestCorrelationID,
+			wantLatch:     true,
+		},
+		{
+			name:          "unclaimed_ok_drops",
+			correlationID: controlResponseTestCorrelationID + 1,
+			wantLatch:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := encodeControlResponseWire(t, codecs.ControlResponseFields{
+				ControlSessionID: controlResponseTestControlSessionID,
+				CorrelationID:    tc.correlationID,
+				RelevantID:       7700,
+				Code:             archivewire.ControlResponseCode_OK,
+				Version:          520,
+			})
+			buffer := atomicbuffer.Wrap(wire)
+			header := &aeron.Header{}
+			poller := NewControlResponsePoller(nil, 1)
+			poller.ArmAwait(controlResponseTestCorrelationID)
+			var slot error
+			targets := ControlPollTargets{
+				ControlSessionID:     controlResponseTestControlSessionID,
+				ResponsePoller:       poller,
+				ErrorResponseHandler: func(error) {},
+			}
 
-	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
-		poller.ResetCapture()
-		handleControlFragment(targets, buffer, 0, len(wire), header)
-	})
-	resp, ok := poller.Response()
-	require.True(t, ok)
-	require.Equal(t, int64(7700), resp.RelevantID)
-	require.Nil(t, resp.ErrorMessage)
+			testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
+				poller.ResetCapture()
+				handleControlFragment(targets, &slot, buffer, 0, len(wire), header)
+			})
+			if tc.wantLatch {
+				resp, ok := poller.Response()
+				require.True(t, ok)
+				require.Equal(t, int64(7700), resp.RelevantID)
+				require.Nil(t, resp.ErrorMessage)
+			} else {
+				require.False(t, poller.IsPollComplete())
+			}
+			require.NoError(t, slot)
+		})
+	}
 }
 
 func TestHandleControlFragment_DispatchSTARTThroughFanout_ZeroAllocs(t *testing.T) {
@@ -354,6 +399,7 @@ func TestHandleControlFragment_DispatchSTARTThroughFanout_ZeroAllocs(t *testing.
 	testutil.AssertZeroAllocs(t, "handleControlFragment", 100, func() {
 		handleControlFragment(
 			client.sessionPollTargets(client.signalTarget()),
+			nil,
 			buffer,
 			0,
 			len(wire),

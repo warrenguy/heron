@@ -2,6 +2,7 @@ package archive
 
 import (
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
@@ -21,12 +22,14 @@ import (
 // await does not corrupt the session poller. DescriptorPoller latches only the
 // correlation id NewAsyncListRecording armed.
 //
-// A nil target drops its templates.
+// A nil target drops its templates. A set ErrorResponseHandler still receives
+// an own-session ERROR when both pollers are nil.
 type ControlPollTargets struct {
-	SignalHandler    RecordingSignalHandler
-	ControlSessionID int64
-	ResponsePoller   *ControlResponsePoller
-	DescriptorPoller *RecordingDescriptorPoller
+	SignalHandler        RecordingSignalHandler
+	ControlSessionID     int64
+	ResponsePoller       *ControlResponsePoller
+	DescriptorPoller     *RecordingDescriptorPoller
+	ErrorResponseHandler func(error)
 }
 
 // PollControlEvents polls subscription once and demultiplexes archive control
@@ -52,18 +55,27 @@ func PollControlEvents(
 	}
 	targets.ResponsePoller.clearDisarmedCapture()
 	assembler.demuxTargets = targets
-	return subscription.ControlledPoll(assembler.controlledHandler, fragmentLimit)
+	work := subscription.ControlledPoll(assembler.controlledHandler, fragmentLimit)
+	if err := assembler.takeErrorResponse(); err != nil {
+		targets.ErrorResponseHandler(err)
+	}
+	return work
 }
 
 // handleControlFragment routes one reassembled control fragment by template id.
 // Unknown and unroutable templates drop. The typed decode downstream validates
-// schema and bounds, so a foreign-schema fragment drops there.
+// schema and bounds, so a foreign-schema fragment drops there. errorResponse
+// holds the one routed ERROR of the poll. A nil errorResponse never routes.
 //
-// Returns ControlledAbort when targets.ResponsePoller holds a latched terminal
-// and the correlation filter accepts the fragment. Returns ControlledContinue
-// otherwise.
+// Returns:
+//   - ControlledBreak when a routed ERROR fills an empty slot
+//   - ControlledAbort when ResponsePoller holds a latched terminal and the
+//     correlation filter accepts the fragment
+//   - ControlledAbort when the slot already holds a routed ERROR
+//   - ControlledContinue otherwise
 func handleControlFragment(
 	targets ControlPollTargets,
+	errorResponse *error,
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,
 	length int,
@@ -81,14 +93,11 @@ func handleControlFragment(
 			fragment,
 		)
 
-	case archivewire.ControlResponseSbeTemplateID, archivewire.ChallengeSbeTemplateID:
-		if targets.ResponsePoller != nil {
-			return handleControlResponseFromFragment(targets.ResponsePoller, fragment, templateID)
-		}
-		if templateID == archivewire.ControlResponseSbeTemplateID &&
-			targets.DescriptorPoller != nil {
-			handleDescriptorControlResponseFragment(targets.DescriptorPoller, fragment)
-		}
+	case archivewire.ControlResponseSbeTemplateID:
+		return dispatchControlResponse(targets, errorResponse, fragment)
+
+	case archivewire.ChallengeSbeTemplateID:
+		return handleChallengeFragment(targets.ResponsePoller, fragment)
 
 	case archivewire.RecordingDescriptorSbeTemplateID:
 		if targets.DescriptorPoller != nil {
@@ -96,4 +105,44 @@ func handleControlFragment(
 		}
 	}
 	return aeron.ControlledContinue
+}
+
+func dispatchControlResponse(
+	targets ControlPollTargets,
+	errorResponse *error,
+	fragment []byte,
+) aeron.ControlledAction {
+	resp, ok := codecs.TryDecodeControlResponseAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
+	if !ok {
+		return aeron.ControlledContinue
+	}
+	if errorResponse != nil && isUnsolicitedError(targets, resp) {
+		if *errorResponse != nil {
+			return aeron.ControlledAbort
+		}
+		*errorResponse = MapControlResponse(resp)
+		return aeron.ControlledBreak
+	}
+	if targets.ResponsePoller != nil {
+		return handleControlResponseFields(targets.ResponsePoller, resp)
+	}
+	handleDescriptorControlResponseFields(targets.DescriptorPoller, resp)
+	return aeron.ControlledContinue
+}
+
+func isUnsolicitedError(targets ControlPollTargets, resp codecs.ControlResponseFields) bool {
+	return targets.ErrorResponseHandler != nil &&
+		resp.Code == archivewire.ControlResponseCode_ERROR &&
+		resp.ControlSessionID == targets.ControlSessionID &&
+		!controlResponseClaimed(targets, resp.CorrelationID)
+}
+
+func controlResponseClaimed(targets ControlPollTargets, correlationID int64) bool {
+	if targets.ResponsePoller != nil {
+		return targets.ResponsePoller.isAwaiting(correlationID)
+	}
+	if targets.DescriptorPoller != nil {
+		return targets.DescriptorPoller.isAwaiting(correlationID)
+	}
+	return false
 }

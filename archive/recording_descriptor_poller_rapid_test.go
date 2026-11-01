@@ -86,7 +86,7 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 					correlationID,
 					archivewire.ControlResponseCode_OK,
 				)
-				handleDescriptorControlResponseFragment(poller, wire)
+				invokeHandleControlFragment(t, ControlPollTargets{DescriptorPoller: poller}, wire)
 				model.applyResponse(correlationID, true)
 			case descriptorEventResponseError:
 				wire := descriptorRapidResponseWire(
@@ -94,7 +94,7 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 					correlationID,
 					archivewire.ControlResponseCode_ERROR,
 				)
-				handleDescriptorControlResponseFragment(poller, wire)
+				invokeHandleControlFragment(t, ControlPollTargets{DescriptorPoller: poller}, wire)
 				model.applyResponse(correlationID, false)
 			case descriptorEventDescriptor:
 				handleRecordingDescriptorFragment(poller, encodeRecordingDescriptorWire(

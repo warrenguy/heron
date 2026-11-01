@@ -42,7 +42,8 @@ import (
 //     this handle.
 //
 // Replication failure: the archive reports a failed replication as an ERROR
-// keyed on the replication id. The client does not deliver that ERROR. The
+// keyed on the replication id. A non-nil error response handler receives the
+// ERROR. The client does not deliver the ERROR when the handler is nil. The
 // handle sees REPLICATE_END, and STOP when a destination recording session
 // started. Bound the replication with a progress deadline.
 //

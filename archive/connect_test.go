@@ -561,6 +561,7 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 				fixture.harness.DoWork()
 				require.Zero(t, fixture.session.Poll())
 				requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+				require.False(t, fixture.session.IsConnected())
 			},
 		},
 		{
@@ -608,6 +609,7 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 				require.Len(t, *fixture.callerErrs, 1)
 				fixture.session.Poll()
 				requireSessionOpen(t, fixture.session)
+				require.False(t, fixture.session.IsConnected())
 				require.False(t, aeron.ClientIsClosedForTest(fixture.harness.Client))
 			},
 		},

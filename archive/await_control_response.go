@@ -33,17 +33,13 @@ func TryMatchControlResponse(
 	return matchControlResponseFields(fields, controlSessionID, correlationID)
 }
 
-// tryMatchControlResponseDiscardStale matches like TryMatchControlResponse and
-// clears a latched terminal that is not the awaited ControlResponse (wrong kind
-// or wrong IDs).
+// The session runs one outstanding request at a time. A non-matching terminal is
+// stale. A latched non-matching terminal keeps the awaited response in the image.
 //
-// The session runs one outstanding request at a time, so a non-matching terminal
-// is stale. Left latched, that terminal holds the awaited response in the image.
-// After the clear, the next poll latches the awaited response.
-//
-// Prefer ResetAwait before offer so offer-retry polls drop non-matching
-// terminals. This clear is a fallback when demux is unarmed, the terminal is
-// Challenge, or the control session id does not match.
+// A non-matching terminal can latch in these cases:
+//   - The correlation filter accepts any correlation.
+//   - The correlation filter accepts a Challenge with the armed correlation id.
+//   - The correlation filter does not check the control session id.
 func tryMatchControlResponseDiscardStale(
 	poller *ControlResponsePoller,
 	controlSessionID int64,
@@ -58,12 +54,6 @@ func tryMatchControlResponseDiscardStale(
 
 // AwaitControlResponse loops DoWork then pollFn until a ControlResponse matching
 // controlSessionID and correlationID is captured, or the response timeout elapses.
-//
-// Arms the poller for correlationID so demux drops non-matching terminals without
-// latching. Session offer paths should call ResetAwait before offer so offer-retry
-// polls share that filter. Re-arm is safe when already armed. AwaitControlResponse
-// clears a latched terminal that is not the awaited ControlResponse. Left latched,
-// that terminal holds the awaited response in the image.
 //
 // Drives DoWork on aeronClient only for the await duration. Idle strategy paces
 // empty polls and resets on every exit path. Nil cfg.IdleStrategy uses

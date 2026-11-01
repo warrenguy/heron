@@ -169,6 +169,114 @@ func TestArchiveClient_archiveIDMatchesArchive(t *testing.T) {
 	require.Equal(t, node.ArchiveID, strconv.FormatInt(archiveClient.ArchiveID(), 10))
 }
 
+// TestArchiveClient_errorResponseHandlerAndConnectivity asserts the handler
+// receives an archive ERROR. IsConnected returns false after the archive
+// stops.
+func TestArchiveClient_errorResponseHandlerAndConnectivity(t *testing.T) {
+	const unknownStreamID int32 = 4101
+	const unknownRecordingID int64 = 424242
+
+	md := harness.Start(t)
+	node := harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveClientControl0,
+	})
+	aeronClient, hadClientError := harness.ConnectIPCClient(t, md)
+	// The response subscription uses its own UDP endpoint. The request
+	// publication is not an image on that subscription. IsConnected follows
+	// the Archive response image.
+	archiveClient := connectArchiveClientOn(
+		t,
+		aeronClient,
+		harness.ArchiveClientControl0,
+		archive.DefaultControlResponseChannel,
+	)
+
+	var errs []error
+	archiveClient.SetErrorResponseHandler(func(err error) {
+		errs = append(errs, err)
+	})
+	requireArchiveCode := func(err error, want int32) {
+		t.Helper()
+
+		code, ok := archive.ExceptionCode(err)
+		require.True(t, ok, "err=%v", err)
+		require.Equal(t, want, code)
+	}
+	require.True(t, archiveClient.IsConnected())
+
+	offerClosedStop := func() {
+		t.Helper()
+
+		handle := archiveClient.NewAsyncStopRecording(
+			unknownStreamID,
+			[]byte(archiveClientRecordingChannel),
+		)
+		harness.PollClientUntilTransportClean(
+			t,
+			aeronClient,
+			hadClientError,
+			harness.ConnectedPollTimeout,
+			"client transport error during stop offer",
+			func() bool {
+				offered, err := handle.TryOffer()
+				require.NoError(t, err)
+				return offered
+			},
+			func() string {
+				return "stop offer not accepted within " + harness.ConnectedPollTimeout.String()
+			},
+		)
+		handle.Close()
+	}
+
+	// Phase: between requests. A stop for a stream with no recording returns
+	// ErrorUnknownSubscription.
+	offerClosedStop()
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		harness.ConnectedPollTimeout,
+		"client transport error during error response poll",
+		func() bool {
+			_ = archiveClient.Poll()
+			return len(errs) == 1
+		},
+		func() string {
+			return "error response handler did not receive ErrorUnknownSubscription within " +
+				harness.ConnectedPollTimeout.String()
+		},
+	)
+	requireArchiveCode(errs[0], archive.ErrorUnknownSubscription)
+
+	offerClosedStop()
+	_, err := archiveClient.ListRecording(t.Context(), unknownRecordingID)
+	requireArchiveCode(err, archive.ErrorUnknownRecording)
+	require.Len(t, errs, 2)
+	requireArchiveCode(errs[1], archive.ErrorUnknownSubscription)
+
+	// Phase: lost archive. The session stays open.
+	node.Stop()
+	harness.PollClientUntilTransportClean(
+		t,
+		aeronClient,
+		hadClientError,
+		30*time.Second,
+		"client transport error after archive stop",
+		func() bool {
+			_ = archiveClient.Poll()
+			return !archiveClient.IsConnected()
+		},
+		func() string {
+			return "IsConnected still true 30s after archive stop"
+		},
+	)
+	require.False(t, archiveClient.IsConnected())
+	require.False(t, archiveClient.IsClosed())
+	require.NoError(t, archiveClient.TransportFault())
+}
+
 // TestArchiveClient_directAsyncConnectOwnedClient asserts that a direct
 // AsyncConnect with a connect-owned transport client completes on Poll alone.
 func TestArchiveClient_directAsyncConnectOwnedClient(t *testing.T) {
@@ -470,9 +578,27 @@ func TestArchiveClient_responseChannelConnect(t *testing.T) {
 func connectArchiveClient(t *testing.T, aeronClient *aeron.Client) *archive.Client {
 	t.Helper()
 
+	return connectArchiveClientOn(
+		t,
+		aeronClient,
+		archive.DefaultLocalControlChannel,
+		archive.DefaultLocalControlChannel,
+	)
+}
+
+// connectArchiveClientOn connects an archive client on the given control
+// channels. Cleanup closes the client.
+func connectArchiveClientOn(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	requestChannel string,
+	responseChannel string,
+) *archive.Client {
+	t.Helper()
+
 	cfg := archive.Config{
-		ControlRequestChannel:  archive.DefaultLocalControlChannel,
-		ControlResponseChannel: archive.DefaultLocalControlChannel,
+		ControlRequestChannel:  requestChannel,
+		ControlResponseChannel: responseChannel,
 		Aeron:                  aeronClient,
 	}.WithRemoteControl().Normalize()
 	archiveClient, err := archive.Connect(t.Context(), cfg)

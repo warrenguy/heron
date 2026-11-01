@@ -19,25 +19,17 @@ func handleRecordingDescriptorFragment(poller *RecordingDescriptorPoller, fragme
 	captureRecordingDescriptor(poller, fields)
 }
 
-// handleDescriptorControlResponseFragment decodes a ControlResponse and captures it on
-// the descriptor poller for the awaited correlation id. A non-OK code latches terminal
-// completion. A nil poller, malformed fragment, or foreign-schema fragment is ignored.
-func handleDescriptorControlResponseFragment(poller *RecordingDescriptorPoller, fragment []byte) {
-	if poller == nil || poller.IsPollComplete() {
-		return
-	}
-	resp, ok := codecs.TryDecodeControlResponseAt(fragment, 0, codecs.ArchiveDecodeMaxVarLen)
-	if !ok {
-		return
-	}
-	captureDescriptorControlResponse(poller, resp)
-}
-
-func captureDescriptorControlResponse(
+// handleDescriptorControlResponseFields captures resp on the descriptor poller
+// for the awaited correlation id. A non-OK code latches terminal completion. A
+// nil or complete poller ignores resp.
+func handleDescriptorControlResponseFields(
 	poller *RecordingDescriptorPoller,
 	resp codecs.ControlResponseFields,
 ) {
-	if resp.CorrelationID != poller.awaitCorrelationID {
+	if poller == nil || poller.IsPollComplete() {
+		return
+	}
+	if !poller.isAwaiting(resp.CorrelationID) {
 		return
 	}
 	poller.latchResponse(resp)
@@ -47,7 +39,7 @@ func captureRecordingDescriptor(
 	poller *RecordingDescriptorPoller,
 	fields codecs.RecordingDescriptorFields,
 ) {
-	if fields.CorrelationID != poller.awaitCorrelationID {
+	if !poller.isAwaiting(fields.CorrelationID) {
 		return
 	}
 	poller.latchDescriptor(fields)
