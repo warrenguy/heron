@@ -190,7 +190,7 @@ func newConductor(
 		pending:               newPendingRegistry(),
 		publications:          make(map[int64]PublicationHandle),
 		subscriptions:         make(map[int64]SubscriptionHandle),
-		logBuffersRegistry:    NewLogBuffersRegistry(config.MediaDriverDir),
+		logBuffersRegistry:    newUnmappingLogBuffersRegistry(config.MediaDriverDir),
 		imageLifecycle:        config.ImageLifecycle,
 		resourceLifecycle:     config.ResourceLifecycle,
 		activeCorrelationID:   NullCorrelationID,

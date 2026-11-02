@@ -164,6 +164,13 @@ func seedSyntheticLogBuffersForTest(
 		logFileName,
 		logBuffers,
 	))
+
+	// Stop the unmapper before the synthetic log cleanup closes logBuffers.
+	tb.Cleanup(func() {
+		conductor.StopLogBuffersRegistryUnmapperForTest(
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+		)
+	})
 }
 
 func seedGoldenAvailableLogBuffers(tb testing.TB, conductorInstance *conductor.Conductor) {

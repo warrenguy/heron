@@ -40,7 +40,9 @@ type Config struct {
 
 	// ResourceLingerDuration delays the unmap of a log buffer after its
 	// last Publication, Subscription or Image releases it. Nil uses the
-	// default (3s). A pointer to zero unmaps at release.
+	// default (3s). A pointer to zero starts the unmap at release. A Client
+	// goroutine runs the unmap off the DoWork goroutine. When the unmap queue
+	// is full, the releasing goroutine runs the unmap.
 	//
 	// The conductor also releases a log buffer on its own when it terminates
 	// or removes an unavailable Image. The caller cannot order those

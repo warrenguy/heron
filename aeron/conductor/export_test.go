@@ -154,6 +154,18 @@ func LogBuffersRegistryRefCountByResolvedKeyForTest(
 	return 0
 }
 
+func NewUnmappingLogBuffersRegistryForTest(mediaDriverDir string) *LogBuffersRegistry {
+	return newUnmappingLogBuffersRegistry(mediaDriverDir)
+}
+
+func StopLogBuffersRegistryUnmapperForTest(registry *LogBuffersRegistry) {
+	registry.stopUnmapper()
+}
+
+func IsLogBuffersRegistryUnmapperRunningForTest(registry *LogBuffersRegistry) bool {
+	return registry.unmapper != nil && registry.unmapper.queue != nil
+}
+
 func SeedLogBuffersRegistryForTest(
 	registry *LogBuffersRegistry,
 	logFileName string,

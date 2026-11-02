@@ -1333,6 +1333,37 @@ func TestConductor_DrainLingeringLogBuffers_closeHook(t *testing.T) {
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
+func TestConductor_UnmapLingeringLogBuffers_waitsForSweptUnmap(t *testing.T) {
+	t.Parallel()
+
+	const startNs int64 = 4_000_000_000
+	const lingerNs int64 = int64(time.Second)
+
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(
+		t,
+		func(error) {},
+		resourceMapTestEpochMs,
+	)
+	conductorInstance.SeedServiceTimestamps(startNs)
+
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	logPath := filepath.Join(t.TempDir(), "unmap-swept.log")
+	writeMinimalLogFileForRegistryTest(t, logPath)
+	buffers, err := registry.Acquire(logPath)
+	require.NoError(t, err)
+	require.True(t, conductor.IsLogBuffersRegistryUnmapperRunningForTest(registry))
+	mapped := buffers.MappedLogBuffer()
+	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
+
+	*nanoNs = startNs + lingerNs
+	require.GreaterOrEqual(t, conductorInstance.DoWork(), 1)
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	require.Zero(t, conductorInstance.UnmapLingeringLogBuffers())
+	require.Nil(t, mapped.Bytes())
+	require.False(t, conductor.IsLogBuffersRegistryUnmapperRunningForTest(registry))
+}
+
 func TestConductor_DoWork_terminatingSkipsLingerSweep(t *testing.T) {
 	t.Parallel()
 

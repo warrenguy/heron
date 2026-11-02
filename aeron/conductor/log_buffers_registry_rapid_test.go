@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 )
 
 const registryRapidBaseNowNs int64 = 1_000_000_000
@@ -24,6 +26,7 @@ const (
 	registryRapidOpSweep
 	registryRapidOpClosePublication
 	registryRapidOpUnmapLingering
+	registryRapidOpStopUnmapper
 )
 
 const registryRapidClosePublicationRegID int64 = 42
@@ -204,6 +207,25 @@ type registryRapidStepTarget struct {
 	nanoNs           *int64
 	resourceLingerNs int64
 	publicationInMap *bool
+}
+
+// assertRegistryRapidUnmapped asserts that stopUnmapper unmapped each removed
+// log and left the live log mapped.
+func assertRegistryRapidUnmapped(
+	rt *rapid.T,
+	removed []*logbuffer.MappedLogBuffer,
+	liveMapped any,
+) {
+	rt.Helper()
+
+	for _, mapped := range removed {
+		require.Nil(rt, mapped.Bytes())
+	}
+	if liveMapped != nil {
+		mapped, ok := liveMapped.(*logbuffer.MappedLogBuffer)
+		require.True(rt, ok)
+		require.NotNil(rt, mapped.Bytes())
+	}
 }
 
 func runRegistryRapidStep(
@@ -501,5 +523,49 @@ func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
 			assertOtherRegistryRapidKeysUnchanged(rt, registry, states, targetIndex, before)
 			assertRegistryRapidInvariants(rt, registry, target.logPath, target.model)
 		}
+	})
+}
+
+func TestLogBuffersRegistry_unmapper_invariants_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "unmapper-rapid.log")
+		writeMinimalLogFileForRegistryTest(t, logPath)
+		registry := conductor.NewUnmappingLogBuffersRegistryForTest(dir)
+		rt.Cleanup(func() { conductor.StopLogBuffersRegistryUnmapperForTest(registry) })
+		state := registryRapidKeyStateForLog(rt, registry, logPath)
+		model := registryRapidModel{}
+
+		var liveMapped any
+		var removed []*logbuffer.MappedLogBuffer
+		steps := rapid.IntRange(1, 24).Draw(rt, "steps")
+		for step := range steps {
+			ops := append(slices.Clip(legalRegistryRapidOps(model)), registryRapidOpStopUnmapper)
+			op := rapid.SampledFrom(ops).Draw(rt, fmt.Sprintf("op%d", step))
+			if op == registryRapidOpStopUnmapper {
+				conductor.StopLogBuffersRegistryUnmapperForTest(registry)
+				assertRegistryRapidUnmapped(rt, removed, liveMapped)
+				continue
+			}
+
+			before := liveMapped
+			runRegistryRapidStep(rt, registryRapidStepTarget{
+				registry:   registry,
+				logPath:    state.logPath,
+				key:        state.key,
+				model:      &model,
+				liveMapped: &liveMapped,
+			}, op, step)
+			if before != nil && liveMapped == nil {
+				mapped, ok := before.(*logbuffer.MappedLogBuffer)
+				require.True(rt, ok)
+				removed = append(removed, mapped)
+			}
+			assertRegistryRapidInvariants(rt, registry, state.logPath, model)
+		}
+
+		conductor.StopLogBuffersRegistryUnmapperForTest(registry)
+		assertRegistryRapidUnmapped(rt, removed, liveMapped)
 	})
 }

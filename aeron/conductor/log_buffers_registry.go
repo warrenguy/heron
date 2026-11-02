@@ -48,6 +48,9 @@ type LogBuffersRegistry struct {
 	// under resourceMu write lock. HasScheduledLinger uses atomic.Load for lock-free
 	// reads from service() while other goroutines may drain under write lock.
 	lingerScheduled atomic.Int32
+	// unmapper unmaps removed entries off the caller goroutine. Nil unmaps
+	// on the caller goroutine.
+	unmapper *logBufferUnmapper
 }
 
 func NewLogBuffersRegistry(mediaDriverDir string) *LogBuffersRegistry {
@@ -60,6 +63,14 @@ func NewLogBuffersRegistry(mediaDriverDir string) *LogBuffersRegistry {
 			registry.resolvedMediaDriverDir = resolved
 		}
 	}
+	return registry
+}
+
+// newUnmappingLogBuffersRegistry returns a registry that unmaps removed
+// entries on a separate goroutine.
+func newUnmappingLogBuffersRegistry(mediaDriverDir string) *LogBuffersRegistry {
+	registry := NewLogBuffersRegistry(mediaDriverDir)
+	registry.unmapper = &logBufferUnmapper{}
 	return registry
 }
 
@@ -105,6 +116,7 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 		return nil, err
 	}
 
+	registry.unmapper.start()
 	registry.entries[key] = &logBufferEntry{
 		buffers:  buffers,
 		refCount: 1,
@@ -112,10 +124,11 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 	return buffers, nil
 }
 
-// Release decrements the refcount for logFileName. When the count reaches zero
-// the mapped log is closed immediately when lingerNs is zero. A positive lingerNs
-// schedules unmap after the deadline via SweepLingering. Releasing an unknown or
-// unresolvable path is an intentional no-op.
+// Release decrements the refcount for logFileName. At zero refcount:
+//   - zero lingerNs: Release removes the entry. The unmapper unmaps the log.
+//   - positive lingerNs: SweepLingering removes the entry after the deadline.
+//
+// Release ignores an unknown or unresolvable path.
 func (registry *LogBuffersRegistry) Release(logFileName string, lingerNs int64) {
 	registry.releaseAt(logFileName, releaseNowNs(lingerNs), lingerNs)
 }
@@ -189,11 +202,17 @@ func (registry *LogBuffersRegistry) deleteEntry(key string, entry *logBufferEntr
 	registry.decrementLingerScheduled(entry)
 	delete(registry.entries, key)
 	if mapped := entry.buffers.MappedLogBuffer(); mapped != nil {
-		_ = mapped.Close()
+		registry.unmapper.unmap(mapped)
 	}
 }
 
-// SweepLingering closes and removes entries whose linger deadline has passed.
+// stopUnmapper stops the unmap goroutine after it drains the queue.
+func (registry *LogBuffersRegistry) stopUnmapper() {
+	registry.unmapper.stop()
+}
+
+// SweepLingering removes each entry whose linger deadline has passed.
+// Returns the count.
 func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 	if registry == nil {
 		return 0

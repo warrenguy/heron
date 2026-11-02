@@ -407,17 +407,22 @@ func TestClientStayAlive(t *testing.T) {
 	require.True(t, sawProgress, "client never made progress during stay-alive")
 }
 
-// TestClientCloseSkipsLingerWait checks that a default-config Close returns within a second.
+// TestClientCloseSkipsLingerWait checks that Close does not wait out ResourceLingerDuration.
 func TestClientCloseSkipsLingerWait(t *testing.T) {
 	md := harness.SharedParallel(t)
-	client, hadClientError := harness.ConnectIPCClient(t, md)
+	resourceLinger := 15 * time.Second
+	client, hadClientError := harness.ConnectIPCClientConfig(t, md, aeron.Config{
+		ResourceLingerDuration: &resourceLinger,
+	})
 	pub, sub := harness.ConnectIPCPubSubClients(
 		t, client, client, harness.ClientCloseSkipsLingerWaitStreamID,
 	)
 
 	started := time.Now()
 	require.NoError(t, client.Close())
-	require.Less(t, time.Since(started), time.Second)
+
+	// The Close response drain stops at DriverTimeout (10s), below the linger.
+	require.Less(t, time.Since(started), resourceLinger)
 	require.True(t, pub.IsClosed())
 	require.True(t, sub.IsClosed())
 	require.False(t, hadClientError.Load())
