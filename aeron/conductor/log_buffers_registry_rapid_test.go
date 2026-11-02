@@ -361,6 +361,8 @@ func newRegistryCloseRapidFixture(
 
 	lifecycle := &lingerPublicationLifecycle{registryKey: logPath}
 	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(t, resourceLingerNs, lifecycle)
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+	rt.Cleanup(func() { conductor.StopLogBuffersRegistryUnmapperForTest(registry) })
 
 	buffers, err := conductorInstance.AcquireLogBuffersForTest(logPath)
 	require.NoError(t, err)
@@ -372,7 +374,6 @@ func newRegistryCloseRapidFixture(
 	)
 	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
 
-	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 	state := registryRapidKeyStateForLog(rt, registry, logPath)
 	return registryCloseRapidFixture{
 		conductor:        conductorInstance,

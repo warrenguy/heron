@@ -85,6 +85,9 @@ func NewConductorForTest(
 
 	conductor, err := NewConductorUnchecked(config, countersReader)
 	require.NoError(tb, err)
+	tb.Cleanup(func() {
+		conductor.underResourceWriteLock(conductor.logBuffersRegistry.stopUnmapper)
+	})
 	return conductor
 }
 
