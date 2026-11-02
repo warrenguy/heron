@@ -34,6 +34,7 @@ var (
 
 type TB interface {
 	Helper()
+	Cleanup(func())
 	require.TestingT
 }
 
@@ -169,6 +170,7 @@ func NewConductorFixture(tb TB, config ConductorConfig) *ConductorFixture {
 		conductorConfig,
 	)
 	require.NoError(tb, err)
+	tb.Cleanup(func() { conductorInstance.UnmapLingeringLogBuffers() })
 	return &ConductorFixture{
 		Conductor:   conductorInstance,
 		DriverProxy: driverProxy,
