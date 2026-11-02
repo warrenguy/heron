@@ -71,6 +71,7 @@ func newConductorWithImageLifecycleForTest(
 	}
 	conductorInstance, err := conductor.NewConductorUnchecked(config, countersReader)
 	require.NoError(tb, err)
+	tb.Cleanup(func() { conductorInstance.UnmapLingeringLogBuffers() })
 	return conductorInstance
 }
 

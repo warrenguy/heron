@@ -85,6 +85,9 @@ func NewConductorForTest(
 
 	conductor, err := NewConductorUnchecked(config, countersReader)
 	require.NoError(tb, err)
+	tb.Cleanup(func() {
+		conductor.underResourceWriteLock(conductor.logBuffersRegistry.stopUnmapper)
+	})
 	return conductor
 }
 
@@ -152,6 +155,18 @@ func LogBuffersRegistryRefCountByResolvedKeyForTest(
 		return entry.refCount
 	}
 	return 0
+}
+
+func NewUnmappingLogBuffersRegistryForTest(mediaDriverDir string) *LogBuffersRegistry {
+	return newUnmappingLogBuffersRegistry(mediaDriverDir)
+}
+
+func StopLogBuffersRegistryUnmapperForTest(registry *LogBuffersRegistry) {
+	registry.stopUnmapper()
+}
+
+func IsLogBuffersRegistryUnmapperRunningForTest(registry *LogBuffersRegistry) bool {
+	return registry.unmapper != nil && registry.unmapper.queue != nil
 }
 
 func SeedLogBuffersRegistryForTest(
