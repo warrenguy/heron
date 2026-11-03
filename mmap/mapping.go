@@ -95,13 +95,17 @@ func mmapOpenedFile(
 	return &Mapping{Data: data, file: file}, nil
 }
 
-func PreTouch(data []byte, pageSize int) {
-	if pageSize <= 0 {
-		pageSize = os.Getpagesize()
+// PreTouch faults in every page of data for write on Linux, so later writes to
+// data do not take a page fault.
+//
+// data must start on a page boundary.
+//
+// On Linux before 5.14 and on other systems PreTouch does nothing.
+func PreTouch(data []byte) {
+	if len(data) == 0 {
+		return
 	}
-	for offset := 0; offset < len(data); offset += pageSize {
-		_ = data[offset]
-	}
+	preTouch(data)
 }
 
 func (m *Mapping) Sync() error {

@@ -46,7 +46,7 @@ func TestMapCreate_roundtrip(t *testing.T) {
 
 	m, err := mmap.MapCreate(path, length)
 	require.NoError(t, err)
-	mmap.PreTouch(m.Data, 0)
+	mmap.PreTouch(m.Data)
 	m.Data[0] = 0xAB
 	m.Data[length-1] = 0xCD
 	require.NoError(t, m.Close())
