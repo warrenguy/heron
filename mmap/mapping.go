@@ -100,7 +100,7 @@ func mmapOpenedFile(
 //
 // data must start on a page boundary.
 //
-// On other systems PreTouch does nothing.
+// On Linux before 5.14 and on other systems PreTouch does nothing.
 func PreTouch(data []byte) {
 	if len(data) == 0 {
 		return
