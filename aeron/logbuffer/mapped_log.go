@@ -116,7 +116,7 @@ func mapLogFileWithLayout(
 		_ = mapping.Close()
 		return nil, err
 	}
-	mmap.PreTouch(mapping.Data, int(dims.pageSize))
+	mmap.PreTouch(mapping.Data)
 	return mapped, nil
 }
 

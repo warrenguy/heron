@@ -220,8 +220,8 @@ func openCnc(ctx context.Context, cfg Config) (*cnc.MappedCncFile, *cnc.Rings, e
 		return nil, nil, fmt.Errorf("aeron: wire rings: %w", err)
 	}
 
-	if rings.Mapping != nil && rings.Mapping.Data != nil {
-		mmap.PreTouch(rings.Mapping.Data, 0)
+	if rings.Mapping != nil {
+		mmap.PreTouch(rings.Mapping.Data)
 	}
 
 	opened = true
