@@ -1,5 +1,3 @@
-//go:build !testhooks
-
 package idlestrategy
 
 import (
@@ -16,18 +14,19 @@ const (
 
 func BackoffState(tb testing.TB, strategy IdleStrategy) int {
 	tb.Helper()
-	backoff, ok := strategy.(*backoffIdleStrategy)
-	if !ok {
-		tb.Fatalf("BackoffState: strategy is %T, want *backoffIdleStrategy", strategy)
-	}
-	return int(backoff.state)
+	return int(backoffOf(tb, strategy).state)
 }
 
 func BackoffParkPeriod(tb testing.TB, strategy IdleStrategy) time.Duration {
 	tb.Helper()
+	return backoffOf(tb, strategy).parkPeriod
+}
+
+func backoffOf(tb testing.TB, strategy IdleStrategy) *backoffIdleStrategy {
+	tb.Helper()
 	backoff, ok := strategy.(*backoffIdleStrategy)
 	if !ok {
-		tb.Fatalf("BackoffParkPeriod: strategy is %T, want *backoffIdleStrategy", strategy)
+		tb.Fatalf("strategy is %T, want *backoffIdleStrategy", strategy)
 	}
-	return backoff.parkPeriod
+	return backoff
 }
