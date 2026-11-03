@@ -28,7 +28,7 @@ type backoffIdleStrategy struct {
 
 // NewBackoff returns a spin-yield-park backoff strategy.
 //
-// A minParkPeriod of zero or less never parks.
+// A minParkPeriod of zero never parks.
 func NewBackoff(
 	maxSpins int,
 	maxYields int,
