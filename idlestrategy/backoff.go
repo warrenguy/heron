@@ -27,6 +27,8 @@ type backoffIdleStrategy struct {
 }
 
 // NewBackoff returns a spin-yield-park backoff strategy.
+//
+// A minParkPeriod of zero or less never parks.
 func NewBackoff(
 	maxSpins int,
 	maxYields int,
@@ -79,8 +81,6 @@ func (s *backoffIdleStrategy) idleStep() {
 		}
 	case backoffStateParking:
 		time.Sleep(s.parkPeriod)
-		if s.minParkPeriod < s.maxParkPeriod {
-			s.parkPeriod = min(s.parkPeriod*2, s.maxParkPeriod)
-		}
+		s.parkPeriod = min(s.parkPeriod*2, s.maxParkPeriod)
 	}
 }
