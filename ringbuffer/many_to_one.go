@@ -1,9 +1,3 @@
-// Package ringbuffer implements Agrona ManyToOneRingBuffer wire layout.
-//
-// Buffers match the Agrona/C driver memory layout for CnC and to-driver ring
-// interop. Record headers and trailer counters are fixed; not a generic MPSC queue.
-//
-// Many producers may claim/write concurrently; one consumer goroutine drives Read.
 package ringbuffer
 
 import (
@@ -52,6 +46,12 @@ type ControlledMessageHandler func(
 	length int,
 ) ControlledAction
 
+// ManyToOneRingBuffer is a many-producer, one-consumer ring buffer.
+//
+// Concurrency: many producers may call TryClaim, Commit, Abort, and Write
+// concurrently. Call Read, ReadWithLimit, ControlledRead,
+// ControlledReadWithLimit, SetConsumerHeartbeatTime, and Unblock from one
+// consumer goroutine only.
 type ManyToOneRingBuffer struct {
 	capacity                  int
 	maxMsgLength              int

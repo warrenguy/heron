@@ -9,10 +9,13 @@ import (
 	"github.com/warrenguy/heron/mmap"
 )
 
-// MappedLogBuffer owns mmap until Close.
+// MappedLogBuffer exposes the terms and the metadata of a log as AtomicBuffer
+// views.
 //
-// Term and metadata AtomicBuffer views returned before Close must not be used after Close;
-// fresh accessors return error once closed.
+// Ownership: MappedLogBuffer owns its backing memory until Close.
+//
+// Lifetime: do not use a term or metadata view after Close. TermBuffer,
+// TermBuffers, and MetaDataBuffer return an error after Close.
 type MappedLogBuffer struct {
 	mapping    *mmap.Mapping
 	path       string
@@ -44,6 +47,7 @@ func MapLogBufferFromBytes(data []byte) (*MappedLogBuffer, error) {
 	return mapLogBuffer(data)
 }
 
+// MapLogFile maps a driver-created log file.
 func MapLogFile(path string) (*MappedLogBuffer, error) {
 	// The driver supplies the log file name over the CnC.
 	file, err := os.OpenFile(path, os.O_RDWR, 0)

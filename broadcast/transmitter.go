@@ -7,6 +7,9 @@ import (
 	"github.com/warrenguy/heron/record"
 )
 
+// BroadcastTransmitter transmits records to a broadcast buffer.
+//
+// Concurrency: single-writer. Do not call Transmit concurrently.
 type BroadcastTransmitter struct {
 	buffer           atomicbuffer.AtomicBuffer
 	capacity         int
@@ -17,8 +20,6 @@ type BroadcastTransmitter struct {
 }
 
 // NewBroadcastTransmitter constructs a transmitter over buffer.
-//
-// Transmit is single-writer; it is not safe for concurrent Transmit calls.
 func NewBroadcastTransmitter(buffer atomicbuffer.AtomicBuffer) (*BroadcastTransmitter, error) {
 	capacity, err := CheckCapacity(buffer.Capacity())
 	if err != nil {

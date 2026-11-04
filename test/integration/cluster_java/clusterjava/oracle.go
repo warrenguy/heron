@@ -1,14 +1,5 @@
 //go:build integration && cluster_java
 
-// Package clusterjava is the Java cluster integration contract oracle.
-//
-// Files:
-//   - oracle.go: single-node IPC goldens
-//   - failover_oracle.go: 3-node UDP failover goldens
-//   - mixed_oracle.go: mixed Go/Java multi-node goldens
-//
-// Hand-sync with ClusterConstantsTest, ClusterConstantsFailoverTest, and
-// ClusterConstantsMixedTest (like java_interop).
 package clusterjava
 
 import (

@@ -1,8 +1,5 @@
 //go:build electionsim && testhooks
 
-// Package scenarios holds the election fault scenario catalog and soak runner.
-//
-// Build with -tags=electionsim,testhooks. Not part of default unit packages.
 package scenarios
 
 import (

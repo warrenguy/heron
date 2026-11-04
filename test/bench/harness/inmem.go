@@ -1,7 +1,5 @@
 //go:build bench
 
-// Package harness composes aeron bench fixtures for test/bench benchmarks.
-// Built with //go:build bench; not for production use.
 package harness
 
 import (

@@ -179,13 +179,19 @@ type MediaDriver struct {
 	waitErr error
 }
 
+// Start starts a per-test ephemeral aeronmd with the default config. Start is
+// safe under t.Parallel. StartParallel calls t.Parallel for you.
 func Start(t testing.TB) *MediaDriver {
 	t.Helper()
 	return StartWithConfig(t, Config{})
 }
 
-// StartParallel calls t.Parallel and starts a per-test ephemeral aeronmd.
-// Do not call t.Parallel again in the same test or subtest; Go panics on a second call.
+// StartParallel calls t.Parallel, then starts a per-test ephemeral aeronmd with
+// the default config. Use it when a test needs its own driver, such as for a
+// driver kill or a rollover.
+//
+// Do not call t.Parallel again in the same test or subtest. Go panics on a
+// second call.
 func StartParallel(t *testing.T) *MediaDriver {
 	t.Helper()
 	t.Parallel()

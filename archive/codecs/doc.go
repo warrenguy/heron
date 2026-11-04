@@ -1,0 +1,6 @@
+// Package codecs provides zero-alloc helpers for Aeron Archive control SBE
+// framing. Package archivewire holds the flyweights.
+//
+// Run make sbe-generate-archive to regenerate the flyweights. The script needs
+// java on PATH. The go:generate directive in generate.go runs the same script.
+package codecs

@@ -1,5 +1,3 @@
-// Package catalogschema is shared by clustersbe (runtime loader) and
-// cluster-sbe-catalog-gen without an import cycle.
 package catalogschema
 
 import (
