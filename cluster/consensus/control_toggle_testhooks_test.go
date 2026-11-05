@@ -104,6 +104,20 @@ func TestClusterControlToggleWork(t *testing.T) {
 			ModuleStateActive,
 			unbindPublisher,
 		),
+		{
+			name:       "STANDBY_SNAPSHOT keeps a SNAPSHOT written during the append",
+			toggle:     int64(ControlToggleStandbySnapshot),
+			wantWork:   1,
+			wantToggle: int64(ControlToggleSnapshot),
+			wantState:  ModuleStateActive,
+			wantAction: &action{flags: clusterActionFlagsStandbySnapshot},
+			setup: func(t *testing.T, l toggleLeader) {
+				l.toggle.afterLoad = func() {
+					l.toggle.Store(int64(ControlToggleNeutral))
+					require.True(t, ControlToggleSnapshot.Toggle(l.toggle))
+				}
+			},
+		},
 		unchanged(
 			"STANDBY_SNAPSHOT append fails",
 			int64(ControlToggleStandbySnapshot),

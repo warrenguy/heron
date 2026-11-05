@@ -155,7 +155,9 @@ func (a *Agent) SetNodeControlToggle(counter ToggleCounter) {
 //   - ACTIVE, SNAPSHOT: calls [Agent.RequestSnapshot]. The toggle stays
 //     SNAPSHOT until the snapshot ends.
 //   - ACTIVE, STANDBY_SNAPSHOT: appends a SNAPSHOT action with
-//     [clusterActionFlagsStandbySnapshot], then stores NEUTRAL.
+//     [clusterActionFlagsStandbySnapshot]. Then sets NEUTRAL by
+//     compare-and-set from STANDBY_SNAPSHOT. A tool write during the append
+//     stays.
 //   - A value outside the toggle codes: does not act or report.
 //   - A refusal or a failed append keeps the toggle. The next slow tick
 //     retries.
@@ -181,7 +183,7 @@ func (a *Agent) clusterControlToggleWork(nowNs int64) int {
 		if !ok {
 			return 0
 		}
-		a.controlToggle.Store(int64(ControlToggleNeutral))
+		a.resetControlToggleFrom(ControlToggleStandbySnapshot)
 		return 1
 	}
 	return 0

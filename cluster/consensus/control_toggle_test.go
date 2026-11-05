@@ -28,11 +28,21 @@ var allNodeControlToggleStates = []NodeControlToggleState{
 // fakeToggle is a non-atomic ToggleCounter. Invoker-only.
 type fakeToggle struct {
 	value int64
+
+	// afterLoad runs once after the next Load. It stands in for a tool write.
+	afterLoad func()
 }
 
 func newFakeToggle(value int64) *fakeToggle { return &fakeToggle{value: value} }
 
-func (f *fakeToggle) Load() int64 { return f.value }
+func (f *fakeToggle) Load() int64 {
+	value := f.value
+	if hook := f.afterLoad; hook != nil {
+		f.afterLoad = nil
+		hook()
+	}
+	return value
+}
 
 func (f *fakeToggle) CompareAndSet(expect, update int64) bool {
 	if f.value != expect {
