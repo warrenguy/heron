@@ -19,7 +19,7 @@ func (e *Election) handleInit(nowNs int64) int {
 		if work, stopping := e.stopLogReplication(nowNs); stopping {
 			return work
 		}
-		e.logSessionID = NullMemberID
+		e.logSessionID = NullSessionID
 		e.stopReplay()
 
 		// PrepareForNewLeadership tears down the catchup receive path. The next
@@ -619,7 +619,7 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 // commitRecordingLogTerm. Without that commit the election can close with an
 // active recording and an empty term index.
 func (e *Election) handleFollowerLogInit(nowNs int64) int {
-	if e.logSessionID == NullMemberID {
+	if e.logSessionID == NullSessionID {
 		return 1
 	}
 	if !e.deps.Host.IsLogJoinedForSession(e.logSessionID) {

@@ -9,8 +9,11 @@ const (
 	// NullValue is Aeron NULL_VALUE for unset term and recording ids.
 	NullValue = cnc.NullValue
 
-	// NullMemberID is NullValue as int32 for member and session ids.
+	// NullMemberID is NullValue as int32 for an unset member id.
 	NullMemberID int32 = int32(NullValue)
+
+	// NullSessionID is NullValue as int32 for an unset log session id.
+	NullSessionID int32 = int32(NullValue)
 
 	// NullPosition marks an uncommitted log position.
 	NullPosition = recordinglog.NullPosition

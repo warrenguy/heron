@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -109,7 +110,7 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		require.Nil(t, m.Agent().AppendSource())
 		sessionID, err := m.Agent().AddLogPublication(0)
 		require.NoError(t, err)
-		require.Equal(t, int32(-1), sessionID)
+		require.Equal(t, election.NullSessionID, sessionID)
 		require.True(t, archiveClients[i].IsClosed())
 		require.Nil(t, m.ArchiveClient())
 	}
@@ -1019,7 +1020,7 @@ func requireMembersRecordLeaderLog(
 	t.Helper()
 
 	leaderLogSessionID := leader.LogPublisher().SessionID()
-	require.NotEqual(t, int32(-1), leaderLogSessionID)
+	require.NotEqual(t, election.NullSessionID, leaderLogSessionID)
 	leaderLogStreamID := leader.Topology().LogStreamID()
 	for _, m := range set.Modules() {
 		recordingID := m.Agent().LocalLogRecordingID()

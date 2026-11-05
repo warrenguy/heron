@@ -10,6 +10,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/election"
 )
 
 // testLogChannelTemplate is a loopback UDP log channel without endpoint.
@@ -175,7 +176,7 @@ func requireAgentLogUnbound(
 	}
 	sessionID, err := agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 	require.Nil(t, agent.AppendSource())
 	require.Nil(t, agent.LogJoinSource())
 	require.Empty(t, agent.LiveLogDestination())
@@ -905,7 +906,7 @@ func TestLogStreams_close(t *testing.T) {
 	require.NoError(t, ls.Close())
 	sessionID, err := agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 	require.Nil(t, agent.AppendSource())
 	require.Nil(t, ls.Publication())
 	require.Nil(t, ls.Subscription())
@@ -956,7 +957,7 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 	require.NoError(t, ls1.Close())
 	sessionID, err := agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 	require.Nil(t, agent.AppendSource())
 
 	// Re-open on same agent with a fresh publisher/adapter pair.
@@ -970,7 +971,7 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 
 	sessionID, err = agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.NotEqual(t, int32(-1), sessionID)
+	require.NotEqual(t, election.NullSessionID, sessionID)
 	require.NotNil(t, agent.AppendSource())
 	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, adder.lastPub, logPublisher2.Publication())
@@ -983,7 +984,7 @@ func TestLogStreams_closeStaleAfterRebind(t *testing.T) {
 	require.NoError(t, ls1.Close())
 	sessionID, err = agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.NotEqual(t, int32(-1), sessionID)
+	require.NotEqual(t, election.NullSessionID, sessionID)
 	require.NotNil(t, agent.AppendSource())
 	require.NotNil(t, agent.LogJoinSource())
 	require.Same(t, pub2, ls2.Publication())

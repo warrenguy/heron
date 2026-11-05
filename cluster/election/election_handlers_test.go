@@ -1160,7 +1160,7 @@ func TestBecomeSelfLeader_resetsOnLogPublicationError(t *testing.T) {
 	require.Equal(t, 1, fx.doWork())
 	require.Equal(t, election.ElectionStateInit, fx.election.State())
 	require.Equal(t, cause, fx.election.LastError())
-	require.Equal(t, election.NullMemberID, fx.election.LogSessionID())
+	require.Equal(t, election.NullSessionID, fx.election.LogSessionID())
 	require.Equal(t, []int64{appendPosition}, fx.host.addLogPublicationCalls)
 	require.Empty(t, fx.publisher.Sent)
 	require.Equal(t, []election.ElectionState{
@@ -4029,7 +4029,7 @@ func TestOnCanvassPosition_branches(t *testing.T) {
 			name:         "older log term with null log session",
 			state:        election.ElectionStateLeaderReady,
 			role:         consensus.RoleLeader,
-			logSessionID: election.NullMemberID,
+			logSessionID: election.NullSessionID,
 			fields:       older(1),
 		},
 		{

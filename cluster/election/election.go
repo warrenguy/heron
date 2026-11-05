@@ -92,7 +92,7 @@ func NewElection(cfg ElectionConfig, deps ElectionDeps) *Election {
 		lastPublishedCommitPosition:      0,
 		lastPublishedAppendPosition:      0,
 		leaderRecordingID:                NullValue,
-		logSessionID:                     NullMemberID,
+		logSessionID:                     NullSessionID,
 		gracefulClosedLeaderID:           cfg.GracefulClosedLeaderID,
 		isNodeStartup:                    cfg.IsNodeStartup,
 		isExtendedCanvass:                cfg.IsNodeStartup,
@@ -230,7 +230,7 @@ func (e *Election) state(next ElectionState, nowNs int64, reason string) {
 		e.deps.Host.RoleSet(consensus.RoleLeader)
 		sessionID, err := e.deps.Host.AddLogPublication(e.appendPosition)
 		if err != nil {
-			sessionID = NullMemberID
+			sessionID = NullSessionID
 		}
 		e.logSessionID, e.logPublicationErr = sessionID, err
 	case ElectionStateFollowerLogReplication, ElectionStateFollowerReplay:

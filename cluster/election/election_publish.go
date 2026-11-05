@@ -38,7 +38,7 @@ func (e *Election) publishCommitPositionOnInterval(quorumPosition, nowNs int64) 
 }
 
 func (e *Election) publishNewLeadershipTerm(quorumPosition, timestamp int64) {
-	if e.logSessionID == NullMemberID {
+	if e.logSessionID == NullSessionID {
 		return
 	}
 	fields := e.newLeadershipTermFields(e.logLeadershipTermID, quorumPosition, timestamp)
@@ -59,7 +59,7 @@ func (e *Election) publishNewLeadershipTermToLaggingMember(
 	if e.deps.Host.Role() != consensus.RoleLeader {
 		return
 	}
-	if member.ID == e.thisMember.ID || e.logSessionID == NullMemberID {
+	if member.ID == e.thisMember.ID || e.logSessionID == NullSessionID {
 		return
 	}
 	quorumPosition := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)

@@ -236,7 +236,7 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 
 	sessionID, err := agent0.AddLogPublication(0)
 	require.NoError(t, err)
-	require.NotEqual(t, int32(-1), sessionID)
+	require.NotEqual(t, election.NullSessionID, sessionID)
 	require.Equal(t, streams0.Publication().SessionID(), sessionID)
 
 	// Both members publish on the shared group; each subscription holds one
@@ -320,5 +320,5 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 
 	sessionID, err = agent0.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 }
