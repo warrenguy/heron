@@ -401,8 +401,7 @@ func TestAgent_JoinLifecycle(t *testing.T) {
 }
 
 // TestAgent_Join_doesNotBind asserts every path that leaves a delivered join
-// unbound: no adder, no image, closed image, each contiguity mismatch, and a
-// failed subscription add.
+// unbound.
 //
 // Each row runs two ticks. The first does start work only. The second makes no
 // progress. The join stays pending and the join ack stays unready throughout.
@@ -419,6 +418,10 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 		{
 			name:  "no adder wired",
 			adder: func(testing.TB) SubscriptionAdder { return nil },
+		},
+		{
+			name:  "adder returns no subscription",
+			adder: func(testing.TB) SubscriptionAdder { return &stubAdder{} },
 		},
 		{
 			name: "subscription has no image",
@@ -856,6 +859,96 @@ func TestAgent_Join_paddingHandoff(t *testing.T) {
 	require.NoError(t, agent.ServiceFailure())
 	require.True(t, agent.IsLogBound())
 	require.Equal(t, handoff, agent.LogPosition())
+}
+
+func TestAgent_Unbind_endOfStream(t *testing.T) {
+	tests := []struct {
+		name      string
+		padLen    int32
+		wordAbove int64
+		wordFirst bool
+		wantBound bool
+	}{
+		{name: "word at the consumed position"},
+		{name: "word set before the agent polls the last frame", wordFirst: true},
+		{name: "word above the consumed position", wordAbove: 64, wantBound: true},
+		{name: "trailing padding up to the word", padLen: 64},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &recordingService{}
+			agent, image, committed := bindAgent(t, svc, 0)
+
+			span := int64(writeAgentFrame(t, image, 0, encodeTrivialSessionMessage(t)))
+			streamEnd := span + int64(tc.padLen)
+			if tc.padLen > 0 {
+				writeAgentPadding(t, image, int(span), tc.padLen)
+			}
+			word := streamEnd + tc.wordAbove
+
+			// Phase 1: deliver the frame.
+			*committed = span
+			if tc.wordFirst {
+				aeron.ImageSetEndOfStreamPositionForHooks(image, word)
+			}
+			require.Equal(t, 1, agent.DoWork(0))
+			require.True(t, agent.IsLogBound())
+			require.Equal(t, span, agent.LogPosition())
+			require.Equal(t, span, image.Position())
+
+			// Phase 2: a zero-fragment tick unbinds at end of stream.
+			if !tc.wordFirst {
+				aeron.ImageSetEndOfStreamPositionForHooks(image, word)
+			}
+			*committed = streamEnd
+			require.Equal(t, 0, agent.DoWork(0))
+			require.NoError(t, agent.ServiceFailure())
+			require.Equal(t, int64(math.MaxInt64), agent.adapter.MaxLogPosition())
+			require.False(t, image.IsClosed())
+			require.Equal(t, tc.wantBound, agent.IsLogBound())
+			if tc.wantBound {
+				require.Equal(t, codecs.RoleLeader, agent.Role())
+				require.Equal(t, span, agent.LogPosition())
+				require.Equal(t, 0, agent.DoWork(0))
+				require.True(t, agent.IsLogBound())
+				return
+			}
+			require.Equal(t, codecs.RoleFollower, agent.Role())
+			require.Equal(t, streamEnd, agent.LogPosition())
+
+			// Phase 3: rejoin on the reused subscription.
+			const (
+				newSessionID           int32 = 77
+				newImageRegistrationID int64 = 9102
+			)
+			sub := agent.logSubscription
+			next := aeron.NewTestImageForSubscriptionHooksWithSessionID(
+				t,
+				sub,
+				newSessionID,
+				newImageRegistrationID,
+				streamEnd,
+			)
+			require.True(t, aeron.SubscriptionAddImageForHooks(sub, next))
+
+			join := defaultJoinEvent(streamEnd)
+			join.logSessionID = newSessionID
+			join.memberID = 11
+			join.role = codecs.RoleCandidate
+			agent.handleJoinLog(join)
+			require.True(t, agent.HasPendingJoin())
+
+			require.GreaterOrEqual(t, agent.DoWork(0), 1)
+			require.NoError(t, agent.ServiceFailure())
+			require.True(t, agent.IsLogBound())
+			require.Same(t, next, agent.adapter.Image())
+			require.Same(t, sub, agent.logSubscription)
+			require.False(t, agent.HasPendingJoin())
+			require.Equal(t, streamEnd, agent.LogPosition())
+			require.Equal(t, int32(11), agent.MemberID())
+			require.Equal(t, codecs.RoleCandidate, agent.Role())
+		})
+	}
 }
 
 func TestAgent_SessionRegistry(t *testing.T) {

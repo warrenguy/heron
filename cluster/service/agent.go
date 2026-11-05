@@ -78,10 +78,10 @@ type AgentConfig struct {
 	// as safe for application consumption. Nil is allowed: the log poll is
 	// skipped until wired. The service consumes nothing without a bound.
 	//
-	// Handoff unbind still needs image Position at or above MaxLogPosition
-	// (the handoff cap) or a closed image. With a nil commit, an open image,
-	// and Position below the handoff logPosition, the pending join stays
-	// unbound: no unbind and no bind of that join.
+	// With a nil CommittedPosition, the image position stays at the join
+	// position. The image unbinds only when it closes, or when the
+	// end-of-stream word or MaxLogPosition sits at that position. A pending
+	// join waits until then.
 	CommittedPosition func() int64
 
 	// Subscriptions adds the log subscription at join time. Nil is allowed: a
@@ -449,9 +449,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 //  8. log poll when the image is bound and CommittedPosition is non-nil. The
 //     poll bound is min(committed, lowest unready request entry position).
 //     While a take runs, the bound also holds at the take action position
-//  9. unbind when zero polled and (image closed or position at maxLogPosition).
-//     Unbind closes every response publication. It resolves or cancels every
-//     in-flight add
+//  9. unbind when zero polled and the image is closed, at end of stream, or
+//     at maxLogPosition. Unbind closes every response publication. It
+//     resolves or cancels every in-flight add
 //
 // A take that resolves in step 4 can ack in step 5 of the same tick.
 //
@@ -838,11 +838,15 @@ func (a *Agent) joinWork() int {
 			a.markFailure(fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err))
 			return 0
 		}
+		// No subscription yet: the next tick retries the add.
+		if sub == nil {
+			return 0
+		}
 		a.logSubscription = sub
 	}
 
-	image := findImageBySessionID(a.logSubscription, event.logSessionID)
-	if image == nil {
+	image, found := a.logSubscription.ImageBySessionID(event.logSessionID)
+	if !found {
 		return 0
 	}
 
@@ -861,26 +865,15 @@ func (a *Agent) joinWork() int {
 	return 1
 }
 
-// maybeUnbind releases the log image when the poll made no progress and the
-// image is closed or at the maxLogPosition cap.
-//
-// Adopts max(image.Position(), logPosition) first so padding consumed without a
-// callback still advances the contiguity position (upstream closeLog rule).
-// Then disconnects the egress of every session. Role becomes
-// [codecs.RoleFollower]. Does not close the subscription.
+// maybeUnbind releases a done image after a poll with no progress. It
+// advances logPosition to the image position to cover consumed padding,
+// disconnects every session's egress, and sets the role to RoleFollower. It
+// does not close the subscription.
 func (a *Agent) maybeUnbind(polled int) {
-	image := a.adapter.Image()
-	if image == nil || polled != 0 {
+	if polled != 0 || !a.adapter.isDone() {
 		return
 	}
-	pos := image.Position()
-	atCap := pos >= a.adapter.MaxLogPosition()
-	if !image.IsClosed() && !atCap {
-		return
-	}
-	if pos > a.logPosition {
-		a.logPosition = pos
-	}
+	a.logPosition = max(a.adapter.Image().Position(), a.logPosition)
 	a.adapter.SetImage(nil)
 	a.disconnectEgress()
 	a.role = codecs.RoleFollower
@@ -929,21 +922,6 @@ func (a *Agent) seedRecovery(state codecs.RecoveryStateKeyFields) {
 func (a *Agent) adoptConsumed(logPosition, clusterTime int64) {
 	a.logPosition = logPosition
 	a.clusterTime = clusterTime
-}
-
-// findImageBySessionID walks subscription images for an open image with the
-// given session id. ImageAt reports nil and closed images as absent.
-func findImageBySessionID(sub *aeron.Subscription, sessionID int32) *aeron.Image {
-	if sub == nil {
-		return nil
-	}
-	for i := range sub.ImageCount() {
-		image, ok := sub.ImageAt(i)
-		if ok && image.SessionID() == sessionID {
-			return image
-		}
-	}
-	return nil
 }
 
 func (a *Agent) handleSessionMessage(
