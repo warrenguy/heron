@@ -233,26 +233,11 @@ func (h *timerWireHarness) appendLog(t testing.TB, payload []byte) {
 
 func (h *timerWireHarness) commitFollower(t testing.TB) {
 	t.Helper()
-	h.moduleIngress.Enqueue(encodeWireCommitPosition(t, codecs.CommitPositionFields{
+	h.moduleIngress.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 		LeadershipTermID: timerWireLeadershipTermID,
 		LogPosition:      int64(h.frameOffset),
 		LeaderMemberID:   timerWireLeaderMemberID,
 	}))
-}
-
-func encodeWireCommitPosition(t testing.TB, fields codecs.CommitPositionFields) []byte {
-	t.Helper()
-	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.CommitPositionSbeBlockLength)
-	require.True(t, ok)
-	buf := make([]byte, wireLen)
-	wireEnd, ok := codecs.EncodeCommitPosition(
-		buf,
-		0,
-		clusterwire.CommitPositionSbeSchemaVersion,
-		fields,
-	)
-	require.True(t, ok)
-	return buf[:wireEnd]
 }
 
 func (h *timerWireHarness) appendSessionMessage(t testing.TB, payload string) {

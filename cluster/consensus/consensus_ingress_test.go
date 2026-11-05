@@ -75,17 +75,6 @@ func encodeAppendPositionWire(t *testing.T, fields codecs.AppendPositionFields) 
 	return buf[:end]
 }
 
-func encodeCommitPositionWire(t *testing.T, fields codecs.CommitPositionFields) []byte {
-	t.Helper()
-	actingVersion := uint16(clusterwire.CommitPositionSbeSchemaVersion)
-	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.CommitPositionSbeBlockLength)
-	require.True(t, ok)
-	buf := make([]byte, wireLen)
-	end, ok := codecs.EncodeCommitPosition(buf, 0, actingVersion, fields)
-	require.True(t, ok)
-	return buf[:end]
-}
-
 func encodeNewLeadershipTermWire(t *testing.T, fields codecs.NewLeadershipTermFields) []byte {
 	t.Helper()
 	actingVersion := uint16(clusterwire.NewLeadershipTermSbeSchemaVersion)
@@ -167,7 +156,7 @@ func enqueueSteadyLeaderCommit(
 	t.Helper()
 	switch wire {
 	case "commit":
-		q.Enqueue(encodeCommitPositionWire(t, codecs.CommitPositionFields{
+		q.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 			LeadershipTermID: term,
 			LogPosition:      pos,
 			LeaderMemberID:   leader,
@@ -207,7 +196,7 @@ func TestPollConsensusIngress_electionForwards(t *testing.T) {
 		LogPosition:      50,
 		FollowerMemberID: 2,
 	})
-	commitWire := encodeCommitPositionWire(t, codecs.CommitPositionFields{
+	commitWire := codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 		LeadershipTermID: 1,
 		LogPosition:      40,
 		LeaderMemberID:   3,
@@ -243,7 +232,7 @@ func TestPollConsensusIngress_stampsLeaderUpdateClock(t *testing.T) {
 	require.Len(t, runner.handles, 1)
 
 	// Commit with term >= current stamps before forward.
-	q.Enqueue(encodeCommitPositionWire(t, codecs.CommitPositionFields{
+	q.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 		LeadershipTermID: 5,
 		LogPosition:      20,
 		LeaderMemberID:   1,
@@ -253,7 +242,7 @@ func TestPollConsensusIngress_stampsLeaderUpdateClock(t *testing.T) {
 	require.Len(t, runner.handles, 2)
 
 	// Lower-term Commit does not move the clock.
-	q.Enqueue(encodeCommitPositionWire(t, codecs.CommitPositionFields{
+	q.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 		LeadershipTermID: 4,
 		LogPosition:      30,
 		LeaderMemberID:   1,

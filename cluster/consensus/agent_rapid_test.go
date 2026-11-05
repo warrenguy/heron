@@ -403,7 +403,7 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 				tick()
 				pt.active = true
 			case "higherTermFrame":
-				consensus.Enqueue(encodeCommitPositionWire(t, codecs.CommitPositionFields{
+				consensus.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 					LeadershipTermID: a.LeadershipTermID() + 1,
 					LogPosition:      1,
 					LeaderMemberID:   2,
