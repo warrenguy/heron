@@ -483,7 +483,7 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 	restartStop := sc.restartExLeader()
 	leaderIndex := int(leader.ThisMemberID())
 	rejoinMark := len(sc.tr.appended)
-	entryStop := awaitReplicatedRejoin(t, sc.set, sc.exIndex, leaderIndex, func() {
+	entryStop := awaitReplicatedRejoin(t, sc.set, sc.moduleErrors, sc.exIndex, leaderIndex, func() {
 		failIfFurtherElection(t, sc.set, rejoinTerm, sc.exIndex)
 		sc.tr.pump(currentLeader(sc.set))
 		failIfCommitPassesRecording(t, sc.set)
@@ -868,16 +868,17 @@ func drainSession(t *testing.T, set *harness.ClusterMemberSet, tr *sessionTraffi
 }
 
 type leaderStopScenario struct {
-	t           *testing.T
-	set         *harness.ClusterMemberSet
-	tr          *sessionTraffic
-	exIndex     int
-	preTerm     int64
-	settledTerm int64
-	preIDs      []int64
-	sessionID   int64
-	sessionMark int
-	witnesses   []*logWitness
+	t            *testing.T
+	set          *harness.ClusterMemberSet
+	moduleErrors *harness.ModuleErrors
+	tr           *sessionTraffic
+	exIndex      int
+	preTerm      int64
+	settledTerm  int64
+	preIDs       []int64
+	sessionID    int64
+	sessionMark  int
+	witnesses    []*logWitness
 }
 
 // openLeaderStopScenario opens a three-member cluster, records open-time
@@ -885,7 +886,10 @@ type leaderStopScenario struct {
 func openLeaderStopScenario(t *testing.T, portBase int, logEndpoint string) *leaderStopScenario {
 	t.Helper()
 
-	set := openThreeNodeCluster(t, portBase, logEndpoint, amendSessionAuth)
+	moduleErrors := harness.NewModuleErrors()
+	set := openThreeNodeCluster(t, portBase, logEndpoint, func(cfg cluster.Config) cluster.Config {
+		return moduleErrors.AmendConfig(amendSessionAuth(cfg))
+	})
 	leader := requireSingleLeader(t, set, "")
 	exIndex := int(leader.ThisMemberID())
 
@@ -908,12 +912,13 @@ func openLeaderStopScenario(t *testing.T, portBase int, logEndpoint string) *lea
 	require.Equal(t, preIDs[0], preIDs[2], "recording ids differ at open:\n%s", set.State())
 
 	sc := &leaderStopScenario{
-		t:         t,
-		set:       set,
-		exIndex:   exIndex,
-		preTerm:   leader.LeadershipTermID(),
-		preIDs:    preIDs,
-		witnesses: make([]*logWitness, len(set.Modules())),
+		t:            t,
+		set:          set,
+		moduleErrors: moduleErrors,
+		exIndex:      exIndex,
+		preTerm:      leader.LeadershipTermID(),
+		preIDs:       preIDs,
+		witnesses:    make([]*logWitness, len(set.Modules())),
 	}
 	for i, m := range set.Modules() {
 		if m == nil || i == exIndex {

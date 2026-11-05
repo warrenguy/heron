@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/archive"
+	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -36,27 +37,49 @@ func openDurableCluster(
 }
 
 // openDurableClusterN starts a durable set of memberCount members on the given
-// port block. Waits for session-keyed log images, then ticks until every member
-// reports ElectionComplete.
+// port block. A non-empty amend sets AmendMemberConfig. Waits for session-keyed
+// log images, then ticks until every member reports ElectionComplete.
 func openDurableClusterN(
 	t *testing.T,
 	memberCount int,
 	portBase int,
 	logEndpoint string,
+	amend ...func(cluster.Config) cluster.Config,
 ) *harness.ClusterMemberSet {
 	t.Helper()
 
-	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
+	cfg := harness.ClusterMemberSetConfig{
 		MemberCount:          memberCount,
 		PortBase:             portBase,
 		LogMulticastEndpoint: logEndpoint,
-	})
+	}
+	if len(amend) > 0 {
+		cfg.AmendMemberConfig = amend[0]
+	}
+	set := harness.StartClusterMemberSet(t, cfg)
 	require.Len(t, set.Modules(), memberCount)
 
 	requireAwait(t, set, "log image fan-in", durableImageBound, set.AwaitLogImages)
 	requireAwait(t, set, "election", durableElectBound, set.AwaitElection)
 
 	return set
+}
+
+// openDurableClusterWithErrors starts a set as openDurableCluster does. The
+// returned ModuleErrors keeps each member's module errors.
+func openDurableClusterWithErrors(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+) (
+	*harness.ClusterMemberSet,
+	*harness.ModuleErrors,
+) {
+	t.Helper()
+
+	moduleErrors := harness.NewModuleErrors()
+	set := openDurableClusterN(t, 3, portBase, logEndpoint, moduleErrors.AmendConfig)
+	return set, moduleErrors
 }
 
 // nonLeaderIndices returns live module slots whose ThisMemberID is not

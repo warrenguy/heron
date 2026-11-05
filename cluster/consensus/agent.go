@@ -619,8 +619,9 @@ type AgentConfig struct {
 	// the take resolves. LastSnapshotTake already returns that result.
 	//
 	// Concurrency: invoker-only. ErrorHandler runs inside DoWork.
-	// ErrorHandler must not call DoWork or a method that sends or changes
-	// agent state.
+	//
+	// [github.com/warrenguy/heron/cluster.Config.ErrorHandler] states the rules
+	// that every module error handler follows.
 	ErrorHandler func(error)
 }
 
