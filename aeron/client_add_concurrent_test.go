@@ -55,7 +55,7 @@ func newAwaitPollSleepingWaiter(
 		blocked: make(chan struct{}),
 		proceed: make(chan struct{}, 1),
 	}
-	client.SetAwaitPollSleepingHookForTest(func() {
+	client.SetAwaitPollSleepingHookForTest(t, func() {
 		select {
 		case waiter.notify <- struct{}{}:
 		default:
@@ -65,10 +65,7 @@ func newAwaitPollSleepingWaiter(
 			<-waiter.proceed
 		}
 	})
-	t.Cleanup(func() {
-		waiter.releaseHook()
-		client.SetAwaitPollSleepingHookForTest(nil)
-	})
+	t.Cleanup(waiter.releaseHook)
 	return waiter
 }
 

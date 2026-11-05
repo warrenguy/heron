@@ -295,11 +295,10 @@ func TestWaitUntilConnected_successWinsOverConcurrentCancel(t *testing.T) {
 		sessionID:      2002,
 	}
 
-	client.SetDoWorkAfterHookForTest(func() {
+	client.SetDoWorkAfterHookForTest(t, func() {
 		pub.connected = true
 		cancel()
 	})
-	t.Cleanup(func() { client.SetDoWorkAfterHookForTest(nil) })
 
 	err := aeron.WaitUntilConnectedForTest(ctx, client, pub)
 	require.NoError(t, err)

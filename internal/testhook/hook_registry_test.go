@@ -60,6 +60,36 @@ func TestRegistry(t *testing.T) {
 				require.Nil(t, r.Load("key"))
 			},
 		},
+		{
+			name: "set_for_test_deletes_key_when_test_ends",
+			run: func(t *testing.T, r *Registry[string, *int]) {
+				v := 42
+				t.Run("install", func(t *testing.T) {
+					SetForTest(t, r, "key", &v)
+					require.Same(t, &v, r.Load("key"))
+				})
+
+				// Phase: the subtest cleanup deleted the key.
+				_, retained := r.m["key"]
+				require.False(t, retained)
+			},
+		},
+		{
+			name: "set_for_test_nested_cleanup_deletes_outer_value",
+			run: func(t *testing.T, r *Registry[string, *int]) {
+				outer := 1
+				inner := 2
+				SetForTest(t, r, "key", &outer)
+				t.Run("nested", func(t *testing.T) {
+					SetForTest(t, r, "key", &inner)
+					require.Same(t, &inner, r.Load("key"))
+				})
+
+				// Phase: the nested cleanup did not restore outer.
+				_, retained := r.m["key"]
+				require.False(t, retained)
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

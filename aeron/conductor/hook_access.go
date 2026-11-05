@@ -103,23 +103,8 @@ func lingerDeadlineNsHook(registry *LogBuffersRegistry, logFileName string) int6
 	return registry.lingerDeadlineNs(logFileName)
 }
 
-func setLingerSweepBlockerHook(conductor *Conductor, blocker func()) {
-	if conductor == nil {
-		return
-	}
-	if blocker == nil {
-		lingerSweepBlockers.Delete(conductor)
-		return
-	}
-	lingerSweepBlockers.Store(conductor, blocker)
-}
-
 func invokeLingerSweepBlocker(conductor *Conductor) {
-	if conductor == nil {
-		return
-	}
-	blocker := lingerSweepBlockers.Load(conductor)
-	if blocker != nil {
+	if blocker := lingerSweepBlockers.Load(conductor); blocker != nil {
 		blocker()
 	}
 }

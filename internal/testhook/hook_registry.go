@@ -53,7 +53,8 @@ func (r *Registry[K, V]) Delete(key K) {
 
 // SetForTest stores hook under key and deletes the entry when tb finishes.
 //
-// Lifetime: the entry stays for the rest of tb, including subtests.
+// Lifetime: the entry stays for the rest of tb, including subtests. A subtest
+// that sets the same key deletes the entry when the subtest ends.
 func SetForTest[K comparable, V any](
 	tb testing.TB,
 	registry *Registry[K, V],

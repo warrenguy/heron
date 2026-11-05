@@ -364,11 +364,14 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *t
 	require.True(t, registry.HasScheduledLinger())
 	*nanoNs = startNs + lingerNs - 1
 
-	conductorInstance.SetLingerSweepBlockerForTest(func() {
+	// Release the sweep on failure. The conductor cleanup needs the write lock.
+	releaseBlocker := sync.OnceFunc(func() { close(releaseSweep) })
+	t.Cleanup(releaseBlocker)
+
+	conductorInstance.SetLingerSweepBlockerForTest(t, func() {
 		sweepEnteredOnce.Do(func() { close(sweepEntered) })
 		<-releaseSweep
 	})
-	t.Cleanup(func() { conductorInstance.SetLingerSweepBlockerForTest(nil) })
 
 	doWorkDone := make(chan int, 1)
 	go func() {
@@ -398,7 +401,7 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *t
 	default:
 	}
 
-	close(releaseSweep)
+	releaseBlocker()
 	require.True(t, <-lookupDone)
 	<-doWorkDone
 }

@@ -460,10 +460,9 @@ func TestClient_awaitResponse_displacedSuccessCompletes(t *testing.T) {
 	)
 	// A missed success would spin on the fixed clock. The hook ends the await
 	// at its deadline instead.
-	client.SetAwaitPollSleepingHookForTest(func() {
+	client.SetAwaitPollSleepingHookForTest(t, func() {
 		nanoNs = startNs + int64(timeout)
 	})
-	defer client.SetAwaitPollSleepingHookForTest(nil)
 
 	// An error on the add displaces the success mark before the first poll.
 	registration, err := client.AwaitResponseForTest(
