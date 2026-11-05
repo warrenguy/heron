@@ -10,7 +10,7 @@ func (e *Election) publishNewLeadershipTermOnInterval(quorumPosition, nowNs int6
 		return 0
 	}
 	e.timeOfLastUpdateNs = nowNs
-	e.publishNewLeadershipTerm(quorumPosition, e.deps.EpochClock())
+	e.publishNewLeadershipTerm(quorumPosition, nowNs)
 	return 1
 }
 
@@ -50,8 +50,7 @@ func (e *Election) publishNewLeadershipTerm(quorumPosition, timestamp int64) {
 }
 
 // publishNewLeadershipTermToLaggingMember republishes the term to one member
-// on an older log term. Only a leader publishes, and never to itself or
-// without a log session.
+// on an older log term.
 func (e *Election) publishNewLeadershipTermToLaggingMember(
 	member *Member,
 	logLeadershipTermID, nowNs int64,
@@ -65,7 +64,7 @@ func (e *Election) publishNewLeadershipTermToLaggingMember(
 	quorumPosition := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
 	e.deps.Publisher.NewLeadershipTerm(
 		PublicationTarget{MemberID: member.ID},
-		e.newLeadershipTermFields(logLeadershipTermID, quorumPosition, e.deps.EpochClock()),
+		e.newLeadershipTermFields(logLeadershipTermID, quorumPosition, nowNs),
 	)
 }
 

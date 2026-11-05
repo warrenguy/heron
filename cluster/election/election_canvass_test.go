@@ -156,6 +156,7 @@ func TestOnRequestVote_branches(t *testing.T) {
 			term := pub.Sent[1].Fields.(codecs.NewLeadershipTermFields)
 			require.Equal(t, tc.fields.LogLeadershipTermID, term.LogLeadershipTermID)
 			require.Equal(t, cfg.LeadershipTermID, term.LeadershipTermID)
+			require.Equal(t, clock.nowNs, term.Timestamp)
 		})
 	}
 }

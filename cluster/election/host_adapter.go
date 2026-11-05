@@ -5,30 +5,20 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 )
 
-// HostAdapter bridges ElectionHost duties to *consensus.Agent and implements
-// the reverse-facing PositionTable and ConsensusEgress held by Agent.
+// HostAdapter implements [ElectionHost] over *consensus.Agent. Agent takes the
+// same instance as its [consensus.PositionTable] and
+// [consensus.ConsensusEgress] through [consensus.Agent.SetPositions] and
+// [consensus.Agent.SetEgress].
 //
-//   - Implements [ElectionHost]
-//   - Implements [consensus.PositionTable] and [consensus.ConsensusEgress]
-//     (same instance via [consensus.Agent.SetPositions] /
-//     [consensus.Agent.SetEgress])
-//
-// Concurrency: invoker-only. Same goroutine as Agent.DoWork / Election.DoWork
-// and media-driver/client duty cycle. Not safe for concurrent use.
+// Concurrency: invoker-only.
 //
 // Lifetime: outlives Election after Agent.ElectionComplete. Continues to serve
 // Agent.positions and Agent.egress for steady-state ranking and publish.
 //
-// Ownership:
-//   - shares the same []*Member slice pointers Election uses
-//   - owns ranked scratch buffer and the Publisher used for Commit/Append
-//     egress and settled canvass NewLeadershipTerm answers
+// Ownership: does not own Publisher.
 //
-// Invariant: after NewHostAdapter:
-//   - Members length and member IDs are fixed (do not append, remove, or replace)
-//   - ranked length and memberByID are sized/built once at construct
-//
-// Dynamic membership is out of scope.
+// Invariant: after NewHostAdapter, Members length and member IDs are fixed. Do
+// not append, remove, or replace members.
 type HostAdapter struct {
 	agent *consensus.Agent
 	pub   Publisher
@@ -38,16 +28,10 @@ type HostAdapter struct {
 	thisMember *Member
 	ranked     []int64
 
-	// leaderHeartbeatTimeoutNs is the IsActive window passed to QuorumPosition
-	// (aeron leaderHeartbeatTimeoutNs). Distinct from LeaderHeartbeatIntervalNs
-	// (publish cadence on Election).
+	// leaderHeartbeatTimeoutNs is the IsActive window passed to QuorumPosition.
 	leaderHeartbeatTimeoutNs int64
 
-	// nanoClock stamps TimeOfLastAppendPositionNs on member position updates.
 	nanoClock func() int64
-
-	// epochClock stamps Timestamp on a settled canvass answer.
-	epochClock func() int64
 
 	// recordingLogLookup resolves term base and successor fields on a settled
 	// canvass answer. Nil makes PublishNewLeadershipTerm report false.
@@ -99,22 +83,17 @@ type HostAdapterConfig struct {
 	// ElectionConfig.LeaderHeartbeatTimeoutNs at bootstrap.
 	LeaderHeartbeatTimeoutNs int64
 
-	// NanoClock is required. Stamps member append times.
+	// NanoClock is required. It stamps member append times and the timestamp
+	// on a settled canvass answer.
 	//
-	// Share ElectionDeps.NanoClock.
+	// Share ElectionDeps.NanoClock. A second clock would put a different
+	// timestamp on an answer than on the election's own publishes.
 	NanoClock func() int64
 
-	// LeaderMemberID is optional. Pass NullMemberID when unset (member id 0 is
-	// a valid leader). Constructor seeds Agent via SetLeaderMemberID (single
-	// store; HostAdapter has no separate leader field).
+	// LeaderMemberID is optional. Pass NullMemberID when unset. Member id 0 is a
+	// valid leader. NewHostAdapter stores the id on Agent through
+	// SetLeaderMemberID.
 	LeaderMemberID int32
-
-	// EpochClock is required. Stamps the timestamp on a settled canvass answer.
-	//
-	// Share ElectionDeps.EpochClock.
-	// A second clock would put a different timestamp on an answer than on the
-	// election's own publishes.
-	EpochClock func() int64
 
 	// RecordingLogLookup resolves term base and successor-term fields on a settled
 	// canvass answer.
@@ -131,25 +110,14 @@ type HostAdapterConfig struct {
 	AppVersion int32
 }
 
-// NewHostAdapter validates cfg and builds lookup map + ranked scratch.
+// NewHostAdapter validates cfg.
 //
 // Panics on:
-//   - nil Agent, nil Publisher, nil ThisMember, nil NanoClock, nil EpochClock
+//   - nil Agent, Publisher, ThisMember, or NanoClock
 //   - empty Members
 //   - non-positive LeaderHeartbeatTimeoutNs
 //   - duplicate member IDs in Members
 //   - ThisMember not pointer-identical to any Members element
-//
-// Does not panic on a nil RecordingLogLookup: PublishNewLeadershipTerm reports
-// false when the lookup is nil.
-//
-// Panic style matches NewElection / validateElectionDeps (construction-time
-// programmer errors).
-//
-// Lifetime: after success, Members length/IDs and ranked size are fixed for
-// the lifetime of the adapter. ranked length is QuorumThreshold(len(Members)),
-// allocated once and reused by every QuorumPositionBoundedByLeaderLog call
-// (zeroed inside QuorumPosition).
 func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 	if cfg.Agent == nil {
 		panic("election: nil Agent")
@@ -162,9 +130,6 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 	}
 	if cfg.NanoClock == nil {
 		panic("election: nil NanoClock")
-	}
-	if cfg.EpochClock == nil {
-		panic("election: nil EpochClock")
 	}
 	if len(cfg.Members) == 0 {
 		panic("election: empty Members")
@@ -197,7 +162,6 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 		ranked:                   make([]int64, QuorumThreshold(len(cfg.Members))),
 		leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		nanoClock:                cfg.NanoClock,
-		epochClock:               cfg.EpochClock,
 		recordingLogLookup:       cfg.RecordingLogLookup,
 		appVersion:               cfg.AppVersion,
 	}
@@ -307,8 +271,7 @@ func (h *HostAdapter) PublishAppendPosition(
 	)
 }
 
-// PublishNewLeadershipTerm resolves term base and successor fields from the
-// recording log.
+// PublishNewLeadershipTerm sends a settled canvass answer to the canvasser.
 //
 // Behaviour:
 //   - resolves term base from the recording log entry for
@@ -319,11 +282,7 @@ func (h *HostAdapter) PublishAppendPosition(
 //     term above the canvasser's log leadership term
 //   - when that next entry is absent, uses this leader's term, the resolved
 //     term base, and a null log position
-//   - stamps the epoch timestamp and this member's id
-//
-// This path owns successor resolution for a settled canvass answer.
-// Election NewLeadershipTerm field assembly uses different rules and stays
-// separate.
+//   - stamps the cluster time and this member's id
 //
 // Concurrency: invoker-only; see [HostAdapter].
 func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) bool {
@@ -366,7 +325,7 @@ func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) b
 		LogPosition:             answer.LogPosition,
 		CommitPosition:          answer.CommitPosition,
 		LeaderRecordingID:       answer.LeaderRecordingID,
-		Timestamp:               h.epochClock(),
+		Timestamp:               h.nanoClock(),
 		LeaderMemberID:          h.thisMember.ID,
 		LogSessionID:            answer.LogSessionID,
 		AppVersion:              h.appVersion,

@@ -236,11 +236,16 @@ func (e *Election) handleLeaderInit(nowNs int64) int {
 		e.HandleError(nowNs, err)
 		return 1
 	}
-	if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
+	return e.commitOpenTerm(ElectionStateLeaderReady, nowNs)
+}
+
+func (e *Election) commitOpenTerm(next ElectionState, nowNs int64) int {
+	err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue, nowNs)
+	if err != nil {
 		e.HandleError(nowNs, err)
 		return 1
 	}
-	e.state(ElectionStateLeaderReady, nowNs, "")
+	e.state(next, nowNs, "")
 	return 1
 }
 
@@ -339,6 +344,7 @@ func (e *Election) commitReplicatedTerm(nowNs int64) int {
 		e.replicationLeadershipTermID,
 		e.replicationTermBaseLogPosition,
 		e.replicationStopPosition,
+		nowNs,
 	)
 	if err != nil {
 		e.HandleError(nowNs, err)
@@ -600,19 +606,19 @@ func (e *Election) handleFollowerCatchup(nowNs int64) int {
 
 // handleFollowerLogInit routes the follower to the live log.
 //
-// LOG_INIT is reached with the adapter already on the advertised session in
-// two cases:
+// The election reaches LOG_INIT with the adapter already on the advertised
+// session in two cases:
 //   - catchup joined the session earlier in this election
 //   - a settled re-entry kept the previous bind while prepare stopped the log
 //     recording
 //
 // Bound re-join restarts a stopped recording for the bound image. The re-join
-// selects no image and never rebinds the adapter. The bound path does not
+// does not select an image or rebind the adapter. The bound path does not
 // compare join position. The bound image fixed that position in an earlier
-// election, and the adapter has consumed past it.
+// election. The adapter has consumed past that position.
 //
-// A refused re-join routes to LOG_AWAIT. LOG_AWAIT position checks guard any
-// fresh bind.
+// A refused re-join routes to LOG_AWAIT. LOG_AWAIT checks the join position
+// before any fresh bind.
 //
 // A successful bound re-join commits the leadership term into the recording
 // log before READY. Catchup join starts the REMOTE recording but does not call
@@ -642,12 +648,7 @@ func (e *Election) handleFollowerLogInit(nowNs int64) int {
 		e.state(ElectionStateFollowerLogAwait, nowNs, "")
 		return 1
 	}
-	if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
-		e.HandleError(nowNs, err)
-		return 1
-	}
-	e.state(ElectionStateFollowerReady, nowNs, "")
-	return 1
+	return e.commitOpenTerm(ElectionStateFollowerReady, nowNs)
 }
 
 func (e *Election) handleFollowerLogAwait(nowNs int64) int {
@@ -665,12 +666,7 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 		return 1
 	}
 	if joined {
-		if err := e.commitRecordingLogTerm(e.leadershipTermID, e.logPosition, NullValue); err != nil {
-			e.HandleError(nowNs, err)
-			return 1
-		}
-		e.state(ElectionStateFollowerReady, nowNs, "")
-		return 1
+		return e.commitOpenTerm(ElectionStateFollowerReady, nowNs)
 	}
 	return e.heartbeatTimeoutWork(nowNs, errLiveLogJoinAsFollower)
 }

@@ -66,9 +66,6 @@ func TestFollowerLogReplication_installsWhenFactoryNonNil(t *testing.T) {
 	require.Equal(t, appendBefore, e.AppendPosition())
 }
 
-// Nil host factory: re-call while lagging.
-//
-// Timeout and caught-up paths still hold.
 func TestFollowerLogReplication_nilFactoryTimeoutCaughtUpOnly(t *testing.T) {
 	t.Parallel()
 
@@ -100,7 +97,7 @@ func TestFollowerLogReplication_nilFactoryTimeoutCaughtUpOnly(t *testing.T) {
 	t.Run("nil factory caught up still canvasses", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		cfg, deps, clock, _, _ := testElectionDeps(t)
 		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
 		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
@@ -119,7 +116,7 @@ func TestFollowerLogReplication_nilFactoryTimeoutCaughtUpOnly(t *testing.T) {
 			LeadershipTermID:           cfg.LeadershipTermID + 1,
 			TermBaseLogPosition:        cfg.AppendPosition,
 			LogPosition:                cfg.AppendPosition,
-			Timestamp:                  epochClock.nowMs,
+			Timestamp:                  clock.nowNs,
 		}}, spy.calls)
 	})
 }

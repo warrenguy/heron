@@ -71,7 +71,6 @@ func newTestHostAdapter(
 		ThisMember:               members[thisIdx],
 		LeaderHeartbeatTimeoutNs: 10_000_000_000,
 		NanoClock:                clock.TimeNs,
-		EpochClock:               func() int64 { return 42_000 },
 		LeaderMemberID:           election.NullMemberID,
 	}
 	for _, opt := range opts {
@@ -145,7 +144,6 @@ func TestNewHostAdapter_panics(t *testing.T) {
 			ThisMember:               members[0],
 			LeaderHeartbeatTimeoutNs: 10,
 			NanoClock:                clock.TimeNs,
-			EpochClock:               func() int64 { return 1 },
 			LeaderMemberID:           election.NullMemberID,
 		}
 	}
@@ -188,15 +186,6 @@ func TestNewHostAdapter_panics(t *testing.T) {
 			cfg: func() election.HostAdapterConfig {
 				c := valid()
 				c.NanoClock = nil
-				return c
-			},
-		},
-		{
-			name: "nil EpochClock",
-			want: "election: nil EpochClock",
-			cfg: func() election.HostAdapterConfig {
-				c := valid()
-				c.EpochClock = nil
 				return c
 			},
 		},
@@ -277,8 +266,6 @@ func TestNewHostAdapter_leaderMemberID_zeroIsValid(t *testing.T) {
 	require.Same(t, host, agent.Egress())
 }
 
-// Construct seeds Agent.ThisMemberID from ThisMember even when AgentConfig
-// left the default zero (zero is a valid member id elsewhere).
 func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 	t.Parallel()
 
@@ -302,7 +289,6 @@ func TestNewHostAdapter_seedsThisMemberID(t *testing.T) {
 		ThisMember:               members[thisIdx],
 		LeaderHeartbeatTimeoutNs: 10_000_000_000,
 		NanoClock:                clock.TimeNs,
-		EpochClock:               func() int64 { return 42_000 },
 		LeaderMemberID:           election.NullMemberID,
 	})
 	agent.SetPositions(host)
@@ -1061,8 +1047,6 @@ func requirePublishedNewLeadershipTerm(
 	return pub.Sent[0].Fields.(codecs.NewLeadershipTermFields)
 }
 
-// TestHostAdapter_PublishNewLeadershipTerm_answerConstruction asserts the ten
-// settled-answer construction rows against the real adapter method.
 func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 	t.Parallel()
 
@@ -1076,7 +1060,7 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 		recordingID = int64(88)
 		sessionID   = int32(42)
 		appVersion  = int32(-7)
-		epochStamp  = int64(99_000)
+		clusterTime = int64(99_000_000_000)
 	)
 
 	baseAnswer := consensus.CanvassAnswer{
@@ -1102,11 +1086,12 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 	) (*election.HostAdapter, *election.SbePublisher) {
 		t.Helper()
 		members := hostAdapterMembers(3)
-		host, _, pub, _ := newTestHostAdapter(t, members, thisIdx, func(c *election.HostAdapterConfig) {
-			c.EpochClock = func() int64 { return epochStamp }
+		withLookup := func(c *election.HostAdapterConfig) {
 			c.RecordingLogLookup = lookup
 			c.AppVersion = appVersion
-		})
+		}
+		host, _, pub, clock := newTestHostAdapter(t, members, thisIdx, withLookup)
+		clock.nowNs = clusterTime
 		return host, pub
 	}
 
@@ -1223,7 +1208,7 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 		fields := requirePublishedNewLeadershipTerm(t, host, pub, baseAnswer)
 		require.Equal(t, int32(thisIdx), fields.LeaderMemberID)
 		require.Equal(t, clusterwire.BooleanType_FALSE, fields.IsStartup)
-		require.Equal(t, epochStamp, fields.Timestamp)
+		require.Equal(t, clusterTime, fields.Timestamp)
 		require.Equal(t, appVersion, fields.AppVersion)
 		require.Equal(t, logPos, fields.LogPosition)
 		require.Equal(t, commitPos, fields.CommitPosition)

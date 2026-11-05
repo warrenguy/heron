@@ -399,9 +399,7 @@ func attachElectionHost(node *Node) (election.ElectionHost, *simAgentHandler, []
 	return host, handler, election.MembersPtrs(node.members)
 }
 
-// attachReplicationHost builds Agent + HostAdapter + simReplicationHost.
-//
-// Members slice is shared between HostAdapter and ElectionDeps (same pointers).
+// attachReplicationHost builds the Agent, HostAdapter, and simReplicationHost.
 func attachReplicationHost(
 	node *Node,
 	cfg election.ElectionConfig,
@@ -421,7 +419,6 @@ func attachReplicationHost(
 		ThisMember:               thisMember,
 		LeaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		NanoClock:                node.clock.TimeNs,
-		EpochClock:               node.clock.TimeMs,
 		LeaderMemberID:           election.NullMemberID,
 		RecordingLogLookup:       node.recordingLog,
 		AppVersion:               cfg.AppVersion,

@@ -170,9 +170,12 @@ type ConsensusModule struct {
 // state counter. A service container with Recovery set reads that counter in
 // its Open. The election does not wait for the service start acks.
 //
-// Returns an error when Config fails Validate, a connect fails, a counter add
-// or lookup fails, recovery or the snapshot load fails, or a stream fails to
-// open.
+// Returns an error when:
+//   - Config fails Validate
+//   - a connect fails
+//   - a counter add or lookup fails
+//   - recovery or the snapshot load fails
+//   - a stream fails to open
 //
 // On error Open closes every handle it opened. Open then releases the cluster
 // directory lock and returns nil.
@@ -407,7 +410,6 @@ func OpenConsensusModule(
 		LeaderHeartbeatTimeoutNs: electionCfg.LeaderHeartbeatTimeoutNs,
 		NanoClock:                nanoClock,
 		LeaderMemberID:           election.NullMemberID,
-		EpochClock:               epochClock,
 		RecordingLogLookup:       recovery.RecordingLog(),
 		AppVersion:               electionCfg.AppVersion,
 	})

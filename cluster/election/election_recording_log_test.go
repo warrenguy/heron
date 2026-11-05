@@ -51,20 +51,19 @@ func electionAtStateWithLog(
 	log election.RecordingLogCoherency,
 	lookup election.RecordingLogLookup,
 	state election.ElectionState,
-) (*election.Election, *FakeEpochClock) {
+) *election.Election {
 	t.Helper()
 
-	cfg, deps, clock, epoch, _ := testElectionDeps(t)
+	cfg, deps, clock, _, _ := testElectionDeps(t)
 	cfg.LeadershipTermID = leadershipTermID
 	deps.Host = &recordingElectionHost{clock: clock, localLogRecordingID: recordingID}
 	deps.RecordingLog = log
 	deps.RecordingLogLookup = lookup
 	e := election.NewElection(cfg, deps)
 	election.SetStateForTest(e, state)
-	return e, epoch
+	return e
 }
 
-// mapArchiveLister is a map-backed ArchiveLister for PlanRecovery in election tests.
 type mapArchiveLister map[int64]recordinglog.LogRecordingExtents
 
 func (m mapArchiveLister) ListRecording(id int64) (recordinglog.LogRecordingExtents, error) {
@@ -154,7 +153,7 @@ func TestRecordingLog_leaderInitEnsureCoherent(t *testing.T) {
 			require.Equal(t, election.ElectionStateLeaderReady, e.State())
 			require.Equal(t, cfg.LeadershipTermID, election.LogLeadershipTermIDForTest(e))
 
-			requireDurableTermIdentity(
+			entry := requireDurableTermIdentity(
 				t,
 				log,
 				dir,
@@ -162,6 +161,7 @@ func TestRecordingLog_leaderInitEnsureCoherent(t *testing.T) {
 				testRecordingID,
 				recordinglog.NullPosition,
 			)
+			require.Equal(t, clock.nowNs, entry.Timestamp)
 		})
 	}
 }
@@ -309,7 +309,7 @@ func TestRecordingLog_replayNewLeadershipTermEvent(t *testing.T) {
 			t.Parallel()
 
 			log, dir := openPriorTermLog(t, priorTerm)
-			e, epoch := electionAtStateWithLog(
+			e := electionAtStateWithLog(
 				t, testRecordingID, priorTerm, log, log, state,
 			)
 
@@ -331,7 +331,7 @@ func TestRecordingLog_replayNewLeadershipTermEvent(t *testing.T) {
 			require.Equal(t, termID, election.LogLeadershipTermIDForTest(e))
 			require.Equal(t, eventPos, e.LogPosition())
 			got := requireTermBasePair(t, log, termID, priorTerm, baseB)
-			require.Equal(t, epoch.nowMs, got.Timestamp)
+			require.Equal(t, event.Timestamp, got.Timestamp)
 
 			require.NoError(t, e.HandleReplayNewLeadershipTermEvent(event))
 			require.Len(t, termIdentities(log.Entries()), 2)
@@ -346,7 +346,7 @@ func TestRecordingLog_replayNewLeadershipTermEvent(t *testing.T) {
 		t.Parallel()
 
 		log, _ := openPriorTermLog(t, priorTerm)
-		e, _ := electionAtStateWithLog(
+		e := electionAtStateWithLog(
 			t, election.NullValue, priorTerm, log, log, election.ElectionStateFollowerCatchup,
 		)
 		before := termIdentities(log.Entries())
@@ -360,7 +360,7 @@ func TestRecordingLog_replayNewLeadershipTermEvent(t *testing.T) {
 	t.Run("nil_log", func(t *testing.T) {
 		t.Parallel()
 
-		e, _ := electionAtStateWithLog(
+		e := electionAtStateWithLog(
 			t, testRecordingID, priorTerm, nil, nil, election.ElectionStateFollowerReplay,
 		)
 
@@ -573,7 +573,7 @@ func TestReplayNewLeadershipTermEvent_appendErrorRestartsElection(t *testing.T) 
 
 		log, _ := openPriorTermLog(t, priorTerm)
 		fake := &failFirstEnsure{RecordingLogCoherency: log, err: refuse}
-		e, _ := electionAtStateWithLog(
+		e := electionAtStateWithLog(
 			t, testRecordingID, priorTerm, fake, log, election.ElectionStateFollowerCatchup,
 		)
 
@@ -735,7 +735,7 @@ func TestUpdateRecordingLog_propagation(t *testing.T) {
 	t.Run("follower log await success advances log leadership term", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		cfg, deps, clock, _, _ := testElectionDeps(t)
 		spy := &recordingLogCoherencySpy{}
 		deps.RecordingLog = spy
 		adoptedTerm := driveFollowerLogJoinToReady(t, cfg, deps, clock)
@@ -747,14 +747,14 @@ func TestUpdateRecordingLog_propagation(t *testing.T) {
 			LeadershipTermID:           adoptedTerm,
 			TermBaseLogPosition:        cfg.LogPosition,
 			LogPosition:                election.NullValue,
-			Timestamp:                  epochClock.nowMs,
+			Timestamp:                  clock.nowNs,
 		}}, spy.calls)
 	})
 
 	t.Run("forwards file sync level from deps", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		cfg, deps, clock, _, _ := testElectionDeps(t)
 		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
 		deps.Host = host
 		spy := &recordingLogCoherencySpy{}
@@ -772,7 +772,7 @@ func TestUpdateRecordingLog_propagation(t *testing.T) {
 			LeadershipTermID:           cfg.LeadershipTermID,
 			TermBaseLogPosition:        cfg.LogPosition,
 			LogPosition:                election.NullValue,
-			Timestamp:                  epochClock.nowMs,
+			Timestamp:                  clock.nowNs,
 			FileSyncLevel:              recordinglog.FileSyncData,
 		}}, spy.calls)
 	})
