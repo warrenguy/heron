@@ -551,6 +551,25 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				}}
 			},
 		},
+		{
+			name:     "LifecycleRefused",
+			sentinel: ErrLifecycleRefused,
+			drive: func(t *testing.T, handler func(error)) errorSiteRun {
+				t.Helper()
+				run := setupStartRefusal(t, handler)
+				sent := true
+				run.svc.probes = map[string]func(*Agent){
+					"start": func(a *Agent) { sent = a.ScheduleTimer(1, 2) },
+				}
+				position := run.proxyPub.Position()
+				run.trigger()
+				return errorSiteRun{agent: run.agent, check: func(t *testing.T) {
+					t.Helper()
+					require.False(t, sent)
+					require.Equal(t, position, run.proxyPub.Position())
+				}}
+			},
+		},
 	}
 
 	for _, tc := range tests {

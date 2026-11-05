@@ -258,8 +258,14 @@ type Agent struct {
 
 	logSubscription *aeron.Subscription
 
-	leadershipHandler NewLeadershipTermEventHandler
-	snapshotHandler   TakeSnapshotHandler
+	leadershipHandler     NewLeadershipTermEventHandler
+	snapshotHandler       TakeSnapshotHandler
+	roleChangeHandler     RoleChangeHandler
+	backgroundWorkHandler BackgroundWorkHandler
+
+	// activeLifecycleCall is the running lifecycle call, or lifecycleCallNone.
+	// A panic in the call also resets it to lifecycleCallNone.
+	activeLifecycleCall lifecycleCall
 
 	// ackID is the next ServiceAck id to send. Starts 0. Advances only on a
 	// successful drain send.
@@ -357,9 +363,6 @@ var _ Cluster = (*Agent)(nil)
 // When StartAck is set and LogPosition is non-negative, NewAgent queues one
 // unready start entry. A negative LogPosition queues nothing. [Open]
 // refuses a negative LogPosition.
-//
-// NewLeadershipTermEventHandler and TakeSnapshotHandler are detected once
-// via type assertion on cfg.Service.
 func NewAgent(cfg AgentConfig) *Agent {
 	a := &Agent{
 		serviceID:               cfg.ServiceID,
@@ -400,12 +403,10 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if !isNilOrTypedNil(cfg.ResponsePublications) {
 		a.responsePublications = cfg.ResponsePublications
 	}
-	if nlt, ok := cfg.Service.(NewLeadershipTermEventHandler); ok {
-		a.leadershipHandler = nlt
-	}
-	if snap, ok := cfg.Service.(TakeSnapshotHandler); ok {
-		a.snapshotHandler = snap
-	}
+	a.leadershipHandler, _ = cfg.Service.(NewLeadershipTermEventHandler)
+	a.snapshotHandler, _ = cfg.Service.(TakeSnapshotHandler)
+	a.roleChangeHandler, _ = cfg.Service.(RoleChangeHandler)
+	a.backgroundWorkHandler, _ = cfg.Service.(BackgroundWorkHandler)
 	a.controlOnFragment = a.handleControlFragment
 	a.clientSessions = a.walkClientSessions
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
@@ -423,43 +424,24 @@ func NewAgent(cfg AgentConfig) *Agent {
 	return a
 }
 
-// DoWork runs one duty tick. nowNs is a monotonic time in nanoseconds,
-// such as time.Now().UnixNano(). Take deadlines and the start ack deadline
-// use nowNs. A clock that never advances does not fire a deadline. A lost
-// START or STOP signal then stalls the take forever. A Start error on a
-// stream that never connects keeps DoWork in the start ack drain.
+// DoWork runs one duty tick. nowNs is a monotonic time in nanoseconds. Take
+// deadlines and the start ack deadline use nowNs. A clock that never advances
+// does not fire a deadline. A lost START or STOP signal then stalls the take
+// forever. A Start error on a stream that never connects then keeps DoWork in
+// the start ack drain.
 //
-// Order:
-//  1. serviceFailure or closed: return 0
-//  2. start work once: Service.Start(agent). The agent marks the queued
-//     start entry ready when Service is nil or Start returns nil. A Start
-//     error fails the start entry with RelevantID NULL_VALUE. Until the
-//     agent marks the Start error, each tick drains only the start entry.
-//     The tick then returns. The start ack wait begins at the first tick
-//     after Start. See failedStartAckWork.
-//  3. archive Poll when an archive client is wired
-//  4. snapshot take work while a take runs
-//  5. control work: poll control, request readiness sweep, drain at most one
-//     ready first queued ack. An entry with a failure marks it on send or
-//     on a terminal offer code
-//  6. response add work while responseAdds is non-empty: poll each in-flight
-//     response publication add once
-//  7. join work while pendingJoin is non-nil and no image is bound. A bind
-//     runs the join egress rule
-//  8. log poll when the image is bound and CommittedPosition is non-nil. The
-//     poll bound is min(committed, lowest unready request entry position).
-//     While a take runs, the bound also holds at the take action position
-//  9. unbind when zero polled and the image is closed, at end of stream, or
-//     at maxLogPosition. Unbind closes every response publication. It
-//     resolves or cancels every in-flight add
+// Behaviour:
+//   - After a Start error, each tick drains only the start entry, until the
+//     agent marks the service failure.
+//   - The agent can send the ack of a take in the tick that resolves the take.
+//   - The log poll bound is min(committed, lowest unready request entry
+//     position).
+//   - While a take runs, the take action position also caps the bound.
+//   - The agent does not unbind while a take runs.
 //
-// A take that resolves in step 4 can ack in step 5 of the same tick.
-//
-// Returns the work count: Start, the archive Poll count, each completed take
-// state, control fragments, each sent ack, each in-flight response add poll,
-// each ready response add, each join bind, and each polled fragment. An add
-// that a bind starts counts when its poll runs. The disconnect polls of an
-// unbind or a non-leader join do not count.
+// Returns the work count. A response add that a bind starts counts when its
+// poll runs. The disconnect polls of an unbind or a non-leader join do not
+// count.
 //
 // Concurrency: invoker-only.
 func (a *Agent) DoWork(nowNs int64) int {
@@ -472,14 +454,12 @@ func (a *Agent) DoWork(nowNs int64) int {
 	if !a.started {
 		a.started = true
 		work++
-		if a.service != nil {
-			if err := a.service.Start(a); err != nil {
-				a.failAckEntry(ackKindStart, fmt.Errorf("%w: %w", ErrStart, err))
-				if a.serviceFailure != nil {
-					return work
-				}
-				return work + a.drainReadyCoordinationAck()
+		if err := a.callStart(); err != nil {
+			a.failAckEntry(ackKindStart, fmt.Errorf("%w: %w", ErrStart, err))
+			if a.serviceFailure != nil {
+				return work
 			}
+			return work + a.drainReadyCoordinationAck()
 		}
 		a.markAckReady(ackKindStart)
 	}
@@ -531,6 +511,7 @@ func (a *Agent) DoWork(nowNs int64) int {
 	}
 
 	a.maybeUnbind(polled)
+	work += a.backgroundWork(nowNs)
 	return work
 }
 
@@ -547,6 +528,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 // take. Ends every in-flight response add and closes every response
 // publication. Closes the log subscription Agent added. Does not close
 // Images.
+//
+// Concurrency: a service callback must not call Close.
 func (a *Agent) Close() {
 	if a.closed {
 		return
@@ -590,7 +573,7 @@ func (a *Agent) ClusterTime() int64 {
 
 // ScheduleTimer implements [Cluster.ScheduleTimer].
 func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
-	if !a.canPublish() {
+	if a.refuseInsideLifecycleCall(refusedScheduleTimer) || !a.canPublish() {
 		return false
 	}
 	result := a.moduleProxy.PublishScheduleTimer(codecs.ScheduleTimerFields{
@@ -602,7 +585,7 @@ func (a *Agent) ScheduleTimer(correlationID, deadline int64) bool {
 
 // CancelTimer implements [Cluster.CancelTimer].
 func (a *Agent) CancelTimer(correlationID int64) bool {
-	if !a.canPublish() {
+	if a.refuseInsideLifecycleCall(refusedCancelTimer) || !a.canPublish() {
 		return false
 	}
 	result := a.moduleProxy.PublishCancelTimer(codecs.CancelTimerFields{
@@ -858,25 +841,24 @@ func (a *Agent) joinWork() int {
 	a.adapter.SetImage(image)
 	a.adapter.SetMaxLogPosition(event.maxLogPosition)
 	a.memberID = event.memberID
-	a.role = event.role
 	a.markAckReady(ackKindJoin)
 	a.joinEgress(event)
 	a.pendingJoin = nil
+	a.changeRole(event.role)
 	return 1
 }
 
-// maybeUnbind releases a done image after a poll with no progress. It
-// advances logPosition to the image position to cover consumed padding,
-// disconnects every session's egress, and sets the role to RoleFollower. It
-// does not close the subscription.
+// maybeUnbind releases a done image after a poll with no progress, unless a
+// snapshot take runs. It advances logPosition to the image position to cover
+// consumed padding. It does not close the subscription.
 func (a *Agent) maybeUnbind(polled int) {
-	if polled != 0 || !a.adapter.isDone() {
+	if a.take != nil || polled != 0 || !a.adapter.isDone() {
 		return
 	}
 	a.logPosition = max(a.adapter.Image().Position(), a.logPosition)
 	a.adapter.SetImage(nil)
 	a.disconnectEgress()
-	a.role = codecs.RoleFollower
+	a.changeRole(codecs.RoleFollower)
 }
 
 // markFailure stores the first fatal error, wrapped with ErrFailed, and

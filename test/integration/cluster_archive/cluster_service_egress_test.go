@@ -245,6 +245,14 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 	requireNoServiceFailures(t, sc, "")
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
+	for i, mem := range sc.members {
+		wantRole := codecs.RoleFollower
+		if i == leaderIndex {
+			wantRole = codecs.RoleLeader
+		}
+		require.Equal(t, wantRole, mem.agent.Role(), "service role index %d:\n%s", i, sc.dump())
+		requireRoleSequence(t, mem, fmt.Sprintf("member %d after election", i))
+	}
 
 	// Phase: connect.
 	egress := &egressRecorder{}
@@ -277,11 +285,24 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 	}
 
 	// Phase: stop the leader, recover the session, and reconnect egress.
+	backgroundBeforeStop := make([]int, len(sc.members))
+	for i, mem := range sc.members {
+		backgroundBeforeStop[i] = mem.rec.backgroundCalls
+	}
 	newLeader, followerIndex, logFloors := stopLeaderAndAwaitEgress(
 		t, sc, pump, session, leaderIndex, preTerm,
 	)
 	newIndex := int(newLeader.ThisMemberID())
 	survivors := []int{newIndex, followerIndex}
+	for _, i := range survivors {
+		mem := sc.members[i]
+		requireRoleSequence(t, mem, fmt.Sprintf("member %d after leader stop", i))
+		require.Greater(t, mem.rec.backgroundCalls, backgroundBeforeStop[i],
+			"background calls index %d:\n%s", i, sc.dump())
+	}
+	newLeaderRoles := sc.members[newIndex].rec.roles
+	require.Equal(t, codecs.RoleLeader, newLeaderRoles[len(newLeaderRoles)-1],
+		"new leader roles %v:\n%s", newLeaderRoles, sc.dump())
 
 	// Phase: echo after leader change.
 	second := []byte(serviceSecondPayload)

@@ -88,6 +88,9 @@ type sessionRecorder struct {
 	closes     []recordedClose
 	order      []string
 
+	roles           []codecs.Role
+	backgroundCalls int
+
 	echo        bool
 	echoResults []int64
 
@@ -145,6 +148,15 @@ func (s *sessionRecorder) SessionMessage(
 }
 
 func (s *sessionRecorder) TimerEvent(_, _ int64) {}
+
+func (s *sessionRecorder) RoleChange(role codecs.Role) {
+	s.roles = append(s.roles, role)
+}
+
+func (s *sessionRecorder) DoBackgroundWork(int64) int {
+	s.backgroundCalls++
+	return 0
+}
 
 func (s *sessionRecorder) holdsOpen(sessionID int64) bool {
 	return slices.Contains(s.opens, sessionID)
@@ -370,6 +382,24 @@ func requireNoServiceFailures(t *testing.T, sc serviceCluster, detail string) {
 	for i := range sc.members {
 		requireNoServiceFailure(t, sc, i, detail)
 	}
+}
+
+// requireRoleSequence asserts that the RoleChange calls of mem report only
+// changes from an initial FOLLOWER. The last role, or FOLLOWER without a call,
+// must equal agent.Role.
+func requireRoleSequence(t *testing.T, mem serviceMember, label string) {
+	t.Helper()
+
+	roles := mem.rec.roles
+	if len(roles) == 0 {
+		require.Equal(t, codecs.RoleFollower, mem.agent.Role(), "%s: role without a change", label)
+		return
+	}
+	require.NotEqual(t, codecs.RoleFollower, roles[0], "%s: first role %v", label, roles)
+	for i := 1; i < len(roles); i++ {
+		require.NotEqual(t, roles[i-1], roles[i], "%s: repeated role %v", label, roles)
+	}
+	require.Equal(t, roles[len(roles)-1], mem.agent.Role(), "%s: last role %v", label, roles)
 }
 
 // openServiceCluster starts three members with one session recorder

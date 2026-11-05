@@ -32,6 +32,9 @@ type ClusteredService interface {
 	// the service failure. The failure wraps [ErrStart] and the Start
 	// error. With no queued start ack, or no bound control publication,
 	// the agent marks the service failure at once. The duty cycle stops.
+	//
+	// The agent refuses module requests and session offers inside Start.
+	// See [ErrLifecycleRefused].
 	Start(cluster Cluster) error
 
 	// SessionOpen runs after the agent adds session to the registry.
@@ -121,9 +124,50 @@ type LoadSnapshotHandler interface {
 	LoadSnapshot(image *aeron.Image) error
 }
 
+// RoleChangeHandler is the optional extension a service implements to
+// observe the role changes of its member. NewAgent detects the handler once
+// with a type assertion.
+//
+// Behaviour: the agent calls RoleChange only when the value Role returns
+// changes. Role returns role during the call. A bind calls RoleChange with
+// the JoinLog role, after the agent updates session egress for the join. An
+// unbind calls RoleChange with codecs.RoleFollower, after the agent closes
+// every response publication. An unbind waits for a running snapshot take
+// to end. RoleChange does not run during a take.
+//
+// The agent refuses module requests and session offers inside RoleChange.
+// See [ErrLifecycleRefused].
+//
+// Concurrency: invoker-only.
+type RoleChangeHandler interface {
+	RoleChange(role codecs.Role)
+}
+
+// BackgroundWorkHandler is the optional extension a service implements to
+// run work outside the replicated state machine. NewAgent detects the
+// handler once with a type assertion.
+//
+// Behaviour: the agent calls DoBackgroundWork once per DoWork call, after
+// the log poll. The first call follows a successful Start. The agent does
+// not call DoBackgroundWork after a Start error, a service failure, or
+// Close. nowNs is the DoWork argument, not cluster time.
+//
+// DoBackgroundWork must not change service state. The agent refuses module
+// requests and session offers inside DoBackgroundWork. See
+// [ErrLifecycleRefused].
+//
+// Returns the work count. DoWork adds a positive count to its own.
+//
+// Concurrency: invoker-only. A slow call delays the duty cycle.
+type BackgroundWorkHandler interface {
+	DoBackgroundWork(nowNs int64) int
+}
+
 // Cluster is the service-facing proxy into member state.
 //
 // Concurrency: invoker-only. Call from log-event callbacks and DoWork only.
+// The agent refuses module requests and session offers inside Start,
+// RoleChange, and DoBackgroundWork. See [ErrLifecycleRefused].
 type Cluster interface {
 	LogPosition() int64
 	ClusterTime() int64
@@ -139,6 +183,8 @@ type Cluster interface {
 	//
 	// Returns:
 	//   - true when the request frame was sent
+	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
+	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
@@ -155,6 +201,8 @@ type Cluster interface {
 	//
 	// Returns:
 	//   - true when the request frame was sent
+	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
+	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
@@ -171,9 +219,12 @@ type Cluster interface {
 	// Behaviour: sends on every role. A follower's module marks the session
 	// closing, so a later leader still appends the close.
 	//
-	// Call from log-event callbacks or DoWork.
+	// Call from log-event callbacks or DoWork, outside Start, RoleChange, and
+	// DoBackgroundWork.
 	//
 	// Returns:
+	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
+	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
 	//   - true when this member sent the frame, now or on an earlier call
 	//   - false when id is not an open session. The call reports
 	//     [ErrCloseUnknownSession]. Must not retry.

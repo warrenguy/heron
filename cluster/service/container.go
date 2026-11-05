@@ -662,6 +662,8 @@ func (c *Container) ArchiveClient() *archive.Client {
 // Ownership: the container does not own the transport client.
 //
 // Returns the joined close errors, or nil.
+//
+// Concurrency: a service callback must not call Close.
 func (c *Container) Close() error {
 	if c == nil {
 		return nil
