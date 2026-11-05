@@ -88,6 +88,28 @@ func validateResponseMode(requestChannel, responseChannel string) error {
 	return nil
 }
 
+// validateControlStreamIDs rejects one ipc stream id on both control channels
+// outside response mode. Connect puts one session-id on both channels. The
+// driver refuses the Archive response publication because it clashes with the
+// request publication.
+func validateControlStreamIDs(
+	requestChannel, responseChannel string,
+	requestStreamID, responseStreamID int32,
+) error {
+	if requestStreamID != responseStreamID || aeron.IsControlModeResponse(responseChannel) {
+		return nil
+	}
+	requestMedia, _ := ingressChannelMedia(requestChannel)
+	responseMedia, _ := ingressChannelMedia(responseChannel)
+	if requestMedia != "ipc" || responseMedia != "ipc" {
+		return nil
+	}
+	return fmt.Errorf(
+		"archive: ipc control response stream id must differ from request stream id %d",
+		requestStreamID,
+	)
+}
+
 type responseChannelResolver interface {
 	Channel() string
 	TryResolveChannelEndpointPort() (string, bool)

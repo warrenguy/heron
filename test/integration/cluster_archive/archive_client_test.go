@@ -5,6 +5,7 @@ package cluster_archive_test
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -564,13 +565,130 @@ func TestArchiveClient_responseChannelConnect(t *testing.T) {
 			harness.CleanupClose(t, "close archive client", archiveClient.Close)
 
 			require.Equal(t, node.ArchiveID, strconv.FormatInt(archiveClient.ArchiveID(), 10))
-			require.Contains(
-				t,
-				archiveClient.Config().EffectiveControlRequestChannel(),
-				aeron.ChannelResponseCorrelationIDParam,
-			)
+			effective := archiveClient.Config()
+			requestChannel := effective.EffectiveControlRequestChannel()
+			responseChannel := effective.EffectiveControlResponseChannel()
+			require.Contains(t, requestChannel, aeron.ChannelResponseCorrelationIDParam)
+			require.NotContains(t, requestChannel, aeron.ChannelSessionIDParam)
+			require.NotContains(t, responseChannel, aeron.ChannelSessionIDParam)
 		})
 	}
+}
+
+// TestArchiveClient_controlChannelSessionID asserts both control channels carry
+// one session-id.
+func TestArchiveClient_controlChannelSessionID(t *testing.T) {
+	md := harness.StartParallel(t)
+	controlPort := harness.FreeUDPPorts(t, 1)[0]
+	harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveControlChannel(controlPort),
+	})
+	aeronClient, _ := harness.ConnectIPCClient(t, md)
+
+	tests := []struct {
+		name          string
+		cfg           archive.Config
+		channelPrefix string
+	}{
+		{
+			name:          "ipc_first",
+			cfg:           archive.Config{Aeron: aeronClient}.Normalize(),
+			channelPrefix: "aeron:ipc?",
+		},
+		{
+			name: "udp",
+			cfg: archive.Config{
+				ControlRequestChannel:  harness.ArchiveControlChannel(controlPort),
+				ControlResponseChannel: "aeron:udp?endpoint=127.0.0.1:0",
+				Aeron:                  aeronClient,
+			}.WithRemoteControl().Normalize(),
+			channelPrefix: "aeron:udp?",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Phase: connect two sessions on one Archive.
+			sessions := []*archive.ConnectResult{
+				connectControlSession(t, aeronClient, tc.cfg),
+				connectControlSession(t, aeronClient, tc.cfg),
+			}
+			sessionIDs := make([]int32, len(sessions))
+			for i, session := range sessions {
+				cfg := session.Config
+				sessionIDs[i] = requireControlChannelSessionID(t, cfg)
+				requestChannel := cfg.EffectiveControlRequestChannel()
+				responseChannel := cfg.EffectiveControlResponseChannel()
+				require.True(t, strings.HasPrefix(requestChannel, tc.channelPrefix), requestChannel)
+				require.True(t, strings.HasPrefix(responseChannel, tc.channelPrefix), responseChannel)
+				require.Equal(t, int32(10), cfg.EffectiveControlRequestStreamID())
+				require.Equal(t, int32(20), cfg.EffectiveControlResponseStreamID())
+			}
+			require.NotEqual(t, sessionIDs[0], sessionIDs[1])
+
+			// Phase: each control subscription holds one image from its own
+			// session.
+			harness.RunSoak(t, 200*time.Millisecond, time.Millisecond, func() {
+				aeronClient.DoWork()
+			})
+			for i, session := range sessions {
+				sub := session.ControlSubscription
+				require.Equal(t, 1, sub.ImageCount(), "session %d images", i)
+				image, ok := sub.ImageAt(0)
+				require.True(t, ok)
+				require.Equal(t, sessionIDs[i], image.SessionID())
+			}
+		})
+	}
+}
+
+// connectControlSession runs one AsyncConnect on cfg. It calls
+// aeronClient.DoWork before each poll. Cleanup closes the control publication
+// and subscription.
+func connectControlSession(
+	t *testing.T,
+	aeronClient *aeron.Client,
+	cfg archive.Config,
+) *archive.ConnectResult {
+	t.Helper()
+
+	connect, err := archive.NewAsyncConnect(t.Context(), cfg)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close async connect", connect.Close)
+
+	var result *archive.ConnectResult
+	var pollErr error
+	harness.PollUntilBool(10*time.Second, time.Millisecond, func() bool {
+		aeronClient.DoWork()
+		result, pollErr = connect.Poll()
+		return result != nil || pollErr != nil
+	})
+	require.NoError(t, pollErr)
+	require.NotNil(t, result, "async connect did not complete in state %v", connect.State())
+	harness.CleanupClose(t, "close control subscription", result.ControlSubscription.Close)
+	harness.CleanupClose(t, "close control publication", result.ControlPublication.Close)
+	return result
+}
+
+// requireControlChannelSessionID asserts each effective control channel of cfg
+// holds one session-id. Both channels hold the same value. It returns that value.
+func requireControlChannelSessionID(t *testing.T, cfg archive.Config) int32 {
+	t.Helper()
+
+	channelSessionID := func(channel string) string {
+		t.Helper()
+
+		require.Equal(t, 1, strings.Count(channel, aeron.ChannelSessionIDParam), channel)
+		paramIdx := aeron.ChannelParamIndex(channel, aeron.ChannelSessionIDParam, true)
+		require.GreaterOrEqual(t, paramIdx, 0, channel)
+		return aeron.ChannelParamValue(channel, paramIdx, aeron.ChannelSessionIDParam)
+	}
+	requestValue := channelSessionID(cfg.EffectiveControlRequestChannel())
+	responseValue := channelSessionID(cfg.EffectiveControlResponseChannel())
+	require.Equal(t, requestValue, responseValue)
+	sessionID, err := strconv.ParseInt(requestValue, 10, 32)
+	require.NoError(t, err)
+	return int32(sessionID)
 }
 
 // connectArchiveClient connects an archive client over the local control

@@ -44,9 +44,16 @@ type Config struct {
 	// was called first.
 	LocalControlChannel string
 
-	ControlRequestStreamID  int32
+	ControlRequestStreamID int32
+
+	// ControlResponseStreamID is the control response stream id. Zero uses
+	// DefaultControlResponseStreamID after Normalize. IPC-first connect uses it
+	// too.
+	//
+	// On ipc outside response mode, it must differ from the request stream id.
 	ControlResponseStreamID int32
-	LocalControlStreamID    int32
+
+	LocalControlStreamID int32
 
 	ConnectTimeout time.Duration
 	// ControlResponseTimeout bounds control RPC response awaits. Zero uses
@@ -180,6 +187,14 @@ func (cfg Config) ValidateForConnect() error {
 	if err := validateResponseMode(requestChannel, responseChannel); err != nil {
 		return err
 	}
+	if err := validateControlStreamIDs(
+		requestChannel,
+		responseChannel,
+		cfg.effectiveControlRequestStreamID,
+		cfg.effectiveControlResponseStreamID,
+	); err != nil {
+		return err
+	}
 
 	if cfg.ConnectTimeout <= 0 {
 		return errors.New("archive: ConnectTimeout must be positive")
@@ -206,14 +221,17 @@ func (cfg Config) ValidateForConnect() error {
 }
 
 // EffectiveControlRequestChannel returns the request URI after IPC-first selection.
-// After a control-mode=response connect, Client.Config reports the URI with
-// response-correlation-id added.
+//
+// After connect, Client.Config reports the URI with session-id added. After a
+// control-mode=response connect, it adds response-correlation-id instead.
 func (cfg Config) EffectiveControlRequestChannel() string {
 	return cfg.effectiveControlRequestChannel
 }
 
 // EffectiveControlResponseChannel returns the response subscription URI after
 // IPC-first selection.
+//
+// Outside response mode, Client.Config reports the URI with session-id added.
 func (cfg Config) EffectiveControlResponseChannel() string {
 	return cfg.effectiveControlResponseChannel
 }
@@ -237,6 +255,7 @@ func (cfg Config) OwnsAeronClient() bool {
 }
 
 func applyEffectiveChannels(cfg Config) Config {
+	cfg.effectiveControlResponseStreamID = cfg.ControlResponseStreamID
 	if cfg.LocalControlChannel != "" {
 		requestStreamID := cfg.LocalControlStreamID
 		if requestStreamID == 0 {
@@ -245,7 +264,6 @@ func applyEffectiveChannels(cfg Config) Config {
 		cfg.effectiveControlRequestChannel = cfg.LocalControlChannel
 		cfg.effectiveControlResponseChannel = cfg.LocalControlChannel
 		cfg.effectiveControlRequestStreamID = requestStreamID
-		cfg.effectiveControlResponseStreamID = requestStreamID
 		return cfg
 	}
 
@@ -253,15 +271,9 @@ func applyEffectiveChannels(cfg Config) Config {
 	if responseChannel == "" {
 		responseChannel = cfg.ControlRequestChannel
 	}
-	requestStreamID := cfg.ControlRequestStreamID
-	responseStreamID := cfg.ControlResponseStreamID
-	if responseStreamID == 0 {
-		responseStreamID = requestStreamID
-	}
 	cfg.effectiveControlRequestChannel = cfg.ControlRequestChannel
 	cfg.effectiveControlResponseChannel = responseChannel
-	cfg.effectiveControlRequestStreamID = requestStreamID
-	cfg.effectiveControlResponseStreamID = responseStreamID
+	cfg.effectiveControlRequestStreamID = cfg.ControlRequestStreamID
 	return cfg
 }
 

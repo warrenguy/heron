@@ -4,6 +4,7 @@ package archive
 
 import (
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -25,13 +26,11 @@ const (
 	asyncConnectPollTimeout    = 5 * time.Second
 	asyncConnectHarnessDoWorkN = 4
 
-	archiveConnectResponseChannelLen = len(DefaultLocalControlChannel)
-
-	connectEncodedCredentialsPastLayoutMax  = 1245
+	connectEncodedCredentialsPastLayoutMax  = 1229
 	challengeResponseCredentialsAtLayoutMax = 1372
 
 	// pollSendMessageOversizeWireCredentialsLen yields connect wire larger than harness pub max.
-	pollSendMessageOversizeWireCredentialsLen = 8430
+	pollSendMessageOversizeWireCredentialsLen = 8414
 
 	connectWireBufferCloseHighWaterCredentialsLen = 1500
 	connectWireBufferPollHighWaterCredentialsLen  = 200
@@ -41,6 +40,14 @@ const (
 )
 
 var archiveConnectClientInfoLen = len(archiveConnectClientInfo(""))
+
+// archiveConnectResponseChannelLen is the fixture connect response channel
+// length. The channel carries the harness session-id.
+var archiveConnectResponseChannelLen = len(aeron.AppendChannelParam(
+	DefaultLocalControlChannel,
+	aeron.ChannelSessionIDParam,
+	strconv.Itoa(int(aeron.AsyncConnectTestSessionID)),
+))
 
 var (
 	asyncConnectFixtureServerVersion       = cnc.ComposeSemanticVersion(1, 12, 0)

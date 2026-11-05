@@ -75,7 +75,7 @@ func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 		model := descriptorPollerModel{await: await}
 
 		eventCount := rapid.IntRange(1, 12).Draw(rt, "eventCount")
-		for i := 0; i < eventCount; i++ {
+		for range eventCount {
 			kind := descriptorEventKind(rapid.IntRange(0, 2).Draw(rt, "kind"))
 			correlationID := rapid.SampledFrom([]int64{await, foreign}).Draw(rt, "correlationID")
 

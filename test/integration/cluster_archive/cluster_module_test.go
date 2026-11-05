@@ -92,11 +92,7 @@ func TestClusterModule_electsOneLeaderOverLiveDrivers(t *testing.T) {
 		archiveClient := m.ArchiveClient()
 		require.NotNil(t, archiveClient)
 		require.False(t, archiveClient.IsClosed())
-		require.Equal(
-			t,
-			archive.DefaultLocalControlChannel,
-			archiveClient.Config().EffectiveControlRequestChannel(),
-		)
+		requireModuleArchiveControlChannels(t, archiveClient.Config())
 		require.False(t, archiveClient.Config().OwnsAeronClient())
 		archiveClients = append(archiveClients, archiveClient)
 		handles = append(handles, logHandles{

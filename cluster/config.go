@@ -150,6 +150,7 @@ type Config struct {
 	//
 	// Co-located Archive over IPC: same URI as ArchiveControlRequestChannel.
 	// Remote Archive: udp URI; endpoint=host:0 lets the driver assign the port.
+	// The module receives control responses on stream 120.
 	//
 	// Normalize applies no default. Validate refuses an empty value.
 	ArchiveControlResponseChannel string

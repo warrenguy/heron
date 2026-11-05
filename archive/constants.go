@@ -24,9 +24,8 @@ const (
 	// DefaultControlRequestStreamID matches Java CONTROL_STREAM_ID_DEFAULT.
 	DefaultControlRequestStreamID int32 = 10
 
-	// DefaultControlResponseStreamID is zero; effective selection uses the request
-	// stream id when unset.
-	DefaultControlResponseStreamID int32 = 0
+	// DefaultControlResponseStreamID matches Java CONTROL_RESPONSE_STREAM_ID_DEFAULT.
+	DefaultControlResponseStreamID int32 = 20
 
 	// DefaultConnectTimeout matches Java CONNECT_TIMEOUT_DEFAULT_NS (5 seconds).
 	DefaultConnectTimeout = 5 * time.Second

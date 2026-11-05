@@ -121,6 +121,19 @@ type AsyncConnect struct {
 // driver heartbeat). Prefer Connect for a blocking handshake with cancel support.
 // Poll does not accept context cancellation; check cancel between Poll calls and
 // call Close on cancel. ctx is not retained on AsyncConnect.
+//
+// Behaviour:
+//   - Outside response mode, NewAsyncConnect draws one session id from the
+//     driver. Both effective control channels carry that id as session-id.
+//   - The draw blocks for one driver round trip. The transport client
+//     DriverTimeout bounds the draw, not ctx.
+//   - The connect deadline starts after the draw.
+//   - A draw error closes an owned transport client. When that client has
+//     terminated, the error wraps ErrTransportTerminating.
+//
+// Concurrency: with Config.Aeron set, NewAsyncConnect is invoker-only on that
+// client's duty cycle. NewAsyncConnect must not run inside a callback of that
+// client.
 func NewAsyncConnect(ctx context.Context, cfg Config) (*AsyncConnect, error) {
 	cfg = cfg.Normalize()
 	if err := cfg.ValidateForConnect(); err != nil {
@@ -129,6 +142,21 @@ func NewAsyncConnect(ctx context.Context, cfg Config) (*AsyncConnect, error) {
 	concluded, client, owns, monitor, err := concludeConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if usesControlChannelSessionID(concluded) {
+		sessionID, err := client.NextAvailableSessionID(
+			concluded.effectiveControlRequestStreamID,
+		)
+		if err != nil {
+			if fault := transportTerminatingError(monitor, client); fault != nil {
+				err = fault
+			}
+			if owns {
+				_ = client.Close()
+			}
+			return nil, fmt.Errorf("archive: next session id: %w", err)
+		}
+		concluded = applyControlChannelSessionID(concluded, sessionID)
 	}
 	nanoClock := resolveNanoClock(concluded.AeronConfig.NanoClock)
 	return &AsyncConnect{
