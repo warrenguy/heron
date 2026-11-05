@@ -9,13 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// logEntryFrame is one TimerEvent, SessionOpenEvent or SessionCloseEvent on
-// the log, with its end position.
+// logEntryFrame is one TimerEvent, SessionOpenEvent, SessionCloseEvent, or
+// ClusterActionRequest on the log, with its end position.
 type logEntryFrame struct {
 	templateID  uint16
 	endPosition int64
@@ -23,24 +22,22 @@ type logEntryFrame struct {
 	// session event.
 	id          int64
 	closeReason clusterwire.CloseReason
+	action      clusterwire.ClusterAction
 }
 
-// scanLogEntryFrames returns every TimerEvent, SessionOpenEvent and
-// SessionCloseEvent in term 0 below end, in log order.
+// scanLogEntryFrames returns each logEntryFrame in term 0 below end, in log
+// order.
 func scanLogEntryFrames(
 	t fragmentRequireT,
 	pub *aeron.ExclusivePublication,
 	end int64,
 ) []logEntryFrame {
 	t.Helper()
-	termBuf := pub.TermBuffer(0)
-	require.Less(t, end, int64(termBuf.Capacity()))
+	require.Less(t, end, int64(pub.TermBuffer(0).Capacity()))
 	frames := make([]logEntryFrame, 0)
 	for offset := 0; int64(offset) < end; {
-		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, offset))
-		require.Positive(t, frameLength)
-		wire := termBuf.Bytes()[offset+logbuffer.OffsetFramePayload : offset+frameLength]
-		offset += logbuffer.AlignFrameLength(frameLength)
+		var wire []byte
+		wire, offset = termWireAt(t, pub, offset)
 		frameEnd := int64(offset)
 		if fields, ok := codecs.TryDecodeTimerEventAt(wire, 0); ok {
 			frames = append(frames, logEntryFrame{
@@ -65,21 +62,31 @@ func scanLogEntryFrames(
 				id:          fields.ClusterSessionID,
 				closeReason: fields.CloseReason,
 			})
+			continue
+		}
+		if fields, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0); ok {
+			frames = append(frames, logEntryFrame{
+				templateID:  clusterwire.ClusterActionRequestSbeTemplateID,
+				endPosition: frameEnd,
+				action:      fields.Action,
+			})
 		}
 	}
 	return frames
 }
 
-// seedUncommittedEntries tracks one timer and one close at each position, in
-// order. The close at positions[i] holds a session with id i+1.
+// seedUncommittedEntries tracks one timer, one close, and one module state at
+// each position, in order. The close at positions[i] holds a session with id
+// i+1.
 func seedUncommittedEntries(a *Agent, positions []int64) {
 	for i, position := range positions {
 		trackUncommittedTimer(a, position, int64(i+1))
 		a.sessions.trackUncommittedClose(position, &clientSession{id: int64(i + 1)})
+		trackUncommittedModuleState(a, position, ModuleStateActive)
 	}
 }
 
-// requireUncommittedPositions asserts both lists hold exactly want, in order.
+// requireUncommittedPositions asserts each list holds exactly want, in order.
 func requireUncommittedPositions(t *testing.T, a *Agent, want []int64) {
 	t.Helper()
 	timerPositions := make([]int64, 0, len(a.uncommittedTimers))
@@ -91,8 +98,13 @@ func requireUncommittedPositions(t *testing.T, a *Agent, want []int64) {
 		require.NotNil(t, entry.session)
 		closePositions = append(closePositions, entry.logPosition)
 	}
+	statePositions := make([]int64, 0, len(a.uncommittedModuleStates))
+	for _, entry := range a.uncommittedModuleStates {
+		statePositions = append(statePositions, entry.appendPosition)
+	}
 	require.Equal(t, want, timerPositions)
 	require.Equal(t, want, closePositions)
+	require.Equal(t, want, statePositions)
 }
 
 func TestSweepUncommittedEntriesTo(t *testing.T) {
@@ -119,7 +131,7 @@ func TestSweepUncommittedEntriesTo(t *testing.T) {
 			wantKept:   []int64{300},
 		},
 		{
-			name:       "gate pass past every entry empties both lists",
+			name:       "gate pass past every entry empties every list",
 			nowNs:      1,
 			quorum:     400,
 			tracked:    []int64{100, 200, 300},
@@ -163,12 +175,14 @@ func TestSweepUncommittedEntriesTo(t *testing.T) {
 			seedUncommittedEntries(a, tt.tracked)
 			timerCap := cap(a.uncommittedTimers)
 			closeCap := cap(a.sessions.uncommittedCloses)
+			stateCap := cap(a.uncommittedModuleStates)
 
 			require.Equal(t, tt.wantWork, a.UpdateLeaderPosition(tt.nowNs, tt.quorum))
 			require.Equal(t, tt.wantCommit, a.CommitPosition())
 			requireUncommittedPositions(t, a, tt.wantKept)
 			require.Equal(t, timerCap, cap(a.uncommittedTimers))
 			require.Equal(t, closeCap, cap(a.sessions.uncommittedCloses))
+			require.Equal(t, stateCap, cap(a.uncommittedModuleStates))
 
 			// Swept close slots hold nil, so the swept sessions can be freed.
 			vacated := a.sessions.uncommittedCloses[len(tt.wantKept):len(tt.tracked)]
@@ -245,6 +259,13 @@ func trackUncommittedTimer(a *Agent, appendPosition, correlationID int64) {
 	a.uncommittedTimers = append(a.uncommittedTimers, uncommittedTimer{
 		appendPosition: appendPosition,
 		correlationID:  correlationID,
+	})
+}
+
+func trackUncommittedModuleState(a *Agent, appendPosition int64, previous ModuleState) {
+	a.uncommittedModuleStates = append(a.uncommittedModuleStates, uncommittedModuleState{
+		appendPosition: appendPosition,
+		previous:       previous,
 	})
 }
 
@@ -403,6 +424,61 @@ func TestRestoreUncommittedEntries(t *testing.T) {
 				require.Equal(t, sessionOpen, live.state)
 				require.Equal(t, 0, a.ClosingSessionCount())
 				require.Empty(t, a.sessions.uncommittedCloses)
+			},
+		},
+		{
+			name: "uncommitted SUSPEND restores ACTIVE",
+			run: func(t *testing.T, a *Agent) {
+				trackUncommittedModuleState(a, prepareAt+1, ModuleStateActive)
+				a.setModuleState(ModuleStateSuspended, "test")
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.Equal(t, ModuleStateActive, a.ModuleState())
+				require.Empty(t, a.uncommittedModuleStates)
+			},
+		},
+		{
+			name: "uncommitted RESUME restores SUSPENDED",
+			run: func(t *testing.T, a *Agent) {
+				a.setModuleState(ModuleStateSuspended, "test")
+				trackUncommittedModuleState(a, prepareAt+1, ModuleStateSuspended)
+				a.setModuleState(ModuleStateActive, "test")
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.Equal(t, ModuleStateSuspended, a.ModuleState())
+				require.Empty(t, a.uncommittedModuleStates)
+			},
+		},
+		{
+			name: "SUSPEND at the position with RESUME above restores SUSPENDED",
+			run: func(t *testing.T, a *Agent) {
+				trackUncommittedModuleState(a, prepareAt, ModuleStateActive)
+				trackUncommittedModuleState(a, prepareAt+1, ModuleStateSuspended)
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.Equal(t, ModuleStateSuspended, a.ModuleState())
+				require.Empty(t, a.uncommittedModuleStates)
+			},
+		},
+		{
+			name: "empty module state list keeps SUSPENDED",
+			run: func(t *testing.T, a *Agent) {
+				a.setModuleState(ModuleStateSuspended, "test")
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.Equal(t, ModuleStateSuspended, a.ModuleState())
+				require.Empty(t, a.uncommittedModuleStates)
+			},
+		},
+		{
+			name: "closed agent stays CLOSED",
+			run: func(t *testing.T, a *Agent) {
+				trackUncommittedModuleState(a, prepareAt+1, ModuleStateActive)
+				a.MarkClosed()
+
+				a.restoreUncommittedEntries(prepareAt)
+				require.Equal(t, ModuleStateClosed, a.ModuleState())
+				require.Empty(t, a.uncommittedModuleStates)
 			},
 		},
 		{

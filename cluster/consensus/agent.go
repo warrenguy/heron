@@ -500,6 +500,13 @@ type Agent struct {
 	// restoreUncommittedEntries empties the list at prepare.
 	uncommittedTimers []uncommittedTimer
 
+	// uncommittedModuleStates holds the state before each SUSPEND or RESUME
+	// action this member appended as leader above commit, in append order.
+	// appendModuleStateAction appends. sweepUncommittedEntriesTo drops the
+	// entries that commit reaches. restoreUncommittedEntries empties the list
+	// at prepare.
+	uncommittedModuleStates []uncommittedModuleState
+
 	// expiredTimerCountByCorrelationID counts committed TimerEvents that found
 	// no timer to cancel, per correlation id. handleScheduleTimer consumes one
 	// count per request and deletes the entry at zero. Never reset.
@@ -1732,24 +1739,7 @@ func (a *Agent) FollowerLogJoinReady(
 	return params, ready
 }
 
-// PrepareForNewLeadership resets election leadership state, then polls the
-// cluster log recording stop. Does not reset commit.
-//
-// First call of an episode runs teardown. Later calls poll only.
-//
-// logPosition is the committed log position the election starts from. The
-// teardown rolls back each TimerEvent and SessionCloseEvent this member
-// appended above logPosition. The teardown also drops each session opened
-// above logPosition and every pre-open session.
-//
-// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
-//
-// Returns:
-//   - lastAppendPosition, prepared true, nil: stop confirmed
-//   - [recordinglog.NullPosition], prepared false, nil: poll again
-//   - [recordinglog.NullPosition], prepared false, err: fail closed
-//
-// Caller must not adopt lastAppendPosition unless prepared is true.
+// PrepareForNewLeadership implements [AgentHandler.PrepareForNewLeadership].
 func (a *Agent) PrepareForNewLeadership(
 	logPosition int64,
 	nowNs int64,

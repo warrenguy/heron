@@ -4,6 +4,7 @@ package cluster_archive_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -113,4 +114,71 @@ func TestClusterControl_actsOnTogglesThroughTheLog(t *testing.T) {
 	result, _ := leader.Agent().LastSnapshotTake()
 	require.Positive(t, result.LogPosition, sc.dump())
 	require.Equal(t, consensus.ModuleStateActive, leader.ModuleState(), sc.dump())
+
+	transport, session := connectServiceSession(t, sc, leader)
+
+	// Phase: SUSPEND on the leader's toggle moves every member to SUSPENDED.
+	// The leader holds a client message. The toggle stays SUSPEND.
+	require.True(t, consensus.ControlToggleSuspend.Toggle(leaderToggle), sc.dump())
+	requireServiceAwaitTick(
+		t, sc,
+		"suspend on every member",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return everyMemberInState(set, consensus.ModuleStateSuspended)
+		}),
+	)
+	payload := []byte(serviceMessagePayload)
+	offerServiceMessage(t, sc, session, payload)
+	heldPosition := leader.LogPublisher().Position()
+	pump := sessionPump(transport, session, func() bool { return false })
+	holdEnd := time.Now().Add(suspendedHoldFloor)
+	for cycles := 0; cycles < suspendedDutyCycles || time.Now().Before(holdEnd); cycles++ {
+		set.Tick()
+		pump()
+	}
+	require.Equal(t, heldPosition, leader.LogPublisher().Position(), sc.dump())
+	for i, mem := range sc.members {
+		require.Empty(t, mem.rec.messages, "member %d:\n%s", i, sc.dump())
+	}
+	require.True(t, everyMemberInState(set, consensus.ModuleStateSuspended), sc.dump())
+	require.Equal(t, int64(consensus.ControlToggleSuspend), leaderToggle.Load(), sc.dump())
+
+	// Phase: RESUME on the leader's toggle moves every member to ACTIVE.
+	// Every service then reads the held message. The toggle reads NEUTRAL.
+	require.True(t, consensus.ControlToggleResume.Toggle(leaderToggle), sc.dump())
+	requireServiceAwaitTick(
+		t, sc,
+		"resume on every member",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return everyMemberInState(set, consensus.ModuleStateActive) &&
+				leaderToggle.Load() == neutral
+		}),
+	)
+	requireMessagesAfterOpen(
+		t, sc, transport, session,
+		"held message after resume",
+		session.ClusterSessionID(),
+		payload,
+	)
+	requireNoServiceFailures(t, sc, " after resume")
+}
+
+const (
+	suspendedDutyCycles = 500
+	// suspendedHoldFloor spans several slow ticks. It gives the client message
+	// time to reach the leader's ingress.
+	suspendedHoldFloor = 100 * time.Millisecond
+)
+
+// everyMemberInState reports whether every member's ModuleState and module
+// state counter equal state.
+func everyMemberInState(set *harness.ClusterMemberSet, state consensus.ModuleState) bool {
+	for _, m := range set.Modules() {
+		if m.ModuleState() != state || !readModuleStateCounter(m).hasState(state) {
+			return false
+		}
+	}
+	return true
 }

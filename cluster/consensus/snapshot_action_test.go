@@ -1056,6 +1056,19 @@ func TestHandleClusterAction_rules(t *testing.T) {
 		require.NoError(t, a.RequestSnapshot(1000))
 		return a.ExpectedAckPosition()
 	}
+	suspended := func(_ *testing.T, a *Agent) int64 {
+		a.setModuleState(ModuleStateSuspended, "test")
+		return consumePos
+	}
+	// SUSPEND and RESUME ignore the term, flags, and wire position.
+	withIgnoredFields := func(action clusterwire.ClusterAction) fieldsAt {
+		return func(p int64) codecs.ClusterActionRequestFields {
+			fields := withAction(action)(p + 32)
+			fields.LeadershipTermID = 7
+			fields.Flags = 1
+			return fields
+		}
+	}
 	tests := []struct {
 		name         string
 		zeroServices bool
@@ -1065,31 +1078,58 @@ func TestHandleClusterAction_rules(t *testing.T) {
 		// wantWaits returns the expected serviceAckWaits and snapshotWaitPosition.
 		wantWaits   func(p int64) ([]int64, int64)
 		wantFailure error
+		wantState   ModuleState
 	}{
 		{
 			name:      "follower snapshot flags 0",
 			setup:     atConsume,
 			wantWaits: func(p int64) ([]int64, int64) { return []int64{p}, p },
+			wantState: ModuleStateSnapshot,
 		},
 		{
-			name:   "suspend",
-			setup:  atConsume,
-			fields: withAction(clusterwire.ClusterAction_SUSPEND),
+			name:      "suspend",
+			setup:     atConsume,
+			fields:    withAction(clusterwire.ClusterAction_SUSPEND),
+			wantState: ModuleStateSuspended,
 		},
 		{
-			name:   "resume",
-			setup:  atConsume,
-			fields: withAction(clusterwire.ClusterAction_RESUME),
+			name:      "resume",
+			setup:     suspended,
+			fields:    withAction(clusterwire.ClusterAction_RESUME),
+			wantState: ModuleStateActive,
 		},
 		{
-			name:   "null action",
-			setup:  atConsume,
-			fields: withAction(clusterwire.ClusterAction_NULL_VALUE),
+			name:      "suspend with another term, flags, and position",
+			setup:     atConsume,
+			fields:    withIgnoredFields(clusterwire.ClusterAction_SUSPEND),
+			wantState: ModuleStateSuspended,
 		},
 		{
-			name:   "unknown action",
-			setup:  atConsume,
-			fields: withAction(clusterwire.ClusterAction(9)),
+			name:      "resume with another term, flags, and position",
+			setup:     suspended,
+			fields:    withIgnoredFields(clusterwire.ClusterAction_RESUME),
+			wantState: ModuleStateActive,
+		},
+		{
+			name: "suspend on a closed agent",
+			setup: func(_ *testing.T, a *Agent) int64 {
+				a.MarkClosed()
+				return consumePos
+			},
+			fields:    withAction(clusterwire.ClusterAction_SUSPEND),
+			wantState: ModuleStateClosed,
+		},
+		{
+			name:      "null action",
+			setup:     atConsume,
+			fields:    withAction(clusterwire.ClusterAction_NULL_VALUE),
+			wantState: ModuleStateActive,
+		},
+		{
+			name:      "unknown action",
+			setup:     atConsume,
+			fields:    withAction(clusterwire.ClusterAction(9)),
+			wantState: ModuleStateActive,
 		},
 		{
 			name:  "snapshot flags 1",
@@ -1099,6 +1139,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				fields.Flags = 1
 				return fields
 			},
+			wantState: ModuleStateActive,
 		},
 		{
 			name:  "wire position differs from frame end",
@@ -1106,11 +1147,13 @@ func TestHandleClusterAction_rules(t *testing.T) {
 			fields: func(p int64) codecs.ClusterActionRequestFields {
 				return snapshotActionFields(p + 32)
 			},
+			wantState: ModuleStateActive,
 		},
 		{
 			name:      "leader consumes its own appended action",
 			setup:     leaderSnapshot,
 			wantWaits: func(p int64) ([]int64, int64) { return []int64{p}, p },
+			wantState: ModuleStateSnapshot,
 		},
 		{
 			name: "leader with no wait",
@@ -1119,6 +1162,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				return consumePos
 			},
 			wantWaits: func(p int64) ([]int64, int64) { return []int64{p}, p },
+			wantState: ModuleStateSnapshot,
 		},
 		{
 			name: "follower consumes the pending position again",
@@ -1127,6 +1171,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				return consumePos
 			},
 			wantWaits: func(p int64) ([]int64, int64) { return []int64{p}, p },
+			wantState: ModuleStateSnapshot,
 		},
 		{
 			name: "follower with a snapshot wait at another position",
@@ -1135,6 +1180,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				return consumePos
 			},
 			wantWaits: func(int64) ([]int64, int64) { return []int64{otherPos}, otherPos },
+			wantState: ModuleStateSnapshot,
 		},
 		{
 			name: "retired position",
@@ -1146,6 +1192,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				require.Equal(t, RoleFollower, a.Role())
 				return p
 			},
+			wantState: ModuleStateActive,
 		},
 		{
 			name: "leader replays its own retired action",
@@ -1157,6 +1204,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				a.RoleSet(RoleLeader)
 				return p
 			},
+			wantState: ModuleStateActive,
 		},
 		{
 			name: "service ack failure marked",
@@ -1165,12 +1213,14 @@ func TestHandleClusterAction_rules(t *testing.T) {
 				return consumePos
 			},
 			wantFailure: ErrServiceAckOutOfSequence,
+			wantState:   ModuleStateActive,
 		},
 		{
 			name:         "zero services",
 			zeroServices: true,
 			setup:        atConsume,
 			wantWaits:    func(p int64) ([]int64, int64) { return []int64{p}, p },
+			wantState:    ModuleStateSnapshot,
 		},
 	}
 	for _, tt := range tests {
@@ -1189,6 +1239,7 @@ func TestHandleClusterAction_rules(t *testing.T) {
 			}
 
 			a.handleClusterAction(fields, p)
+			require.Equal(t, tt.wantState, a.ModuleState())
 
 			wantFIFO, wantSnapshot := []int64(nil), int64(0)
 			if tt.wantWaits != nil {

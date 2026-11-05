@@ -9,8 +9,6 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
@@ -20,8 +18,13 @@ type controlToggleModel struct {
 	value int64
 	state ModuleState
 
-	// actionFlags lists SNAPSHOT action flags in log order.
-	actionFlags []int32
+	actions []modelClusterAction
+}
+
+type modelClusterAction struct {
+	action   clusterwire.ClusterAction
+	flags    int32
+	previous ModuleState
 }
 
 // toggle applies the upstream ClusterControl.ToggleState.toggle rule.
@@ -37,18 +40,38 @@ func (m *controlToggleModel) toggle(state ControlToggleState) bool {
 	return true
 }
 
+func (m *controlToggleModel) appendTracked(action clusterwire.ClusterAction) {
+	m.actions = append(m.actions, modelClusterAction{
+		action:   action,
+		previous: m.state,
+	})
+}
+
 // slowTick applies one leader slow tick. Returns the expected work count.
 func (m *controlToggleModel) slowTick() int {
+	if m.state == ModuleStateSuspended && m.value == int64(ControlToggleResume) {
+		m.appendTracked(clusterwire.ClusterAction_RESUME)
+		m.state = ModuleStateActive
+		m.value = int64(ControlToggleNeutral)
+		return 1
+	}
 	if m.state != ModuleStateActive {
 		return 0
 	}
 	switch m.value {
+	case int64(ControlToggleSuspend):
+		m.appendTracked(clusterwire.ClusterAction_SUSPEND)
+		m.state = ModuleStateSuspended
+		return 1
 	case int64(ControlToggleSnapshot):
-		m.actionFlags = append(m.actionFlags, 0)
+		m.actions = append(m.actions, modelClusterAction{action: clusterwire.ClusterAction_SNAPSHOT})
 		m.state = ModuleStateSnapshot
 		return 1
 	case int64(ControlToggleStandbySnapshot):
-		m.actionFlags = append(m.actionFlags, clusterActionFlagsStandbySnapshot)
+		m.actions = append(m.actions, modelClusterAction{
+			action: clusterwire.ClusterAction_SNAPSHOT,
+			flags:  clusterActionFlagsStandbySnapshot,
+		})
 		m.value = int64(ControlToggleNeutral)
 		return 1
 	}
@@ -62,31 +85,32 @@ func (m *controlToggleModel) snapshotEnd() {
 	}
 }
 
-// scanClusterActionFlags returns the flags of each ClusterActionRequest in
-// term 0, in log order. Each action must be a SNAPSHOT action.
-func scanClusterActionFlags(t fragmentRequireT, pub *aeron.ExclusivePublication) []int32 {
-	t.Helper()
-	termBuf := pub.TermBuffer(0)
-	end := pub.Position()
-	require.Less(t, end, int64(termBuf.Capacity()))
-	var flags []int32
-	for offset := 0; int64(offset) < end; {
-		frameLength := int(logbuffer.FrameLengthVolatile(termBuf, offset))
-		require.Positive(t, frameLength)
-		wire := termBuf.Bytes()[offset+logbuffer.OffsetFramePayload : offset+frameLength]
-		offset += logbuffer.AlignFrameLength(frameLength)
-		fields, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0)
-		require.True(t, ok)
-		require.Equal(t, clusterwire.ClusterAction_SNAPSHOT, fields.Action)
-		require.Equal(t, int64(offset), fields.LogPosition)
-		flags = append(flags, fields.Flags)
+func (m *controlToggleModel) requireLog(
+	rt *rapid.T,
+	a *Agent,
+	pub *aeron.ExclusivePublication,
+) {
+	rt.Helper()
+	logged := scanClusterActions(rt, pub)
+	require.Len(rt, logged, len(m.actions))
+	wantTracked := make([]uncommittedModuleState, 0)
+	for i, want := range m.actions {
+		require.Equal(rt, want.action, logged[i].Action)
+		require.Equal(rt, want.flags, logged[i].Flags)
+		if want.action != clusterwire.ClusterAction_SNAPSHOT {
+			wantTracked = append(wantTracked, uncommittedModuleState{
+				appendPosition: logged[i].LogPosition,
+				previous:       want.previous,
+			})
+		}
 	}
-	return flags
+	require.Equal(rt, wantTracked, append([]uncommittedModuleState{}, a.uncommittedModuleStates...))
 }
 
 // TestControlToggle_model_rapid drives a settled leader with zero services
 // through random toggle operations. After each step, the toggle value, module
-// state and logged SNAPSHOT action flags match the model.
+// state, logged actions, and tracked module states match the model. The commit
+// position stays at 0, so the agent keeps every tracked entry.
 func TestControlToggle_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -136,7 +160,7 @@ func TestControlToggle_model_rapid(t *testing.T) {
 			"": func(rt *rapid.T) {
 				require.Equal(rt, m.value, counter.Load())
 				require.Equal(rt, m.state, a.ModuleState())
-				require.Equal(rt, m.actionFlags, scanClusterActionFlags(rt, pub))
+				m.requireLog(rt, a, pub)
 			},
 		})
 	})

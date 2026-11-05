@@ -35,6 +35,11 @@ const (
 	moduleStateReasonSnapshotWaitRetired = "snapshot wait retired"
 	moduleStateReasonServiceAckFailure   = "service ack failure"
 	moduleStateReasonClosed              = "closed"
+	moduleStateReasonControlSuspend      = "ClusterControl.SUSPEND"
+	moduleStateReasonControlResume       = "ClusterControl.RESUME"
+	moduleStateReasonReplaySuspend       = "ReplayClusterAction.SUSPENDED"
+	moduleStateReasonReplayResume        = "ReplayClusterAction.ACTIVE"
+	moduleStateReasonRollback            = "rollback"
 )
 
 func (s ModuleState) String() string {
