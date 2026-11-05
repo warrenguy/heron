@@ -279,8 +279,10 @@ type pollStopModel struct {
 	stopPos     int64
 	pending     bool
 	// listing is true during the catalog read.
-	listing   bool
-	offered   bool
+	listing bool
+	offered bool
+	// replied is true once a known-id attempt reports its OK.
+	replied   bool
 	deadline  int64
 	inFlight  int
 	nowNs     int64
@@ -336,6 +338,7 @@ func (m *pollStopModel) clearPending() {
 	m.pending = false
 	m.listing = false
 	m.offered = false
+	m.replied = false
 	m.identity = false
 }
 
@@ -413,6 +416,11 @@ func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 	if err != nil || !offered {
 		return false, err
 	}
+	// The handle does not read a later reply after its OK.
+	if m.replied {
+		script.responded = false
+		script.responseErr = nil
+	}
 	dirty := m.recordingID < 0
 	unknownSubscription := isUnknownSubscription(script.responseErr)
 	switch {
@@ -432,6 +440,7 @@ func (m *pollStopModel) poll(script pollStopScript) (done bool, err error) {
 		m.markStopped(m.stopPos)
 		return true, nil
 	case script.responded:
+		m.replied = true
 		return false, nil
 	}
 	if m.nowNs >= m.deadline {

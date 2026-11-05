@@ -19,6 +19,7 @@ const (
 	asyncStopByIdentityOpBuild asyncStopByIdentityOp = iota
 	asyncStopByIdentityOpOffer
 	asyncStopByIdentityOpResponse
+	asyncStopByIdentityOpOwnOK
 	asyncStopByIdentityOpClientPoll
 	asyncStopByIdentityOpPoll
 	asyncStopByIdentityOpClose
@@ -29,6 +30,7 @@ type asyncStopByIdentityModelHandle struct {
 	asyncModelHandle
 	handle      *AsyncStopRecordingByIdentity
 	recordingID int64
+	responded   bool
 	stopped     bool
 }
 
@@ -84,7 +86,7 @@ func TestAsyncStopRecordingByIdentity_model_rapid(t *testing.T) {
 				recordingID := rapid.Int64Range(0, 3).Draw(rt, "recordingID")
 				handle := client.NewAsyncStopRecordingByIdentity(recordingID)
 				model.add(rt, &asyncStopByIdentityModelHandle{
-					asyncModelHandle: asyncModelHandle{correlationID: handle.correlationID},
+					asyncModelHandle: asyncModelHandle{correlationID: handle.request.correlationID},
 					handle:           handle,
 					recordingID:      recordingID,
 				})
@@ -100,9 +102,9 @@ func TestAsyncStopRecordingByIdentity_model_rapid(t *testing.T) {
 				offerCount := len(pub.offered)
 
 				offered, err := handle.handle.TryOffer()
-				if handle.closed {
+				if handle.closed || handle.responded {
 					require.NoError(rt, err)
-					require.False(rt, offered, "closed handle must not offer")
+					require.False(rt, offered, "closed or responded handle must not offer")
 					require.Len(rt, pub.offered, offerCount)
 					break
 				}
@@ -148,6 +150,20 @@ func TestAsyncStopRecordingByIdentity_model_rapid(t *testing.T) {
 				}
 				model.queueResponse(t, term, fields)
 
+			case asyncStopByIdentityOpOwnOK:
+				// An OK for the open handle, so responded is a common state.
+				handle, ok := model.open()
+				if !ok {
+					handle = model.drawHandle(rt)
+				}
+				model.queueResponse(t, term, codecs.ControlResponseFields{
+					ControlSessionID: controlResponseTestControlSessionID,
+					CorrelationID:    handle.correlationID,
+					RelevantID:       rapid.Int64Range(0, 1).Draw(rt, "ownOKRelevantID"),
+					Code:             archivewire.ControlResponseCode_OK,
+					Version:          520,
+				})
+
 			case asyncStopByIdentityOpClientPoll:
 				require.Equal(rt, model.poll(), client.Poll())
 
@@ -158,11 +174,15 @@ func TestAsyncStopRecordingByIdentity_model_rapid(t *testing.T) {
 				case handle.closed:
 					require.NoError(rt, err)
 					require.False(rt, done, "closed handle must not complete")
+				case handle.responded:
+					require.NoError(rt, err)
+					require.True(rt, done, "responded handle stays complete")
 				case model.latchedFor(handle.correlationID):
 					require.True(rt, done, "matching response must complete")
 					if model.latchedFields.Code == archivewire.ControlResponseCode_OK {
 						require.NoError(rt, err)
-						handle.stopped = handle.stopped || model.latchedFields.RelevantID != 0
+						handle.responded = true
+						handle.stopped = model.latchedFields.RelevantID != 0
 						model.latched = false
 						require.False(
 							rt,

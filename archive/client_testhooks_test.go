@@ -408,8 +408,8 @@ func TestAsyncListRecording_PollDescriptor_throughClientPoll(t *testing.T) {
 
 // TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll asserts one
 // Client.Poll batch latches the OK for an open AsyncStopRecordingByIdentity.
-// A STOP signal from another control session in the same batch reaches no
-// handler.
+// A STOP signal from another control session in the same batch does not reach
+// the recording signal handler.
 func TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll(t *testing.T) {
 	h := newLifecycleHarness(t)
 	client := h.newClient()
@@ -432,7 +432,7 @@ func TestAsyncStopRecordingByIdentity_PollResponse_throughClientPoll(t *testing.
 	})
 	responseWire := encodeControlResponseWire(t, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    handle.correlationID,
+		CorrelationID:    handle.request.correlationID,
 		RelevantID:       1,
 		Code:             archivewire.ControlResponseCode_OK,
 		Version:          520,
@@ -462,7 +462,7 @@ func TestAsyncStopRecording_PollResponse_unsolicitedErrorThroughClientPoll(t *te
 			[]byte(lifecycleRecordingChannel),
 		)
 		t.Cleanup(handle.Close)
-		require.NotEqual(t, otherID, handle.correlationID)
+		require.NotEqual(t, otherID, handle.request.correlationID)
 		return f, handle
 	}
 
@@ -472,7 +472,7 @@ func TestAsyncStopRecording_PollResponse_unsolicitedErrorThroughClientPoll(t *te
 			t,
 			f.h.termBuffer,
 			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
-			ownSessionOKWire(t, handle.correlationID, 1),
+			ownSessionOKWire(t, handle.request.correlationID, 1),
 		)
 
 		require.Equal(t, 1, f.client.Poll())
@@ -494,7 +494,7 @@ func TestAsyncStopRecording_PollResponse_unsolicitedErrorThroughClientPoll(t *te
 		writeTwoSequentialUnfragmentedWiresToTerm(
 			t,
 			f.h.termBuffer,
-			ownSessionOKWire(t, handle.correlationID, 1),
+			ownSessionOKWire(t, handle.request.correlationID, 1),
 			ownSessionErrorWire(t, otherID, ErrorStorageSpace, "low storage"),
 		)
 

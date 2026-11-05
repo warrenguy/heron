@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -21,6 +20,30 @@ const (
 	asyncReplicateTestRecordingID           int64 = 77
 	asyncReplicateTestPosition              int64 = 4096
 )
+
+var asyncReplicateKind = asyncHandleKind[*AsyncReplicate]{
+	build: func(client *Client) *AsyncReplicate {
+		return newAsyncReplicateForTest(client, NewReplicationParams())
+	},
+	correlationID: func(handle *AsyncReplicate) int64 {
+		return handle.request.correlationID
+	},
+	relevantID: asyncReplicateTestReplicationID,
+	requireOffered: func(t *testing.T, _ *Client, handle *AsyncReplicate, wire []byte) {
+		t.Helper()
+
+		requireOfferedReplicateWire(t, wire, handle.request.correlationID, handle.params)
+	},
+}
+
+func newAsyncReplicateForTest(client *Client, params ReplicationParams) *AsyncReplicate {
+	return client.NewAsyncReplicate(
+		asyncReplicateTestSourceRecordingID,
+		asyncReplicateTestSourceControlStreamID,
+		[]byte(asyncReplicateTestSourceControlChannel),
+		params,
+	)
+}
 
 // asyncReplicateFixture runs AsyncReplicate over a real control subscription
 // so Client.Poll feeds the handle.
@@ -46,14 +69,9 @@ func (f *asyncReplicateFixture) newHandle(
 	t.Helper()
 
 	prior := f.client.aeronClient.NextCorrelationID()
-	handle := f.client.NewAsyncReplicate(
-		asyncReplicateTestSourceRecordingID,
-		asyncReplicateTestSourceControlStreamID,
-		[]byte(asyncReplicateTestSourceControlChannel),
-		params,
-	)
-	require.Equal(t, prior+1, handle.correlationID)
-	require.Equal(t, handle.correlationID, f.h.poller.awaitCorrelationID)
+	handle := newAsyncReplicateForTest(f.client, params)
+	require.Equal(t, prior+1, handle.request.correlationID)
+	require.Equal(t, handle.request.correlationID, f.h.poller.awaitCorrelationID)
 	return handle
 }
 
@@ -64,7 +82,7 @@ func (f *asyncReplicateFixture) responseFor(
 ) codecs.ControlResponseFields {
 	fields := codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
-		CorrelationID:    handle.correlationID,
+		CorrelationID:    handle.request.correlationID,
 		RelevantID:       relevantID,
 		Code:             code,
 		Version:          520,
@@ -101,12 +119,6 @@ func (f *asyncReplicateFixture) deliverSignals(
 		appendUnfragmentedWireToTerm(t, f.h.termBuffer, encodeRecordingSignalEventWire(t, event))
 	}
 	require.Equal(t, len(events), f.client.Poll())
-}
-
-func (f *asyncReplicateFixture) requireOfferedReplicate(t *testing.T, params ReplicationParams) {
-	t.Helper()
-
-	requireOfferedReplicateWire(t, f.h.pub.lastOffer(), f.handle.correlationID, params)
 }
 
 // requireOfferedReplicateWire asserts every field of an offered replicate
@@ -225,57 +237,6 @@ func (f *asyncReplicateFixture) resolveOK(t *testing.T) {
 	require.True(t, done)
 }
 
-func TestAsyncReplicate_TryOffer_retriableThenAccepted(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "back_pressured", status: aeron.BackPressured},
-		{name: "admin_action", status: aeron.AdminAction},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncReplicateFixture(t)
-			f.h.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.NoError(t, err, "retriable offer must not be terminal")
-			require.False(t, offered, "retriable offer must not report accepted")
-			require.Len(t, f.h.pub.offered, 1)
-			f.requireOfferedReplicate(t, NewReplicationParams())
-
-			f.h.pub.offerResult = 0
-			offered, err = f.handle.TryOffer()
-			require.NoError(t, err)
-			require.True(t, offered, "accepted offer must report true")
-			require.Len(t, f.h.pub.offered, 2)
-			f.requireOfferedReplicate(t, NewReplicationParams())
-		})
-	}
-}
-
-func TestAsyncReplicate_TryOffer_terminal(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int64
-	}{
-		{name: "closed", status: aeron.Closed},
-		{name: "not_connected", status: aeron.NotConnected},
-		{name: "max_position_exceeded", status: aeron.MaxPositionExceeded},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAsyncReplicateFixture(t)
-			f.h.pub.offerResult = tc.status
-
-			offered, err := f.handle.TryOffer()
-			require.False(t, offered, "terminal offer must not report accepted")
-			requireControlTerminal(t, err, tc.status)
-			require.Len(t, f.h.pub.offered, 1)
-		})
-	}
-}
-
 func TestAsyncReplicate_TryOffer_params(t *testing.T) {
 	params := NewReplicationParams()
 	params.DestinationRecordingID = 5
@@ -288,7 +249,7 @@ func TestAsyncReplicate_TryOffer_params(t *testing.T) {
 	offered, err := f.handle.TryOffer()
 	require.NoError(t, err)
 	require.True(t, offered)
-	f.requireOfferedReplicate(t, params)
+	requireOfferedReplicateWire(t, f.h.pub.lastOffer(), f.handle.request.correlationID, params)
 }
 
 func TestAsyncReplicate_TryOffer_invalidParams(t *testing.T) {
@@ -341,18 +302,13 @@ func TestAsyncReplicate_PollResponse_successorFilterKeptAfterOK(t *testing.T) {
 	done, err := first.PollResponse()
 	require.NoError(t, err)
 	require.True(t, done)
-	require.Equal(t, second.correlationID, f.h.poller.awaitCorrelationID)
-
-	f.latch(t, f.okFor(second))
-	done, err = first.PollResponse()
-	require.NoError(t, err)
-	require.True(t, done)
-	require.True(t, f.h.poller.IsPollComplete(), "completed handle must not consume the successor OK")
+	require.Equal(t, second.request.correlationID, f.h.poller.awaitCorrelationID)
 
 	// Phase: Close of the completed handle leaves the successor latch and filter.
+	f.latch(t, f.okFor(second))
 	first.Close()
 	require.True(t, f.h.poller.IsPollComplete())
-	require.Equal(t, second.correlationID, f.h.poller.awaitCorrelationID)
+	require.Equal(t, second.request.correlationID, f.h.poller.awaitCorrelationID)
 	require.Equal(t, asyncReplicateTestReplicationID, first.ReplicationID())
 }
 
@@ -362,9 +318,9 @@ func TestAsyncReplicate_PollResponse_consumeKeepsSuccessorFilter(t *testing.T) {
 	second := f.newHandle(t, NewReplicationParams())
 
 	// Phase: latch the first OK, then arm the successor filter over the capture.
-	f.h.poller.ArmAwait(first.correlationID)
+	f.h.poller.ArmAwait(first.request.correlationID)
 	f.latch(t, f.okFor(first))
-	f.h.poller.ArmAwait(second.correlationID)
+	f.h.poller.ArmAwait(second.request.correlationID)
 	require.True(t, f.h.poller.IsPollComplete())
 
 	// Phase: consuming the first OK leaves the successor filter armed.
@@ -373,7 +329,7 @@ func TestAsyncReplicate_PollResponse_consumeKeepsSuccessorFilter(t *testing.T) {
 	require.True(t, done)
 	require.Equal(t, asyncReplicateTestReplicationID, first.ReplicationID())
 	require.False(t, f.h.poller.IsPollComplete(), "consumed OK must clear the capture")
-	require.Equal(t, second.correlationID, f.h.poller.awaitCorrelationID)
+	require.Equal(t, second.request.correlationID, f.h.poller.awaitCorrelationID)
 }
 
 func TestAsyncReplicate_PollResponse_errorResponse(t *testing.T) {
@@ -389,7 +345,7 @@ func TestAsyncReplicate_PollResponse_errorResponse(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int32(ErrorUnknownRecording), code)
 	require.True(t, f.h.poller.IsPollComplete(), "error capture stays latched")
-	require.Equal(t, f.handle.correlationID, f.h.poller.awaitCorrelationID)
+	require.Equal(t, f.handle.request.correlationID, f.h.poller.awaitCorrelationID)
 
 	done, err = f.handle.PollResponse()
 	require.True(t, done, "latched error remains visible")
@@ -449,19 +405,6 @@ func TestAsyncReplicate_ReplicationID(t *testing.T) {
 }
 
 func TestAsyncReplicate_Close(t *testing.T) {
-	t.Run("disarms_filter", func(t *testing.T) {
-		f := newAsyncReplicateFixture(t)
-		other := f.okFor(f.handle)
-		other.CorrelationID++
-		f.latch(t, other)
-		require.False(t, f.h.poller.IsPollComplete(), "armed filter must drop other correlation")
-
-		f.handle.Close()
-		require.Equal(t, int64(0), f.h.poller.awaitCorrelationID)
-		f.latch(t, other)
-		require.True(t, f.h.poller.IsPollComplete(), "disarmed poller accepts any correlation")
-	})
-
 	t.Run("clears_latched_error", func(t *testing.T) {
 		f := newAsyncReplicateFixture(t)
 		f.latch(t, f.errorFor(f.handle))
@@ -469,15 +412,6 @@ func TestAsyncReplicate_Close(t *testing.T) {
 		f.handle.Close()
 		require.False(t, f.h.poller.IsPollComplete(), "Close must clear matching terminal")
 		require.Equal(t, cnc.NullValue, f.handle.ReplicationID())
-	})
-
-	t.Run("keeps_successor_filter", func(t *testing.T) {
-		f := newAsyncReplicateFixture(t)
-		first := f.handle
-		second := f.newHandle(t, NewReplicationParams())
-
-		first.Close()
-		require.Equal(t, second.correlationID, f.h.poller.awaitCorrelationID)
 	})
 
 	t.Run("latched_ok_keeps_replication_id", func(t *testing.T) {

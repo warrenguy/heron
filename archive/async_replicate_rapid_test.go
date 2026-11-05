@@ -240,7 +240,6 @@ func requireAsyncReplicateModel(rt *rapid.T, m *asyncReplicateModel, client *Cli
 
 // TestAsyncReplicate_model_rapid asserts AsyncReplicate matches a reference
 // model over random builds, offers, responses, signals, polls, and closes.
-// Each handle is the session handler through a fanout.
 func TestAsyncReplicate_model_rapid(t *testing.T) {
 	aeronClient := aeron.NewAsyncConnectTestHarness(t).Client
 	sub := aeron.NewTestSubscriptionForHooks(t)
@@ -296,24 +295,19 @@ func TestAsyncReplicate_model_rapid(t *testing.T) {
 				if len(model.handles) == asyncReplicateRapidMaxHandles {
 					break
 				}
-				handle := client.NewAsyncReplicate(
-					asyncReplicateTestSourceRecordingID,
-					asyncReplicateTestSourceControlStreamID,
-					[]byte(asyncReplicateTestSourceControlChannel),
-					NewReplicationParams(),
-				)
+				handle := newAsyncReplicateForTest(client, NewReplicationParams())
 				for _, prior := range model.handles {
-					require.Less(rt, prior.correlationID, handle.correlationID)
+					require.Less(rt, prior.correlationID, handle.request.correlationID)
 				}
 				model.handles = append(model.handles, &asyncReplicateModelHandle{
 					handle:        handle,
-					correlationID: handle.correlationID,
+					correlationID: handle.request.correlationID,
 					replicationID: cnc.NullValue,
 					recordingID:   cnc.NullValue,
 					position:      NullPosition,
 				})
 				model.latched = false
-				model.filter = handle.correlationID
+				model.filter = handle.request.correlationID
 
 			case asyncReplicateOpOffer:
 				handle := model.drawHandle(rt)
@@ -322,9 +316,9 @@ func TestAsyncReplicate_model_rapid(t *testing.T) {
 				offerCount := len(pub.offered)
 
 				offered, err := handle.handle.TryOffer()
-				if handle.closed {
+				if handle.closed || handle.responded {
 					require.NoError(rt, err)
-					require.False(rt, offered, "closed handle must not offer")
+					require.False(rt, offered, "closed or responded handle must not offer")
 					require.Len(rt, pub.offered, offerCount)
 					break
 				}
