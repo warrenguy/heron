@@ -128,7 +128,7 @@ type LogRecordingControl interface {
 	IsActive() bool
 
 	// ConsumeStopSignal takes the STOP mark. The archive STOP signal for the
-	// live recording sets the mark.
+	// live recording sets the mark. A blocking stop does not set the mark.
 	//
 	// Never blocks. Never calls archive Poll.
 	//

@@ -283,14 +283,8 @@ func (r *logRecording) needsStop() bool {
 	return len(r.startChannel) > 0
 }
 
-// IsActive reports whether a successful start or extend has not yet cleanly
-// stopped.
-//
-//   - true only when a start channel is kept and the catalog id is known from
-//     START or EXTEND
-//   - dirty starts keep the channel with an unknown catalog id and are not
-//     active
-//   - an adopted unsolicited STOP is a clean stop
+// IsActive derives the answer from the start channel and the catalog id. An
+// adopted unsolicited STOP counts as a clean stop.
 func (r *logRecording) IsActive() bool {
 	return r.needsStop() && r.recordingID >= 0
 }
@@ -321,16 +315,6 @@ func (r *logRecording) handleRecordingSignal(event codecs.RecordingSignalEventFi
 	r.stopSignalPosition = event.Position
 }
 
-// ConsumeStopSignal takes the STOP mark. The archive STOP signal for the
-// live recording sets the mark. A blocking stop sets no mark.
-//
-// Never blocks. Never calls archive Poll.
-//
-// Concurrency: invoker-only.
-//
-// Returns:
-//   - stopPosition, true: a STOP arrived since the last call
-//   - recordinglog.NullPosition, false: no STOP arrived
 func (r *logRecording) ConsumeStopSignal() (stopPosition int64, stopped bool) {
 	if !r.stopSignalled {
 		return recordinglog.NullPosition, false
@@ -450,27 +434,12 @@ func (r *logRecording) StartLogRecording(
 	return recordingID, nil
 }
 
-// StopLogRecording stops the recording StartLogRecording started. A known
-// catalog id stores the stop position for [logRecording.StopPositionFor].
+// StopLogRecording awaits STOP for a known catalog id and stores the
+// position. On ErrorUnknownSubscription, one ListRecording resolves the stop.
+// Dirty uses an OK-bound StopRecording. ErrorUnknownSubscription is clean.
+// Dirty must not use a match-any STOP tracker.
 //
-// Abandons a pending async stop first. Known catalog id awaits STOP and
-// stores the position. On ErrorUnknownSubscription, one ListRecording
-// resolves the stop. Dirty uses an OK-bound StopRecording.
-// ErrorUnknownSubscription is clean. Dirty must not use a match-any STOP
-// tracker.
-//
-// Idempotent. Second call with nothing started offers nothing.
-//
-// Concurrency: invoker-only.
-//
-// Returns an error when:
-//   - the stop request cannot be offered within the offer bound
-//   - known catalog id and no STOP signal within the response bound
-//   - known catalog id, ErrorUnknownSubscription, and ListRecording cannot
-//     resolve a stop position
-//
-// On error the recording may still be running. startChannel stays so a later
-// stop can retry.
+// On error startChannel stays so a later stop can retry.
 func (r *logRecording) StopLogRecording() error {
 	r.clearPendingStop()
 	if !r.needsStop() {
@@ -508,27 +477,17 @@ func (r *logRecording) StopLogRecording() error {
 	return nil
 }
 
-// PollStopLogRecording advances the pending stop one step. Never blocks.
-// Never calls Agent.DoWork. Never calls archive.Client.Poll.
+// PollStopLogRecording advances the pending stop one step.
 //
-// Known catalog id waits for STOP. Dirty finishes on OK.
+// Known catalog id waits for STOP across polls. Dirty finishes on OK.
 // ErrorUnknownSubscription is clean when dirty. For a known id, the method
 // closes the stop request and lists the recording. The catalog stop position
 // marks the stop. A null catalog stop position fails closed.
 //
-// Identity attempt: no start channel needs a stop and the control stores no
-// stop for the term recording id. The method stops that recording by identity.
-// An OK reply, stopped or not, closes the stop request and lists the
-// recording. The method stores the catalog stop for that id. Every error reply
-// and a null catalog stop fail closed.
+// Identity attempt: an OK reply, stopped or not, closes the stop request and
+// lists the recording. Every error reply and a null catalog stop fail closed.
 //
-// Concurrency: invoker-only.
-//
-// Returns:
-//   - true, nil: stop confirmed, identity catalog stop stored, or nothing
-//     needed stop
-//   - false, nil: poll again
-//   - false, err: fail closed. Pending state is cleared. startChannel stays
+// On error the method clears pending state. startChannel stays.
 func (r *logRecording) PollStopLogRecording(nowNs int64) (bool, error) {
 	if !r.needsStop() {
 		recordingID := r.identityStopTarget()
@@ -826,27 +785,6 @@ func (r *logRecording) resolveStopPositionFromCatalog() error {
 	return nil
 }
 
-// StopPositionFor returns the archive stop position recorded for recordingID.
-//
-// Behaviour:
-//   - same id as the stored catalog id (last clean stop, truncate, identity
-//     catalog stop, or plan seed) and nothing pending: returns the stored stop
-//     position. No catalog read. A later clean stop overwrites a truncate
-//     store.
-//   - any other case: reads the catalog once. Does not store that read.
-//   - same id while stop still pending: takes the catalog path. Errors only
-//     when the catalog read fails or reports no stop position
-//
-// StopPositionFor has no caller-supplied position to fall back to.
-//
-// Concurrency: invoker-only.
-//
-// Returns an error when:
-//   - recordingID is negative
-//   - the catalog read fails
-//   - the catalog reports no stop position for recordingID
-//
-// On error the caller must not substitute another position.
 func (r *logRecording) StopPositionFor(recordingID int64) (int64, error) {
 	if recordingID < 0 {
 		return recordinglog.NullPosition, fmt.Errorf(
@@ -890,20 +828,6 @@ func seedLogRecordingStopFromPlan(
 	r.seedStopPosition(plan.TermRecordingID(), plan.Log.Extent.StopPosition)
 }
 
-// TruncateLogRecording removes every recorded byte at or above position. The
-// caller must not call truncate while the recording is active.
-//
-// Behaviour: offers one bounded archive truncate for recordingID. On success
-// the truncate position is stored so [logRecording.StopPositionFor] reports
-// that position until a later clean stop overwrites it. On error nothing is
-// stored.
-//
-// Concurrency: invoker-only. Blocks the invoker until the archive replies or
-// ControlResponseTimeout expires.
-//
-// Returns deletedSegmentCount from the archive reply with a nil error on
-// success. The error wraps the archive cause. deletedSegmentCount is
-// meaningless on error.
 func (r *logRecording) TruncateLogRecording(
 	recordingID int64,
 	position int64,

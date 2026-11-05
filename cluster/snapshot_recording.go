@@ -63,7 +63,6 @@ func newSnapshotRecording(client *archive.Client) *snapshotRecording {
 	}
 }
 
-// NewStartRecording builds one LOCAL start with autoStop true on channel.
 func (r *snapshotRecording) NewStartRecording(
 	streamID int32,
 	channel string,
@@ -71,21 +70,15 @@ func (r *snapshotRecording) NewStartRecording(
 	return r.newStart(streamID, channel)
 }
 
-// ControlTimeoutsNs returns the archive offer retry and response timeouts in
-// nanoseconds.
 func (r *snapshotRecording) ControlTimeoutsNs() (offerRetryTimeoutNs, responseTimeoutNs int64) {
 	return r.offerRetryTimeoutNs, r.responseTimeoutNs
 }
 
-// WatchStop starts a STOP watch for recordingID on the module control
-// session. It replaces an earlier watch.
+// WatchStop tracks STOP on the module control session.
 func (r *snapshotRecording) WatchStop(recordingID int64) {
 	r.stop = archive.NewStopSignalTracker(r.controlSessionID(), recordingID)
 }
 
-// StopPosition returns the STOP position of the watched recording.
-//
-// Returns 0, false with no watch on or no STOP seen.
 func (r *snapshotRecording) StopPosition() (stopPosition int64, stopped bool) {
 	stop := r.stop
 	if stop == nil || !stop.Stopped() {
@@ -94,7 +87,6 @@ func (r *snapshotRecording) StopPosition() (stopPosition int64, stopped bool) {
 	return stop.StoppedPosition(), true
 }
 
-// ClearStop ends the watch. Later signals do not reach a watch. Idempotent.
 func (r *snapshotRecording) ClearStop() {
 	r.stop = nil
 }

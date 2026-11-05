@@ -216,8 +216,8 @@ func (h *HostAdapter) SetLeaderMemberID(id int32) {
 	h.agent.SetLeaderMemberID(id)
 }
 
-// ApplyLeadershipTerm forwards the adopted leadership term onto Agent for
-// steady ingress gates after ElectionComplete (follower install handoff).
+// ApplyLeadershipTerm sets the agent leadership term id through
+// [consensus.Agent.SetLeadershipTermID].
 func (h *HostAdapter) ApplyLeadershipTerm(term int64) {
 	h.agent.SetLeadershipTermID(term)
 }
@@ -232,19 +232,13 @@ func (h *HostAdapter) QuorumPositionBoundedByLeaderLog(appendPosition, nowNs int
 	)
 }
 
-// HasActiveQuorum reports whether a quorum of members reported an append
-// position within timeoutNs of nowNs.
+// HasActiveQuorum checks member count itself. Aeron checks it at the call
+// site. The check here lets the agent always make one call.
 //
 // Behaviour:
-//   - a single-member cluster always returns true
 //   - a multi-member cluster delegates to free HasActiveQuorum over h.members
-//   - timeoutNs comes from the caller; does not read leaderHeartbeatTimeoutNs
-//
-// A settled leader stamps this member every tick. The stamp keeps the leader
-// active while the stamp falls inside timeoutNs.
-//
-// Aeron checks member count at the call site. This method folds the
-// single-member case so the agent always makes one call.
+//   - timeoutNs comes from the caller. The method does not read
+//     leaderHeartbeatTimeoutNs
 func (h *HostAdapter) HasActiveQuorum(nowNs, timeoutNs int64) bool {
 	if len(h.members) <= 1 {
 		return true
@@ -313,8 +307,8 @@ func (h *HostAdapter) PublishAppendPosition(
 	)
 }
 
-// PublishNewLeadershipTerm answers one member's canvass with this leader's
-// current leadership term.
+// PublishNewLeadershipTerm resolves term base and successor fields from the
+// recording log.
 //
 // Behaviour:
 //   - resolves term base from the recording log entry for
@@ -326,20 +320,12 @@ func (h *HostAdapter) PublishAppendPosition(
 //   - when that next entry is absent, uses this leader's term, the resolved
 //     term base, and a null log position
 //   - stamps the epoch timestamp and this member's id
-//   - publishes to the canvasser
 //
 // This path owns successor resolution for a settled canvass answer.
 // Election NewLeadershipTerm field assembly uses different rules and stays
 // separate.
 //
 // Concurrency: invoker-only; see [HostAdapter].
-//
-// Returns false without publishing when:
-//   - the recording-log lookup is nil
-//   - the canvasser is unknown
-//   - the canvasser is this member
-//   - answer.LogSessionID is NullSessionID
-//   - this leader's current term has no recording-log entry
 func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) bool {
 	if h.recordingLogLookup == nil {
 		return false
@@ -393,12 +379,8 @@ func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) b
 	return true
 }
 
-// TrackCatchupCompletion forwards catchup completion to Agent.
-//
-// logPosition is the AppendPosition wire value. Flagged messages keep
-// member.LogPosition stale. Callers must pass the wire position.
-//
-// Nil member is a silent no-op.
+// TrackCatchupCompletion forwards to [consensus.Agent.TrackCatchupCompletion].
+// Silent no-op on a nil member.
 func (h *HostAdapter) TrackCatchupCompletion(
 	member *Member,
 	logPosition int64,
@@ -467,9 +449,6 @@ func (h *HostAdapter) RemoveCatchupLogDestination() {
 	h.agent.RemoveCatchupLogDestination()
 }
 
-// PublishStopCatchup publishes StopCatchup to followerMemberID.
-//
-// Returns false when the send does not complete.
 func (h *HostAdapter) PublishStopCatchup(leadershipTermID int64, followerMemberID int32) bool {
 	return h.pub.StopCatchup(
 		PublicationTarget{MemberID: followerMemberID},
@@ -515,9 +494,6 @@ func (h *HostAdapter) LocalLogRecordingID() int64 {
 	return h.agent.LocalLogRecordingID()
 }
 
-// SetLogRecordingID stores the local log recording id.
-//
-// Production hosts do not overwrite while a cluster log recording is running.
 func (h *HostAdapter) SetLogRecordingID(recordingID int64) {
 	h.agent.SetLogRecordingID(recordingID)
 }

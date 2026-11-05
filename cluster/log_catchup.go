@@ -130,8 +130,6 @@ func (c *catchupControl) EnsureCatchupLogDestination(catchupEndpoint string) str
 	return channel
 }
 
-// RemoveCatchupLogDestination removes the catchup receive destination and
-// restores the live destination when the live feed is absent. Idempotent.
 func (c *catchupControl) RemoveCatchupLogDestination() error {
 	return c.removeCatchupDestination(true)
 }
@@ -171,13 +169,6 @@ func (c *catchupControl) logSubscription() *aeron.Subscription {
 	return c.streams.Subscription()
 }
 
-// AddLiveLogDestination adds the live log channel as a receive destination.
-// No-op when the live feed is already attached. Idempotent.
-//
-// On AddDestination failure LiveLogDestination stays empty. The next tick
-// retries. The catchup feed keeps running.
-//
-// Concurrency: invoker-only.
 func (c *catchupControl) AddLiveLogDestination() error {
 	return c.restoreLiveLogDestination()
 }
@@ -209,15 +200,12 @@ func (c *catchupControl) restoreLiveLogDestination() error {
 	return nil
 }
 
-// ReseedLogSubscription replaces the log subscription with a fresh
-// control-mode=manual subscription that carries only the live destination.
-// Clears both destination fields first: the close drops every destination of
-// the old subscription.
+// ReseedLogSubscription replaces the log subscription with one opened with
+// control-mode=manual. Both destination fields clear first because closing
+// the old subscription drops every destination on it.
 //
 // A failed reseed keeps the recovery subscription. The live add then runs
 // only when recovery left the live destination unset.
-//
-// Returns the reseed error or the live destination add error.
 func (c *catchupControl) ReseedLogSubscription() error {
 	if c == nil || c.agent == nil || c.streams == nil {
 		return nil
@@ -271,12 +259,6 @@ func (c *catchupControl) StartCatchupReplay(
 	return replaySessionID, nil
 }
 
-// StopCatchupReplay stops one retained catchup replay by session id.
-//
-// Idempotent when the session is not retained. Removes the session from the
-// ledger only after StopReplay succeeds. A failed stop can be retried.
-//
-// Concurrency: invoker-only.
 func (c *catchupControl) StopCatchupReplay(replaySessionID int64) error {
 	if c == nil {
 		return nil
