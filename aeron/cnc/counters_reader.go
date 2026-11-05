@@ -1,6 +1,7 @@
 package cnc
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -179,6 +180,23 @@ func (reader *CountersReader) SetCounterValue(counterID int32, value int64) erro
 	return nil
 }
 
+// CompareAndSetCounterValue stores update when the counter value reads
+// expect. The swap is sequentially consistent.
+//
+// Returns: false and an error when counterID is out of range.
+func (reader *CountersReader) CompareAndSetCounterValue(
+	counterID int32,
+	expect, update int64,
+) (
+	bool,
+	error,
+) {
+	if err := reader.validateCounterID(counterID); err != nil {
+		return false, err
+	}
+	return reader.values.CompareAndSwapInt64(CounterOffset(counterID), expect, update), nil
+}
+
 func (reader *CountersReader) FindHeartbeatCounter(
 	registrationID int64,
 	typeID int32,
@@ -198,6 +216,32 @@ func (reader *CountersReader) FindHeartbeatCounter(
 func (reader *CountersReader) FindCounterOfType(typeID int32) (counterID int32, ok bool) {
 	return reader.findCounter(func(_ int32, metadataOffset int, state int32) bool {
 		return reader.counterAllocatedOfTypeAt(metadataOffset, state, typeID)
+	})
+}
+
+// FindCounterOfTypeWithKeyPrefix returns the first allocated counter id
+// carrying typeID whose key starts with keyPrefix. An empty prefix matches
+// every key.
+//
+// Behaviour: the scan stops at the first unused record. A record freed during
+// the key read does not match.
+//
+// Returns: NullCounterID and false when no allocated record matches, or when
+// keyPrefix exceeds CounterMetadataMaxKeyLength bytes.
+func (reader *CountersReader) FindCounterOfTypeWithKeyPrefix(
+	typeID int32,
+	keyPrefix []byte,
+) (
+	counterID int32,
+	ok bool,
+) {
+	return reader.findCounter(func(_ int32, metadataOffset int, state int32) bool {
+		if !reader.counterAllocatedOfTypeAt(metadataOffset, state, typeID) {
+			return false
+		}
+		keyOffset := metadataOffset + CounterMetadataKeyOffset
+		key := reader.metadata.Bytes()[keyOffset : keyOffset+CounterMetadataMaxKeyLength]
+		return bytes.HasPrefix(key, keyPrefix) && reader.isStillAllocated(metadataOffset)
 	})
 }
 

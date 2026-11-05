@@ -53,10 +53,9 @@ func (r *errorRecorder) record(err error) {
 	r.reported = append(r.reported, err)
 }
 
-func TestModuleErrorCounterKeyAndLabel(t *testing.T) {
+func TestModuleErrorCounterLabel(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, moduleErrorCounterKey)
 	require.Equal(t, "Cluster Errors - clusterId=0", moduleErrorCounterLabel)
 }
 

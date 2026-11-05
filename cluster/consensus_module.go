@@ -96,6 +96,12 @@ type ConsensusModule struct {
 	// moduleState is the consensus module state counter (type 200).
 	moduleState *aeron.Counter
 
+	// controlToggle is the cluster control toggle counter (type 202).
+	controlToggle *aeron.Counter
+
+	// nodeControlToggle is the node control toggle counter (type 233).
+	nodeControlToggle *aeron.Counter
+
 	streams   *LogStreams
 	host      *election.HostAdapter
 	election  *election.Election
@@ -230,6 +236,18 @@ func OpenConsensusModule(
 		return nil, err
 	}
 	module.moduleState = stateCounter
+
+	controlToggle, err := addClusterControlToggle(module.client)
+	if err != nil {
+		return nil, err
+	}
+	module.controlToggle = controlToggle
+
+	nodeControlToggle, err := addNodeControlToggle(module.client)
+	if err != nil {
+		return nil, err
+	}
+	module.nodeControlToggle = nodeControlToggle
 
 	archiveClient, err := archive.Connect(ctx, archiveConnectConfig(cfg, module.client))
 	if err != nil {
@@ -551,6 +569,14 @@ func OpenConsensusModule(
 		counterID: module.moduleState.CounterID(),
 		reader:    counters,
 	})
+	module.agent.SetClusterControlToggle(Toggle{
+		counterID: module.controlToggle.CounterID(),
+		reader:    counters,
+	})
+	module.agent.SetNodeControlToggle(Toggle{
+		counterID: module.nodeControlToggle.CounterID(),
+		reader:    counters,
+	})
 
 	succeeded = true
 	return module, nil
@@ -652,6 +678,8 @@ func (m *ConsensusModule) Close() error {
 		m.agent.MarkClosed()
 		m.agent.CloseSnapshotTake()
 		m.agent.SetModuleStateCounter(nil)
+		m.agent.SetClusterControlToggle(nil)
+		m.agent.SetNodeControlToggle(nil)
 		m.agent.SetSnapshotRecordingControl(nil)
 		m.agent.SetSnapshotPublicationAdder(nil)
 		m.agent.SetSnapshotRecordingLog(nil, recordinglog.FileSyncNone)
@@ -746,8 +774,16 @@ func (m *ConsensusModule) Close() error {
 		m.archiveClient = nil
 	}
 
-	// Close both module counters last before the transport client, in reverse
+	// Close the module counters last before the transport client, in reverse
 	// open order. The state counter reads CLOSED for the whole teardown.
+	if m.nodeControlToggle != nil {
+		err = errors.Join(err, m.nodeControlToggle.Close())
+		m.nodeControlToggle = nil
+	}
+	if m.controlToggle != nil {
+		err = errors.Join(err, m.controlToggle.Close())
+		m.controlToggle = nil
+	}
 	if m.moduleState != nil {
 		err = errors.Join(err, m.moduleState.Close())
 		m.moduleState = nil

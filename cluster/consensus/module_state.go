@@ -106,6 +106,12 @@ func (a *Agent) endSnapshotState(reason string) {
 		return
 	}
 	a.setModuleState(ModuleStateActive, reason)
+
+	// Compare-and-set from SNAPSHOT keeps any other value a tool wrote
+	// during a direct RequestSnapshot.
+	if a.role == RoleLeader {
+		a.resetControlToggleFrom(ControlToggleSnapshot)
+	}
 }
 
 func (a *Agent) isLeaderHeld() bool {

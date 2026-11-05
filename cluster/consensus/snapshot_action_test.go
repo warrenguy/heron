@@ -92,7 +92,7 @@ func decodeClusterActionAtTermStart(
 // requireTakeNotConfigured runs one snapshotTakeWork call on a take with no
 // recording control wired. The take resolves with errSnapshotNotConfigured,
 // and the pending report clears.
-func requireTakeNotConfigured(t testing.TB, a *Agent) {
+func requireTakeNotConfigured(t fragmentRequireT, a *Agent) {
 	t.Helper()
 	require.True(t, a.HasPendingSnapshotAction())
 	require.Equal(t, 1, a.snapshotTakeWork(0))
