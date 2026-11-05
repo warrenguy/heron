@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -169,10 +169,6 @@ func drainPeerLogImages(images []*aeron.Image) {
 // below the old tail, so the re-elected ex-leader extends above the append
 // position.
 const exLeaderMinTail int64 = 16 << 10
-
-// logJoinPositionMismatch is the election error for a log image that joined
-// off the leader's term base.
-const logJoinPositionMismatch = "election: log join position mismatch"
 
 // divergedLeader holds the outcome of divergeAndReElect.
 type divergedLeader struct {
@@ -407,16 +403,20 @@ func restartDivergedLeader(
 }
 
 // truncateRestartedLeader restarts the ex-leader once. Returns after the
-// ex-leader truncates to the new term base in process.
+// ex-leader truncates to the new term base in process. The ex-leader must
+// report the truncate after the restart.
 func truncateRestartedLeader(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
+	moduleErrors *harness.ModuleErrors,
 	diverged divergedLeader,
 ) truncatedExLeader {
 	t.Helper()
 
 	leaderIndex := diverged.index
 	newTermBase := diverged.newTermBase
+	memberID := set.MemberConfig(leaderIndex).MemberID
+	truncateBase := moduleErrors.Count(memberID, election.ErrTruncatingClusterLog)
 	planAppended := restartDivergedLeader(t, set, diverged)
 
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
@@ -444,6 +444,13 @@ func truncateRestartedLeader(
 		}
 		return lastTermLogPosition(m) == newTermBase
 	})
+
+	require.Error(
+		t,
+		moduleErrors.MatchAt(memberID, election.ErrTruncatingClusterLog, truncateBase),
+		"ex-leader truncate event:\n%s",
+		set.State(),
+	)
 
 	return truncatedExLeader{
 		divergedLeader: diverged,
@@ -566,29 +573,27 @@ func buildDivergentTail(
 	return 0
 }
 
-// failIfLogJoinMismatch fails the test when m's election last recorded a log
-// join position mismatch. A nil m has no election to probe.
+// failIfLogJoinMismatch fails the test when memberID reported more log join
+// position mismatches than base.
 func failIfLogJoinMismatch(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
-	m *cluster.ConsensusModule,
-	memberIndex int,
+	moduleErrors *harness.ModuleErrors,
+	memberID int32,
+	base int,
 ) {
 	t.Helper()
 
-	if m == nil {
-		return
-	}
-	err := m.ElectionLastError()
-	if err == nil || !strings.Contains(err.Error(), logJoinPositionMismatch) {
+	mismatch := moduleErrors.MatchAt(memberID, election.ErrLogJoinPositionMismatch, base)
+	if mismatch == nil {
 		return
 	}
 	require.FailNow(
 		t,
 		"follower reported a log join position mismatch",
 		"member=%d err=%v:\n%s",
-		memberIndex,
-		err,
+		memberID,
+		mismatch,
 		set.State(),
 	)
 }
@@ -607,14 +612,14 @@ func TestDurableCluster_truncatesADivergentMemberAndCommits(t *testing.T) {
 
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableCluster(
+	set, moduleErrors := openDurableClusterWithErrors(
 		t,
 		harness.DurableDivergencePortBase,
 		harness.DurableDivergenceLogEndpoint,
 	)
 
 	// One frame past the follower floor is enough for a truncate.
-	exLeader := truncateRestartedLeader(t, set, divergeAndReElect(t, set, 1))
+	exLeader := truncateRestartedLeader(t, set, moduleErrors, divergeAndReElect(t, set, 1))
 	leaderIndex := exLeader.index
 	newTermBase := exLeader.newTermBase
 
@@ -678,13 +683,18 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableCluster(
+	set, moduleErrors := openDurableClusterWithErrors(
 		t,
 		harness.DurableExLeaderReElectPortBase,
 		harness.DurableExLeaderReElectLogEndpoint,
 	)
 
-	exLeader := truncateRestartedLeader(t, set, divergeAndReElect(t, set, exLeaderMinTail))
+	exLeader := truncateRestartedLeader(
+		t,
+		set,
+		moduleErrors,
+		divergeAndReElect(t, set, exLeaderMinTail),
+	)
 	exIndex := exLeader.index
 	planAppended := exLeader.planAppended
 
@@ -769,6 +779,8 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 	// nomination, so the ex-leader nominates first.
 	require.NoError(t, set.StopMember(followerIndex))
 	require.NoError(t, set.StopMember(newLeaderIndex))
+	followerID := set.MemberConfig(followerIndex).MemberID
+	mismatchBase := moduleErrors.Count(followerID, election.ErrLogJoinPositionMismatch)
 	require.NoError(t, set.RestartMember(followerIndex))
 
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
@@ -777,7 +789,7 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 	requireAwaitTick(t, set, winLabel, durableReElectBound, func() bool {
 		f := set.Module(followerIndex)
 		failIfFollowerLogReplication(t, set, f, followerIndex)
-		failIfLogJoinMismatch(t, set, f, followerIndex)
+		failIfLogJoinMismatch(t, set, moduleErrors, followerID, mismatchBase)
 		m := set.Module(exIndex)
 		ls := set.Leaders()
 		if len(ls) != 1 {
@@ -813,7 +825,7 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 	requireAwaitTick(t, set, "second follower completes election", durableElectBound, func() bool {
 		f := set.Module(followerIndex)
 		failIfFollowerLogReplication(t, set, f, followerIndex)
-		failIfLogJoinMismatch(t, set, f, followerIndex)
+		failIfLogJoinMismatch(t, set, moduleErrors, followerID, mismatchBase)
 		return f.ElectionComplete() &&
 			f.LeadershipTermID() == ex.LeadershipTermID()
 	})
@@ -824,7 +836,7 @@ func TestDurableCluster_reElectsATruncatedExLeader(t *testing.T) {
 
 	requireAwaitTick(t, set, "ex-leader append commits", durableWorkBound, func() bool {
 		f := set.Module(followerIndex)
-		failIfLogJoinMismatch(t, set, f, followerIndex)
+		failIfLogJoinMismatch(t, set, moduleErrors, followerID, mismatchBase)
 		return ex.CommitPosition() >= postAppendPos &&
 			localRecordingAtLeast(ex, postAppendPos) &&
 			f.CommitPosition() >= postAppendPos &&

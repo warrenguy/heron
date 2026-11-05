@@ -3,7 +3,6 @@
 package cluster_archive_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,15 +12,14 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// commitTimeoutError is the election error text when replication times out
-// below the commit position.
-const commitTimeoutError = "election: timeout awaiting commit position"
-
 // replicationWatch samples a returning member's election once per tick.
 type replicationWatch struct {
-	t     *testing.T
-	set   *harness.ClusterMemberSet
-	index int
+	t            *testing.T
+	set          *harness.ClusterMemberSet
+	moduleErrors *harness.ModuleErrors
+	index        int
+	memberID     int32
+	timeoutBase  int
 
 	// replicated reports whether the member entered FOLLOWER_LOG_REPLICATION.
 	replicated bool
@@ -30,20 +28,42 @@ type replicationWatch struct {
 	// FOLLOWER_LOG_REPLICATION.
 	entryStopPosition int64
 
-	// timeoutErr holds the first commit timeout the member reported.
+	// timeoutErr holds the first commit timeout after timeoutBase.
 	timeoutErr error
+}
+
+// newReplicationWatch returns a watch on the member at index. The watch
+// ignores commit timeouts that moduleErrors kept before the call.
+func newReplicationWatch(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	moduleErrors *harness.ModuleErrors,
+	index int,
+) *replicationWatch {
+	memberID := set.MemberConfig(index).MemberID
+	return &replicationWatch{
+		t:            t,
+		set:          set,
+		moduleErrors: moduleErrors,
+		index:        index,
+		memberID:     memberID,
+		timeoutBase:  moduleErrors.Count(memberID, election.ErrCommitPositionTimeout),
+	}
 }
 
 // observe samples the member's election once.
 func (w *replicationWatch) observe() {
+	if w.timeoutErr == nil {
+		w.timeoutErr = w.moduleErrors.MatchAt(
+			w.memberID, election.ErrCommitPositionTimeout, w.timeoutBase,
+		)
+		if w.timeoutErr != nil {
+			w.t.Logf("member %d reported %v:\n%s", w.index, w.timeoutErr, w.set.State())
+		}
+	}
 	m := w.set.Module(w.index)
 	if m == nil {
 		return
-	}
-	err := m.ElectionLastError()
-	if w.timeoutErr == nil && err != nil && strings.Contains(err.Error(), commitTimeoutError) {
-		w.timeoutErr = err
-		w.t.Logf("member %d reported %v:\n%s", w.index, err, w.set.State())
 	}
 	if !w.replicated && m.ElectionState() == election.ElectionStateFollowerLogReplication {
 		w.replicated = true
@@ -86,19 +106,21 @@ func isolateNewLeader(
 
 // awaitReplicatedRejoin ticks until the ex-leader at exIndex and the leader
 // at leaderIndex complete an election in the same term. The ex-leader must
-// pass through FOLLOWER_LOG_REPLICATION without a commit timeout. A non-nil
-// perTick runs at the start of each rejoin tick. Returns the ex-leader's log
-// recording stop position on entry to FOLLOWER_LOG_REPLICATION.
+// pass through FOLLOWER_LOG_REPLICATION without a commit timeout in
+// moduleErrors. A non-nil perTick runs at the start of each rejoin tick.
+// Returns the ex-leader's log recording stop position on entry to
+// FOLLOWER_LOG_REPLICATION.
 func awaitReplicatedRejoin(
 	t *testing.T,
 	set *harness.ClusterMemberSet,
+	moduleErrors *harness.ModuleErrors,
 	exIndex int,
 	leaderIndex int,
 	perTick func(),
 ) int64 {
 	t.Helper()
 
-	watch := &replicationWatch{t: t, set: set, index: exIndex}
+	watch := newReplicationWatch(t, set, moduleErrors, exIndex)
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 	requireAwaitTick(t, set, "ex-leader rejoins through replication", durableElectBound, func() bool {
 		if perTick != nil {
@@ -181,7 +203,7 @@ func TestDurableCluster_replicatesAnExLeaderBehindTheTermBase(t *testing.T) {
 
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableCluster(
+	set, moduleErrors := openDurableClusterWithErrors(
 		t,
 		harness.DurableReplicatePortBase,
 		harness.DurableReplicateLogEndpoint,
@@ -220,7 +242,7 @@ func TestDurableCluster_replicatesAnExLeaderBehindTheTermBase(t *testing.T) {
 	// base.
 	require.NoError(t, set.RestartMember(exIndex))
 	requireWarmRestartOpen(t, set, exIndex, "returning ex-leader")
-	awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex, nil)
+	awaitReplicatedRejoin(t, set, moduleErrors, exIndex, newLeaderIndex, nil)
 
 	requireReplicatedCommit(t, set, exIndex, newLeaderIndex, recordingID)
 	require.Equal(
@@ -250,7 +272,7 @@ func TestDurableCluster_replicatesATruncatedExLeader(t *testing.T) {
 
 	harness.RequireArchiveRuntime(t)
 
-	set := openDurableCluster(
+	set, moduleErrors := openDurableClusterWithErrors(
 		t,
 		harness.DurableReplicateTruncatePortBase,
 		harness.DurableReplicateTruncateLogEndpoint,
@@ -270,7 +292,14 @@ func TestDurableCluster_replicatesATruncatedExLeader(t *testing.T) {
 
 	// Phase: the ex-leader returns with a tail above the new term base.
 	restartDivergedLeader(t, set, diverged)
-	entryStopPosition := awaitReplicatedRejoin(t, set, exIndex, newLeaderIndex, nil)
+	entryStopPosition := awaitReplicatedRejoin(
+		t,
+		set,
+		moduleErrors,
+		exIndex,
+		newLeaderIndex,
+		nil,
+	)
 	require.Equal(
 		t,
 		diverged.newTermBase,

@@ -7,11 +7,6 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-var (
-	errNewElectionFromCanvass = errors.New("election: new election detected from canvass position")
-	errCommitPositionTimeout  = errors.New("election: timeout awaiting commit position")
-)
-
 // handleInit holds in INIT until PrepareForNewLeadership reports prepared.
 // The first node-startup init still skips prepare.
 func (e *Election) handleInit(nowNs int64) int {
@@ -303,7 +298,7 @@ func (e *Election) handleFollowerLogReplication(nowNs int64) int {
 		return workCount + 1 + e.commitReplicatedTerm(nowNs)
 	}
 	if nowNs >= e.replicationDeadlineNs {
-		e.HandleError(nowNs, errCommitPositionTimeout)
+		e.HandleError(nowNs, ErrCommitPositionTimeout)
 		return 1
 	}
 	return workCount
@@ -331,7 +326,7 @@ func (e *Election) startFollowerLogReplication(nowNs int64) int {
 		}
 	}
 	if nowNs >= e.replicationDeadlineNs {
-		e.HandleError(nowNs, errCommitPositionTimeout)
+		e.HandleError(nowNs, ErrCommitPositionTimeout)
 		return 1
 	}
 	return 0
@@ -478,16 +473,13 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 	leader := e.leaderMember
 	endpoint := e.thisMember.CatchupEndpoint
 	if leader == nil || endpoint == "" {
-		return e.heartbeatTimeoutWork(
-			nowNs,
-			"election: no leader or catchup endpoint for catchup position",
-		)
+		return e.heartbeatTimeoutWork(nowNs, errNoCatchupEndpoint)
 	}
 
 	// Open the catchup receive path before the leader starts archive replay.
 	// Ensure is idempotent when the destination is already open.
 	if e.deps.Host.EnsureCatchupLogDestination(endpoint) == "" {
-		return e.heartbeatTimeoutWork(nowNs, "election: failed to open catchup log destination")
+		return e.heartbeatTimeoutWork(nowNs, errCatchupDestinationOpen)
 	}
 
 	sent := e.deps.Publisher.CatchupPosition(
@@ -507,33 +499,31 @@ func (e *Election) handleFollowerCatchupInit(nowNs int64) int {
 	}
 	// Work 1 re-offers the send on the next tick. Back-pressure clears as the
 	// publication drains, unlike a failed destination open.
-	e.heartbeatTimeoutWork(nowNs, "election: failed to send catchup position")
+	e.heartbeatTimeoutWork(nowNs, errCatchupPositionSend)
 	return 1
 }
 
-// heartbeatTimeoutWork fires HandleError with msg once the leader heartbeat
-// deadline has passed since the last state change.
-//
-// Returns: 1 when HandleError fires, 0 while still waiting. Callers that already
-// count the tick may discard the result.
-func (e *Election) heartbeatTimeoutWork(nowNs int64, msg string) int {
+// heartbeatTimeoutWork calls HandleError with err once the leader heartbeat
+// timeout elapses after the last state change. Callers that already count the
+// tick may discard the result.
+func (e *Election) heartbeatTimeoutWork(nowNs int64, err error) int {
 	if nowNs < e.timeOfLastStateChangeNs+e.cfg.LeaderHeartbeatTimeoutNs {
 		return 0
 	}
-	e.HandleError(nowNs, errors.New(msg))
+	e.HandleError(nowNs, err)
 	return 1
 }
 
 func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
 	if !ok {
-		return e.heartbeatTimeoutWork(nowNs, "election: failed to join catchup log")
+		return e.heartbeatTimeoutWork(nowNs, errCatchupLogJoin)
 	}
 	if params.LogJoinPosition != e.logPosition {
 		// Wait for an image at the follower log position. After reseed only the
 		// catchup destination feeds the subscription. A mismatch means the
 		// catchup image is not ready yet.
-		return e.heartbeatTimeoutWork(nowNs, "election: log join position mismatch")
+		return e.heartbeatTimeoutWork(nowNs, ErrLogJoinPositionMismatch)
 	}
 
 	joined, failed := e.joinLogAsFollower(params, nowNs)
@@ -544,7 +534,7 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 		e.state(ElectionStateFollowerCatchup, nowNs, "")
 		return 1
 	}
-	return e.heartbeatTimeoutWork(nowNs, "election: failed to join catchup log as follower")
+	return e.heartbeatTimeoutWork(nowNs, errCatchupLogJoinAsFollower)
 }
 
 // handleFollowerCatchup polls the host for catchup progress up to the notified
@@ -663,10 +653,10 @@ func (e *Election) handleFollowerLogInit(nowNs int64) int {
 func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
 	if !ok {
-		return e.heartbeatTimeoutWork(nowNs, "election: failed to join live log")
+		return e.heartbeatTimeoutWork(nowNs, errLiveLogJoin)
 	}
 	if params.LogJoinPosition != e.logPosition {
-		e.HandleError(nowNs, errors.New("election: log join position mismatch"))
+		e.HandleError(nowNs, ErrLogJoinPositionMismatch)
 		return 1
 	}
 
@@ -682,7 +672,7 @@ func (e *Election) handleFollowerLogAwait(nowNs int64) int {
 		e.state(ElectionStateFollowerReady, nowNs, "")
 		return 1
 	}
-	return e.heartbeatTimeoutWork(nowNs, "election: failed to join live log as follower")
+	return e.heartbeatTimeoutWork(nowNs, errLiveLogJoinAsFollower)
 }
 
 func (e *Election) handleFollowerReady(nowNs int64) int {
@@ -699,7 +689,7 @@ func (e *Election) handleFollowerReady(nowNs int64) int {
 		e.deps.Handler.ElectionComplete(nowNs)
 		e.state(ElectionStateClosed, nowNs, "")
 	} else {
-		e.heartbeatTimeoutWork(nowNs, "election: ready follower failed to notify leader")
+		e.heartbeatTimeoutWork(nowNs, errReadyFollowerNotify)
 	}
 	return 1
 }
@@ -791,7 +781,7 @@ func (e *Election) OnCanvassPosition(fields codecs.CanvassPositionFields) {
 	case logTermID < e.leadershipTermID:
 		e.publishNewLeadershipTermToLaggingMember(follower, logTermID, e.deps.NanoClock())
 	case logTermID > e.leadershipTermID && e.isLeaderAwaitingFollowers():
-		e.HandleError(e.deps.NanoClock(), errNewElectionFromCanvass)
+		e.HandleError(e.deps.NanoClock(), ErrNewElectionFromCanvass)
 	}
 }
 
@@ -953,7 +943,7 @@ func (e *Election) installLeadershipTerm(
 		return
 	}
 	if fields.NextLeadershipTermID == NullValue {
-		e.HandleError(nowNs, errors.New("election: invalid newLeadershipTerm"))
+		e.HandleError(nowNs, errInvalidNewLeadershipTerm)
 		return
 	}
 	if e.appendPosition < fields.NextTermBaseLogPosition {
@@ -1004,7 +994,7 @@ func (e *Election) truncateLog(logLeadershipTermID, newPosition, nowNs int64) {
 		return
 	}
 	e.appendPosition = newPosition
-	e.HandleError(nowNs, errors.New("election: truncating cluster log"))
+	e.HandleError(nowNs, ErrTruncatingClusterLog)
 
 	// HandleError sets logPosition from host commit. Cap logPosition at newPosition
 	// when host commit sits above the truncate end.
@@ -1075,10 +1065,7 @@ func (e *Election) OnCommitPosition(fields codecs.CommitPositionFields) {
 
 	if fields.LeadershipTermID > e.leadershipTermID &&
 		e.electionState == ElectionStateLeaderReady {
-		e.HandleError(
-			e.deps.NanoClock(),
-			errors.New("election: new leader detected from commit position"),
-		)
+		e.HandleError(e.deps.NanoClock(), ErrNewLeaderFromCommitPosition)
 	}
 }
 

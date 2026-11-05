@@ -444,6 +444,321 @@ func TestElection_HandleError_truncateAndPrepare(t *testing.T) {
 	})
 }
 
+// catchupPositionFailPublisher fails CatchupPosition. Other publishes pass
+// through to the embedded SbePublisher.
+type catchupPositionFailPublisher struct {
+	*election.SbePublisher
+}
+
+func (p *catchupPositionFailPublisher) CatchupPosition(
+	election.PublicationTarget,
+	codecs.CatchupPositionFields,
+) bool {
+	return false
+}
+
+// installLeaderForTest installs a NewLeadershipTerm from member 1, then sets
+// state. Deadlines count from the install.
+func installLeaderForTest(
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	state election.ElectionState,
+) *election.Election {
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerBallot)
+	e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
+	election.SetStateForTest(e, state)
+	return e
+}
+
+// errorClassRun holds the inputs of one TestElection_errorClasses row.
+type errorClassRun struct {
+	cfg   election.ElectionConfig
+	deps  election.ElectionDeps
+	clock *FakeClock
+}
+
+func TestElection_errorClasses(t *testing.T) {
+	t.Parallel()
+
+	errPrepare := errors.New("prepare stop failed")
+	for _, tc := range []struct {
+		name string
+
+		// want is nil for an unexported error. text identifies it.
+		want error
+		text string
+
+		// atDeadline ticks once before the leader heartbeat deadline, expecting
+		// workBeforeDeadline and no error, then once at the deadline.
+		atDeadline         bool
+		workBeforeDeadline int
+
+		drive func(t *testing.T, r *errorClassRun) *election.Election
+	}{
+		{
+			name: "canvass above the election term in leader ready",
+			want: election.ErrNewElectionFromCanvass,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				useRecordingHost(&r.deps, r.clock, r.cfg, consensus.RoleLeader)
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateLeaderReady)
+				election.SetLogSessionIDForTest(e, fixtureLogSessionID)
+				e.OnCanvassPosition(codecs.CanvassPositionFields{
+					LogLeadershipTermID: r.cfg.LeadershipTermID + 1,
+					LogPosition:         50,
+					LeadershipTermID:    r.cfg.LeadershipTermID + 1,
+					FollowerMemberID:    1,
+				})
+				return e
+			},
+		},
+		{
+			name: "commit position from a newer leader in leader ready",
+			want: election.ErrNewLeaderFromCommitPosition,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateLeaderReady)
+				e.OnCommitPosition(codecs.CommitPositionFields{
+					LeadershipTermID: r.cfg.LeadershipTermID + 1,
+					LogPosition:      500,
+					LeaderMemberID:   1,
+				})
+				return e
+			},
+		},
+		{
+			name: "truncation on install",
+			want: election.ErrTruncatingClusterLog,
+			drive: func(t *testing.T, r *errorClassRun) *election.Election {
+				errs := truncateInstallErrs{}
+				return runTruncateInstallOver(t, r.cfg, r.deps, r.clock, errs, truncateInstallBase).e
+			},
+		},
+		{
+			name: "log await join position mismatch",
+			want: election.ErrLogJoinPositionMismatch,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:                   r.clock,
+					localLogRecordingID:     int64(election.NullValue),
+					followerLogJoinOK:       true,
+					followerLogJoinPosition: r.cfg.LogPosition + 1,
+				}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+				e.DoWork(r.clock.nowNs)
+				return e
+			},
+		},
+		{
+			name:       "catchup await join position mismatch at the deadline",
+			want:       election.ErrLogJoinPositionMismatch,
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:                   r.clock,
+					followerLogJoinOK:       true,
+					followerLogJoinPosition: r.cfg.LogPosition + 50,
+				}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
+				election.SetLogSessionIDForTest(e, 7)
+				return e
+			},
+		},
+		{
+			name: "commit timeout with a done helper and notified commit below the append position",
+			want: election.ErrCommitPositionTimeout,
+			drive: func(t *testing.T, r *errorClassRun) *election.Election {
+				lr := &countingLogReplicationForTest{
+					done:     true,
+					position: r.cfg.AppendPosition + replicationStopAhead,
+				}
+				e := newReplicationFixtureOver(t, r.cfg, r.deps, r.clock, lr).e
+
+				t0 := r.clock.nowNs
+				require.Equal(t, 1, e.DoWork(t0))
+				require.Equal(t, 1, e.DoWork(t0+1))
+				require.Less(t, e.NotifiedCommitPosition(), e.AppendPosition())
+				require.NoError(t, e.LastError())
+				e.DoWork(t0 + r.cfg.LeaderHeartbeatTimeoutNs)
+				return e
+			},
+		},
+		{
+			name:       "commit timeout without a helper",
+			want:       election.ErrCommitPositionTimeout,
+			atDeadline: true,
+			drive: func(t *testing.T, r *errorClassRun) *election.Election {
+				e := election.NewElection(r.cfg, r.deps)
+				stopPosition := r.cfg.AppendPosition + replicationStopAhead
+				driveToFollowerLogReplication(t, e, r.cfg, stopPosition, election.NullPosition)
+				return e
+			},
+		},
+		{
+			name: "invalid newLeadershipTerm",
+			text: "election: invalid newLeadershipTerm",
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{clock: r.clock}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateCanvass)
+				fields := installNewLeadershipTermFields(r.cfg, 1, r.cfg.LeadershipTermID)
+				fields.TermBaseLogPosition = r.cfg.AppendPosition + 100
+				e.OnNewLeadershipTerm(fields)
+				return e
+			},
+		},
+		{
+			name: "PrepareForNewLeadership error",
+			want: errPrepare,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.cfg.IsNodeStartup = false
+				r.deps.Host = &recordingElectionHost{}
+				r.deps.Handler = &recordingAgentHandler{prepareErr: errPrepare}
+				e := election.NewElection(r.cfg, r.deps)
+				e.DoWork(r.clock.nowNs)
+				return e
+			},
+		},
+		{
+			name:       "catchup init without a leader at the deadline",
+			text:       "election: no leader or catchup endpoint for catchup position",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{clock: r.clock}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerCatchupInit)
+				return e
+			},
+		},
+		{
+			name:       "catchup init destination open failure at the deadline",
+			text:       "election: failed to open catchup log destination",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{clock: r.clock}
+				e := installLeaderForTest(r.cfg, r.deps, election.ElectionStateFollowerCatchupInit)
+				election.MemberForTest(e, r.cfg.MemberID).CatchupEndpoint = "127.0.0.1:9006"
+				return e
+			},
+		},
+		{
+			name:               "catchup init send failure at the deadline",
+			text:               "election: failed to send catchup position",
+			atDeadline:         true,
+			workBeforeDeadline: 1,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:                       r.clock,
+					ensureCatchupLogDestination: "aeron:udp?endpoint=127.0.0.1:9007",
+				}
+				r.deps.Publisher = &catchupPositionFailPublisher{SbePublisher: &election.SbePublisher{}}
+				e := installLeaderForTest(r.cfg, r.deps, election.ElectionStateFollowerCatchupInit)
+				election.MemberForTest(e, r.cfg.MemberID).CatchupEndpoint = "127.0.0.1:9007"
+				return e
+			},
+		},
+		{
+			name:       "catchup await image not ready at the deadline",
+			text:       "election: failed to join catchup log",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{clock: r.clock}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
+				return e
+			},
+		},
+		{
+			name:       "catchup await join rejected at the deadline",
+			text:       "election: failed to join catchup log as follower",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:                   r.clock,
+					followerLogJoinOK:       true,
+					followerLogJoinPosition: r.cfg.LogPosition,
+				}
+				r.deps.Handler = &recordingAgentHandler{}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerCatchupAwait)
+				return e
+			},
+		},
+		{
+			name:       "log await image not ready at the deadline",
+			text:       "election: failed to join live log",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:               r.clock,
+					localLogRecordingID: int64(election.NullValue),
+				}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+				return e
+			},
+		},
+		{
+			name:       "log await join rejected at the deadline",
+			text:       "election: failed to join live log as follower",
+			atDeadline: true,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Host = &recordingElectionHost{
+					clock:                   r.clock,
+					localLogRecordingID:     int64(election.NullValue),
+					followerLogJoinOK:       true,
+					followerLogJoinPosition: r.cfg.LogPosition,
+				}
+				r.deps.Handler = &recordingAgentHandler{}
+				e := election.NewElection(r.cfg, r.deps)
+				election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+				return e
+			},
+		},
+		{
+			name:               "ready follower notify failure at the deadline",
+			text:               "election: ready follower failed to notify leader",
+			atDeadline:         true,
+			workBeforeDeadline: 1,
+			drive: func(_ *testing.T, r *errorClassRun) *election.Election {
+				r.deps.Handler = &recordingAgentHandler{}
+				r.deps.Publisher = &appendPositionFailPublisher{SbePublisher: &election.SbePublisher{}}
+				return installLeaderForTest(r.cfg, r.deps, election.ElectionStateFollowerReady)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, deps, clock, _, _ := testElectionDeps(t)
+			var reports []error
+			deps.ErrorHandler = func(err error) { reports = append(reports, err) }
+
+			e := tc.drive(t, &errorClassRun{cfg: cfg, deps: deps, clock: clock})
+			if tc.atDeadline {
+				deadline := clock.nowNs + cfg.LeaderHeartbeatTimeoutNs
+				require.Equal(t, tc.workBeforeDeadline, e.DoWork(deadline-1))
+				require.NoError(t, e.LastError())
+				e.DoWork(deadline)
+			}
+
+			require.Len(t, reports, 1)
+			err := reports[0]
+			require.Equal(t, err, e.LastError())
+			require.Equal(t, election.ElectionStateInit, e.State())
+			require.Equal(t, errors.Is(tc.want, election.ErrEvent), errors.Is(err, election.ErrEvent))
+			if tc.want != nil {
+				require.ErrorIs(t, err, tc.want)
+			} else {
+				require.EqualError(t, err, tc.text)
+			}
+		})
+	}
+}
+
 func TestOnRequestVote_branches(t *testing.T) {
 	t.Parallel()
 
@@ -2102,7 +2417,6 @@ func newReplicationFixture(t *testing.T, lr election.LogReplication) *replicatio
 }
 
 // newReplicationFixtureWith builds a replicationFixture over publisher.
-// Prepare returns the append position, so the first Init pass keeps it.
 func newReplicationFixtureWith(
 	t *testing.T,
 	lr election.LogReplication,
@@ -2111,13 +2425,27 @@ func newReplicationFixtureWith(
 	t.Helper()
 
 	cfg, deps, clock, _, _ := testElectionDeps(t)
+	deps.Publisher = publisher
+	return newReplicationFixtureOver(t, cfg, deps, clock, lr)
+}
+
+// newReplicationFixtureOver builds a replicationFixture over cfg and deps.
+// Prepare returns the append position, so the first Init pass keeps it.
+func newReplicationFixtureOver(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+	lr election.LogReplication,
+) *replicationFixture {
+	t.Helper()
+
 	host := hostWithLogReplication(clock, lr)
 	host.localLogRecordingID = 42
 	handler := &recordingAgentHandler{appendPositionReturn: cfg.AppendPosition}
 	spy := &recordingLogCoherencySpy{}
 	deps.Host = host
 	deps.Handler = handler
-	deps.Publisher = publisher
 	deps.RecordingLog = spy
 	e := election.NewElection(cfg, deps)
 	require.Equal(t, 1, e.DoWork(clock.nowNs))
@@ -2131,7 +2459,7 @@ func newReplicationFixtureWith(
 		host:         host,
 		handler:      handler,
 		spy:          spy,
-		publisher:    publisher,
+		publisher:    deps.Publisher,
 		e:            e,
 		stopPosition: stopPosition,
 	}
@@ -2752,6 +3080,20 @@ func runTruncateInstall(
 	t.Helper()
 
 	cfg, deps, clock, _, _ := testElectionDeps(t)
+	return runTruncateInstallOver(t, cfg, deps, clock, errs, hostCommit)
+}
+
+// runTruncateInstallOver runs runTruncateInstall over cfg and deps.
+func runTruncateInstallOver(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+	errs truncateInstallErrs,
+	hostCommit int64,
+) truncateInstallResult {
+	t.Helper()
+
 	cfg.LogPosition = cfg.AppendPosition
 	host := &recordingElectionHost{
 		clock:               clock,
@@ -3281,11 +3623,7 @@ func TestHandleFollowerReady_publishCompletesElection(t *testing.T) {
 	handler := &recordingAgentHandler{}
 	deps.Handler = handler
 	pub := deps.Publisher.(*election.SbePublisher)
-	e := election.NewElection(cfg, deps)
-
-	election.SetStateForTest(e, election.ElectionStateFollowerBallot)
-	e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
-	election.SetStateForTest(e, election.ElectionStateFollowerReady)
+	e := installLeaderForTest(cfg, deps, election.ElectionStateFollowerReady)
 
 	require.Equal(t, 1, e.DoWork(clock.nowNs))
 
@@ -3321,11 +3659,7 @@ func TestHandleFollowerReady_publishFailure(t *testing.T) {
 			deps.Handler = handler
 			pub := &appendPositionFailPublisher{SbePublisher: &election.SbePublisher{}}
 			deps.Publisher = pub
-			e := election.NewElection(cfg, deps)
-
-			election.SetStateForTest(e, election.ElectionStateFollowerBallot)
-			e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
-			election.SetStateForTest(e, election.ElectionStateFollowerReady)
+			e := installLeaderForTest(cfg, deps, election.ElectionStateFollowerReady)
 
 			require.Equal(t, 1, e.DoWork(clock.nowNs))
 			require.Equal(t, election.ElectionStateFollowerReady, e.State())

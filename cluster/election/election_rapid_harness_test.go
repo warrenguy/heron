@@ -4,6 +4,7 @@ package election_test
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -859,8 +860,9 @@ func (c *electionRapidCluster) actCanvassNewerLogTerm(rt *rapid.T) {
 }
 
 // deliverCanvassChecked injects a canvass into target. A log term above the
-// election term must move a leader awaiting followers out of its state. Any
-// other canvass must leave the state unchanged.
+// election term must move a leader awaiting followers out of its state.
+// LastError must then match ErrNewElectionFromCanvass. Any other canvass must
+// leave the state unchanged.
 func (c *electionRapidCluster) deliverCanvassChecked(
 	target *rapidNode,
 	peerID int32,
@@ -883,6 +885,14 @@ func (c *electionRapidCluster) deliverCanvassChecked(
 		c.noteEdgeFail(
 			"canvass log term %d above election term %d left member=%d in %v",
 			logTerm, electionTerm, target.id, after,
+		)
+		return
+	}
+	lastErr := target.election.LastError()
+	if !errors.Is(lastErr, election.ErrNewElectionFromCanvass) {
+		c.noteEdgeFail(
+			"canvass log term %d above election term %d reset member=%d with error %v",
+			logTerm, electionTerm, target.id, lastErr,
 		)
 	}
 }

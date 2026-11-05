@@ -216,19 +216,22 @@ type Config struct {
 	// each report.
 	//
 	// Behaviour:
-	//   - The module reports each error passed to election.Election.HandleError,
-	//     election events included.
-	//   - The module reports each snapshot recording log Force error.
+	//   - The module reports each error that [election.ElectionDeps.ErrorHandler]
+	//     or [consensus.AgentConfig.ErrorHandler] receives, election events
+	//     included.
 	//   - The module counts each report on the Cluster Errors counter (type 212)
 	//     before the call. A dropped report still counts.
 	//   - After ConsensusModule.Close the module does not count or report.
 	//   - A report does not stop the member.
 	//
+	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
+	// other error is a fault.
+	//
 	// Concurrency: invoker-only. ErrorHandler runs inside consensus.Agent.DoWork,
 	// within Runner.DoWork. ErrorHandler must not:
 	//   - panic
 	//   - block the duty cycle
-	//   - call Runner.DoWork, Runner.Run, consensus.Agent.DoWork or
+	//   - call Runner.DoWork, Runner.Run, consensus.Agent.DoWork, or
 	//     ConsensusModule.Close
 	//   - call a ConsensusModule or consensus.Agent method that sends or changes
 	//     state

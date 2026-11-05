@@ -48,15 +48,13 @@ type ElectionDeps struct {
 	//
 	// Behaviour: nil skips the call. When the handler runs, LastError is already
 	// set. State and logPosition stay pre-HandleError until the handler returns.
-	// The error may include archive remote text and channel URIs. Handlers must not
-	// put raw err.Error() into untrusted sinks without sanitization.
 	//
-	// Concurrency: invoker-only. The handler must not:
-	//   - panic
-	//   - block the duty cycle
-	//   - re-enter Election methods, Host or Handler mutators, or duty-cycle entry
+	// Concurrency: invoker-only. The handler must not re-enter Election methods,
+	// Host or Handler mutators, or duty-cycle entry. A panic skips log sync and
+	// Init after the callback (process-fatal).
 	//
-	// A panic skips log sync and Init after the callback (process-fatal).
+	// [github.com/warrenguy/heron/cluster.Config.ErrorHandler] states the rules
+	// that every module error handler follows.
 	//
 	// Lifetime: copied into Election at NewElection. Mutating the caller's deps
 	// copy afterwards does not change the election.

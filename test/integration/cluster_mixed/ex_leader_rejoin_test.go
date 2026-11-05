@@ -3,7 +3,6 @@
 package cluster_mixed_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -15,8 +14,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
-
-const commitTimeoutError = "election: timeout awaiting commit position"
 
 // TestClusterMixedGoExLeaderRejoin stops a Go leader after one term. Two Java
 // members then move the log forward. The Go member returns. The Go member
@@ -38,7 +35,8 @@ func TestClusterMixedGoExLeaderRejoin(t *testing.T) {
 	recorded := recordJavaCommitPositions(t, java)
 
 	// Leave the readiness file unset. Java member 1 stays down until writeReady.
-	cfg := buildMixedExLeaderRejoinConfig(t)
+	moduleErrors := harness.NewModuleErrors()
+	cfg := moduleErrors.AmendConfig(buildMixedExLeaderRejoinConfig(t))
 	f := openMixedGoMember(t, cfg)
 
 	topology := f.module.Topology()
@@ -89,6 +87,7 @@ func TestClusterMixedGoExLeaderRejoin(t *testing.T) {
 	entryStop := awaitGoRejoinByReplication(
 		t,
 		f,
+		moduleErrors,
 		java,
 		javaTerm,
 		clusterjava.MixedRejoinBudget,
@@ -230,12 +229,13 @@ func awaitJavaLeaderEntersElection(
 
 // awaitGoRejoinByReplication ticks until the Go member finishes the election
 // under the Java leader. The member must pass through FOLLOWER_LOG_REPLICATION
-// without a commit timeout.
+// without a new commit timeout in moduleErrors.
 //
 // Returns the recording stop position on entry to FOLLOWER_LOG_REPLICATION.
 func awaitGoRejoinByReplication(
 	t *testing.T,
 	f *mixedMemberFixture,
+	moduleErrors *harness.ModuleErrors,
 	java []*harness.DriverCounters,
 	javaTerm int64,
 	budget time.Duration,
@@ -243,15 +243,18 @@ func awaitGoRejoinByReplication(
 	t.Helper()
 
 	m := f.module
+	memberID := m.ThisMemberID()
+	timeoutBase := moduleErrors.Count(memberID, election.ErrCommitPositionTimeout)
 	var replicated bool
 	var entryStopPosition int64
 	var timeoutErr error
 	start := time.Now()
 	ok := f.tickUntil(budget, func() bool {
-		err := m.ElectionLastError()
-		if timeoutErr == nil && err != nil && strings.Contains(err.Error(), commitTimeoutError) {
-			timeoutErr = err
-			t.Logf("go member reported %v:\n%s", err, dumpMixedState(m, java))
+		if timeoutErr == nil {
+			timeoutErr = moduleErrors.MatchAt(memberID, election.ErrCommitPositionTimeout, timeoutBase)
+			if timeoutErr != nil {
+				t.Logf("go member reported %v:\n%s", timeoutErr, dumpMixedState(m, java))
+			}
 		}
 		if !replicated && m.ElectionState() == election.ElectionStateFollowerLogReplication {
 			replicated = true
