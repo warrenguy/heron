@@ -668,3 +668,112 @@ func TestReplayNewLeadershipTermEvent_appendErrorRestartsElection(t *testing.T) 
 		require.Equal(t, 2, fake.calls)
 	})
 }
+
+func TestEnsureRecordingLogCoherent_nullRecordingIDSkips(t *testing.T) {
+	t.Parallel()
+
+	spy := &recordingLogCoherencySpy{}
+
+	require.NoError(t, election.EnsureRecordingLogCoherent(
+		spy,
+		recordinglog.EnsureCoherentParams{RecordingID: election.NullValue},
+	))
+	require.NoError(t, election.EnsureRecordingLogCoherent(
+		spy,
+		recordinglog.EnsureCoherentParams{RecordingID: election.NullValue, LogPosition: 1000},
+	))
+	require.Empty(t, spy.calls)
+
+	// Nil log is a no-op.
+	require.NoError(t, election.EnsureRecordingLogCoherent(
+		nil,
+		recordinglog.EnsureCoherentParams{RecordingID: 42},
+	))
+
+	// A real recording id reaches the log; a NullValue term base falls back to
+	// the initial term base position.
+	require.NoError(t, election.EnsureRecordingLogCoherent(
+		spy,
+		recordinglog.EnsureCoherentParams{
+			RecordingID:                42,
+			InitialLogLeadershipTermID: 1,
+			InitialTermBaseLogPosition: 100,
+			LeadershipTermID:           5,
+			TermBaseLogPosition:        election.NullValue,
+			LogPosition:                200,
+			Timestamp:                  7,
+		},
+	))
+	require.Equal(t, []recordinglog.EnsureCoherentParams{{
+		RecordingID:                42,
+		InitialLogLeadershipTermID: 1,
+		InitialTermBaseLogPosition: 100,
+		LeadershipTermID:           5,
+		TermBaseLogPosition:        100,
+		LogPosition:                200,
+		Timestamp:                  7,
+	}}, spy.calls)
+}
+
+func TestUpdateRecordingLog_propagation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("leader init coherency error resets to init", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, clock, _, _ := testElectionDeps(t)
+		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		deps.Host = host
+		deps.RecordingLog = &recordingLogCoherencySpy{err: errors.New("write failed")}
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateLeaderInit)
+
+		require.Equal(t, 1, e.DoWork(clock.nowNs))
+		require.Equal(t, election.ElectionStateInit, e.State())
+	})
+
+	t.Run("follower log await success advances log leadership term", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		spy := &recordingLogCoherencySpy{}
+		deps.RecordingLog = spy
+		adoptedTerm := driveFollowerLogJoinToReady(t, cfg, deps, clock)
+
+		require.Equal(t, []recordinglog.EnsureCoherentParams{{
+			RecordingID:                testRecordingID,
+			InitialLogLeadershipTermID: cfg.LeadershipTermID,
+			InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
+			LeadershipTermID:           adoptedTerm,
+			TermBaseLogPosition:        cfg.LogPosition,
+			LogPosition:                election.NullValue,
+			Timestamp:                  epochClock.nowMs,
+		}}, spy.calls)
+	})
+
+	t.Run("forwards file sync level from deps", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+		host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
+		deps.Host = host
+		spy := &recordingLogCoherencySpy{}
+		deps.RecordingLog = spy
+		deps.RecordingLogFileSyncLevel = recordinglog.FileSyncData
+		e := election.NewElection(cfg, deps)
+		election.SetStateForTest(e, election.ElectionStateLeaderInit)
+
+		require.Equal(t, 1, e.DoWork(clock.nowNs))
+		require.Equal(t, election.ElectionStateLeaderReady, e.State())
+		require.Equal(t, []recordinglog.EnsureCoherentParams{{
+			RecordingID:                42,
+			InitialLogLeadershipTermID: cfg.LeadershipTermID,
+			InitialTermBaseLogPosition: cfg.TermBaseLogPosition,
+			LeadershipTermID:           cfg.LeadershipTermID,
+			TermBaseLogPosition:        cfg.LogPosition,
+			LogPosition:                election.NullValue,
+			Timestamp:                  epochClock.nowMs,
+			FileSyncLevel:              recordinglog.FileSyncData,
+		}}, spy.calls)
+	})
+}

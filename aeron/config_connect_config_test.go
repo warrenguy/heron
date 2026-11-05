@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -95,4 +96,19 @@ func TestConductorConnectConfig_publicationErrorFrameHandler(t *testing.T) {
 		config.PublicationErrorFrameHandler(event)
 		require.Equal(t, []PublicationErrorFrame{publicationErrorFrameFrom(event)}, frames)
 	})
+}
+
+func TestConductorFixtureConfigFromConnect_propagatesSubscriberErrorHandler(t *testing.T) {
+	t.Parallel()
+
+	var subscriberCalls int
+	cfg := Config{
+		ErrorHandler: func(error) { subscriberCalls++ },
+	}
+	connectConfig := ConductorConnectConfigForTest(cfg, testutil.TestClientID)
+	fixtureConfig := conductorFixtureConfigFromConnect(connectConfig)
+	require.NotNil(t, fixtureConfig.SubscriberErrorHandler)
+	fixtureConfig.SubscriberErrorHandler(errors.New("subscriber-side fault"))
+	require.Equal(t, 1, subscriberCalls)
+	require.NotNil(t, fixtureConfig.ErrorHandler)
 }
