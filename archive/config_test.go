@@ -138,6 +138,13 @@ func TestValidateConfig_errors(t *testing.T) {
 				"control-mode=response needs one media",
 		},
 		{
+			name: "ipc equal control stream ids",
+			mutate: func(cfg *archive.Config) {
+				cfg.ControlResponseStreamID = archive.DefaultControlRequestStreamID
+			},
+			wantErr: "archive: ipc control response stream id must differ from request stream id 10",
+		},
+		{
 			name: "connect timeout negative",
 			mutate: func(cfg *archive.Config) {
 				cfg.ConnectTimeout = -time.Second

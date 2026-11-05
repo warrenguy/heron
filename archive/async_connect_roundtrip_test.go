@@ -3,6 +3,7 @@
 package archive
 
 import (
+	"cmp"
 	"runtime"
 	"strconv"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
@@ -59,6 +61,13 @@ func TestAsyncConnect_connectAndKeepAliveRoundtrip(t *testing.T) {
 	authFields, ok := decoded.Fields.(codecs.AuthConnectRequestFields)
 	require.True(t, ok)
 	require.Equal(t, connectCorrelation, authFields.CorrelationID)
+	require.Equal(
+		t,
+		result.Config.EffectiveControlResponseChannel(),
+		string(authFields.ResponseChannel),
+	)
+	require.Contains(t, string(authFields.ResponseChannel), aeron.ChannelSessionIDParam)
+	require.Equal(t, DefaultControlResponseStreamID, authFields.ResponseStreamID)
 
 	require.NotEmpty(t, archiveIDWire)
 	decoded, ok = codecs.TryDecodeByTemplate(archiveIDWire, 0, codecs.ArchiveDecodeMaxVarLen)
@@ -130,36 +139,83 @@ func TestAsyncConnect_happyPathIPC(t *testing.T) {
 	require.Equal(t, ConnectStateDone, ac.State())
 }
 
-func TestAsyncConnect_responseModeRequestChannel(t *testing.T) {
+func TestAsyncConnect_controlChannels(t *testing.T) {
 	t.Parallel()
 
+	id := strconv.Itoa(int(aeron.AsyncConnectTestSessionID))
 	tests := []struct {
 		name            string
 		requestChannel  string
 		responseChannel string
+
 		// localControl skips WithRemoteControl. IPC-first selection then
 		// replaces both control channels.
 		localControl bool
-		// wantRequestPrefix is the request channel up to the registration id.
-		// Empty means the request channel is unchanged.
+
+		localControlStreamID int32
+
+		// wantRequestChannel is the effective request channel when
+		// wantRequestPrefix is empty.
+		wantRequestChannel string
+
+		// wantRequestPrefix is the request channel before the response
+		// subscription registration id.
 		wantRequestPrefix string
+
+		wantResponseChannel string
 	}{
 		{
-			name:              "response_mode",
-			requestChannel:    "aeron:udp?endpoint=localhost:8010",
-			responseChannel:   "aeron:udp?control-mode=response|control=localhost:10002",
-			wantRequestPrefix: "aeron:udp?endpoint=localhost:8010|response-correlation-id=",
+			name:                "response_mode",
+			requestChannel:      "aeron:udp?endpoint=localhost:8010",
+			responseChannel:     "aeron:udp?control-mode=response|control=localhost:10002",
+			wantRequestPrefix:   "aeron:udp?endpoint=localhost:8010|response-correlation-id=",
+			wantResponseChannel: "aeron:udp?control-mode=response|control=localhost:10002|rejoin=false",
 		},
 		{
-			name:            "default_mode_unchanged",
-			requestChannel:  "aeron:ipc",
-			responseChannel: "aeron:ipc",
+			name:                "response_mode_caller_session_id",
+			requestChannel:      "aeron:ipc",
+			responseChannel:     "aeron:ipc?control-mode=response|session-id=42",
+			wantRequestPrefix:   "aeron:ipc?response-correlation-id=",
+			wantResponseChannel: "aeron:ipc?control-mode=response|session-id=42",
 		},
 		{
-			name:            "local_control_ignores_response_mode",
-			requestChannel:  "aeron:ipc",
-			responseChannel: "aeron:ipc?control-mode=response",
-			localControl:    true,
+			name:                "remote_ipc",
+			requestChannel:      "aeron:ipc",
+			responseChannel:     "aeron:ipc",
+			wantRequestChannel:  "aeron:ipc?session-id=" + id,
+			wantResponseChannel: "aeron:ipc?session-id=" + id,
+		},
+		{
+			name:                "local_control_ignores_response_mode",
+			requestChannel:      "aeron:ipc",
+			responseChannel:     "aeron:ipc?control-mode=response",
+			localControl:        true,
+			wantRequestChannel:  "aeron:ipc?term-length=64k|session-id=" + id,
+			wantResponseChannel: "aeron:ipc?term-length=64k|session-id=" + id,
+		},
+		{
+			name:                "remote_udp",
+			requestChannel:      "aeron:udp?endpoint=localhost:8010",
+			responseChannel:     "aeron:udp?endpoint=localhost:0",
+			wantRequestChannel:  "aeron:udp?endpoint=localhost:8010|session-id=" + id,
+			wantResponseChannel: "aeron:udp?endpoint=localhost:0|rejoin=false|session-id=" + id,
+		},
+		{
+			name:            "caller_session_id",
+			requestChannel:  "aeron:ipc?alias=request|ssc=false|linger=0|session-id=42|sparse=false",
+			responseChannel: "aeron:ipc?term-length=64k|alias=response",
+			wantRequestChannel: "aeron:ipc?alias=request|ssc=false|linger=0|session-id=" + id +
+				"|sparse=false",
+			wantResponseChannel: "aeron:ipc?term-length=64k|alias=response|session-id=" + id,
+		},
+		{
+			name:                 "local_control_stream_id",
+			requestChannel:       "aeron:ipc",
+			responseChannel:      "aeron:ipc",
+			localControl:         true,
+			localControlStreamID: 77,
+			wantRequestChannel:   "aeron:ipc?term-length=64k|session-id=" + id,
+			wantResponseChannel:  "aeron:ipc?term-length=64k|session-id=" + id,
 		},
 	}
 
@@ -171,24 +227,38 @@ func TestAsyncConnect_responseModeRequestChannel(t *testing.T) {
 				if !tc.localControl {
 					cfg = cfg.WithRemoteControl()
 				}
+				if tc.localControlStreamID != 0 {
+					cfg.LocalControlStreamID = tc.localControlStreamID
+				}
 				cfg.ControlRequestChannel = tc.requestChannel
 				cfg.ControlResponseChannel = tc.responseChannel
 				return cfg
 			})
 			registerAsyncConnectClose(t, ac)
+			wantRequestStreamID := cmp.Or(tc.localControlStreamID, DefaultControlRequestStreamID)
+			responseMode := tc.wantRequestPrefix != ""
+			wantDraws, wantDrawStreamID := 1, wantRequestStreamID
+			if responseMode {
+				wantDraws, wantDrawStreamID = 0, 0
+			}
+			require.Equal(t, wantDraws, harness.NextSessionIDRequestsForTest())
+			require.Equal(t, wantDrawStreamID, harness.NextSessionIDStreamIDForTest())
 
 			setupAsyncConnectControlReady(t, harness, ac)
 			require.Equal(t, ConnectStateCreateControlRequestPublication, ac.State())
 
-			wantRequestChannel := tc.requestChannel
-			if tc.localControl {
-				wantRequestChannel = DefaultLocalControlChannel
-			}
-			if tc.wantRequestPrefix != "" {
-				registrationID := ac.ControlResponseSubscriptionForTest().RegistrationID()
+			cfg := ac.ConfigForTest()
+			responseSubscription := ac.ControlResponseSubscriptionForTest()
+			wantRequestChannel := tc.wantRequestChannel
+			if responseMode {
+				registrationID := responseSubscription.RegistrationID()
 				wantRequestChannel = tc.wantRequestPrefix + strconv.FormatInt(registrationID, 10)
 			}
-			require.Equal(t, wantRequestChannel, ac.ConfigForTest().EffectiveControlRequestChannel())
+			require.Equal(t, wantRequestChannel, cfg.EffectiveControlRequestChannel())
+			require.Equal(t, tc.wantResponseChannel, cfg.EffectiveControlResponseChannel())
+			require.Equal(t, wantRequestStreamID, cfg.EffectiveControlRequestStreamID())
+			require.Equal(t, DefaultControlResponseStreamID, cfg.EffectiveControlResponseStreamID())
+			require.Equal(t, tc.wantResponseChannel, responseSubscription.Channel())
 		})
 	}
 }

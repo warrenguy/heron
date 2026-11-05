@@ -4,11 +4,13 @@ package cluster_archive_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
@@ -65,11 +67,7 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	archiveClient := module.ArchiveClient()
 	require.NotNil(t, archiveClient)
 	require.False(t, archiveClient.IsClosed())
-	require.Equal(
-		t,
-		archive.DefaultLocalControlChannel,
-		archiveClient.Config().EffectiveControlRequestChannel(),
-	)
+	requireModuleArchiveControlChannels(t, archiveClient.Config())
 	require.False(t, archiveClient.Config().OwnsAeronClient())
 
 	// Bind at open: log publication and join/append sources before first tick.
@@ -167,4 +165,21 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Equal(t, election.ElectionStateClosed, module.ElectionState())
 	require.Equal(t, int32(0), module.ThisMemberID())
 	require.Equal(t, int64(0), module.LeadershipTermID())
+}
+
+// requireModuleArchiveControlChannels asserts one session-id on the local
+// control channel. Requests and responses share that channel. Responses use
+// stream 120.
+func requireModuleArchiveControlChannels(t *testing.T, cfg archive.Config) {
+	t.Helper()
+
+	sessionID := requireControlChannelSessionID(t, cfg)
+	wantChannel := aeron.AppendChannelParam(
+		archive.DefaultLocalControlChannel,
+		aeron.ChannelSessionIDParam,
+		strconv.Itoa(int(sessionID)),
+	)
+	require.Equal(t, wantChannel, cfg.EffectiveControlRequestChannel())
+	require.Equal(t, wantChannel, cfg.EffectiveControlResponseChannel())
+	require.Equal(t, int32(120), cfg.EffectiveControlResponseStreamID())
 }

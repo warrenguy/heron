@@ -3,6 +3,7 @@
 package archive
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -474,6 +475,62 @@ func TestAsyncConnect_timeout(t *testing.T) {
 	require.Error(t, pollErr)
 	require.ErrorContains(t, pollErr, "archive: connect timeout in state")
 	require.ErrorContains(t, pollErr, DefaultLocalControlChannel)
+}
+
+// TestNewAsyncConnect_nextSessionIDFails asserts that a failed session id
+// draw fails NewAsyncConnect. The failure closes an owned client. A caller
+// client stays open. A draw on a terminated owned client wraps
+// ErrTransportTerminating.
+func TestNewAsyncConnect_nextSessionIDFails(t *testing.T) {
+	t.Parallel()
+
+	errDraw := errors.New("next session id refused")
+	tests := []struct {
+		name      string
+		owned     bool
+		terminate bool
+	}{
+		{name: "caller_client"},
+		{name: "owned_client", owned: true},
+		{name: "owned_client_terminated", owned: true, terminate: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			harness := aeron.NewAsyncConnectTestHarness(t)
+			harness.SetNextSessionIDResultForTest(0, errDraw)
+			cfg := fixtureConnectConfigForTest(t, harness, tc.owned)
+			if tc.terminate {
+				// Phase: the first draw tick reads a client timeout, which
+				// terminates the owned client.
+				transmitClientTimeout(t, harness)
+			}
+
+			ac, err := NewAsyncConnect(t.Context(), cfg)
+			require.Nil(t, ac)
+			if tc.terminate {
+				require.ErrorIs(t, err, ErrTransportTerminating)
+				require.ErrorIs(t, err, conductor.ErrClientTimeout)
+				require.True(t, aeron.ClientIsClosedForTest(harness.Client))
+				return
+			}
+			require.ErrorIs(t, err, errDraw)
+			require.EqualError(t, err, "archive: next session id: next session id refused")
+			require.Equal(t, 1, harness.NextSessionIDRequestsForTest())
+
+			// Phase: the failed draw closes an owned client. A caller client
+			// stays usable.
+			harness.SetNextSessionIDResultForTest(aeron.AsyncConnectTestSessionID, nil)
+			sessionID, err := harness.Client.NextAvailableSessionID(DefaultControlRequestStreamID)
+			if tc.owned {
+				require.ErrorIs(t, err, aeron.ErrClientClosed)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, aeron.AsyncConnectTestSessionID, sessionID)
+		})
+	}
 }
 
 // TestAsyncConnect_ownedClientFaultFailsPoll asserts that a fault that

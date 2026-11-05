@@ -15,37 +15,36 @@ func requireEffectiveControl(
 	t.Helper()
 	require.Equal(t, wantReqCh, cfg.EffectiveControlRequestChannel())
 	require.Equal(t, wantRespCh, cfg.EffectiveControlResponseChannel())
-	require.Equal(t, wantReqStream, cfg.EffectiveControlRequestStreamID())
-	require.Equal(t, wantRespStream, cfg.EffectiveControlResponseStreamID())
+	requireEffectiveStreamIDs(t, cfg, wantReqStream, wantRespStream)
 }
 
-func requireEffectiveStreamIDs(t *testing.T, cfg Config, want int32) {
+func requireEffectiveStreamIDs(t *testing.T, cfg Config, wantReq, wantResp int32) {
 	t.Helper()
-	require.Equal(t, want, cfg.EffectiveControlRequestStreamID())
-	require.Equal(t, want, cfg.EffectiveControlResponseStreamID())
+	require.Equal(t, wantReq, cfg.EffectiveControlRequestStreamID())
+	require.Equal(t, wantResp, cfg.EffectiveControlResponseStreamID())
 }
 
 func TestEffectiveChannels(t *testing.T) {
 	tests := []struct {
-		name       string
-		cfg        Config
-		wantReqCh  string
-		wantRespCh string
-		wantStream int32
+		name          string
+		cfg           Config
+		wantReqCh     string
+		wantRespCh    string
+		wantReqStream int32
 	}{
 		{
-			name:       "ipc default",
-			cfg:        Config{}.Normalize(),
-			wantReqCh:  DefaultLocalControlChannel,
-			wantRespCh: DefaultLocalControlChannel,
-			wantStream: DefaultLocalControlStreamID,
+			name:          "ipc default",
+			cfg:           Config{}.Normalize(),
+			wantReqCh:     DefaultLocalControlChannel,
+			wantRespCh:    DefaultLocalControlChannel,
+			wantReqStream: DefaultLocalControlStreamID,
 		},
 		{
-			name:       "remote",
-			cfg:        Config{}.WithRemoteControl().Normalize(),
-			wantReqCh:  DefaultControlRequestChannel,
-			wantRespCh: DefaultControlResponseChannel,
-			wantStream: DefaultControlRequestStreamID,
+			name:          "remote",
+			cfg:           Config{}.WithRemoteControl().Normalize(),
+			wantReqCh:     DefaultControlRequestChannel,
+			wantRespCh:    DefaultControlResponseChannel,
+			wantReqStream: DefaultControlRequestStreamID,
 		},
 		{
 			name: "explicit local after remote opt out",
@@ -54,15 +53,22 @@ func TestEffectiveChannels(t *testing.T) {
 				cfg.LocalControlChannel = DefaultLocalControlChannel
 				return cfg
 			}(),
-			wantReqCh:  DefaultLocalControlChannel,
-			wantRespCh: DefaultLocalControlChannel,
-			wantStream: DefaultLocalControlStreamID,
+			wantReqCh:     DefaultLocalControlChannel,
+			wantRespCh:    DefaultLocalControlChannel,
+			wantReqStream: DefaultLocalControlStreamID,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := applyEffectiveChannels(tc.cfg)
-			requireEffectiveControl(t, cfg, tc.wantReqCh, tc.wantRespCh, tc.wantStream, tc.wantStream)
+			requireEffectiveControl(
+				t,
+				cfg,
+				tc.wantReqCh,
+				tc.wantRespCh,
+				tc.wantReqStream,
+				DefaultControlResponseStreamID,
+			)
 		})
 	}
 }
@@ -72,7 +78,8 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 		name      string
 		input     Config
 		normalize bool
-		want      int32
+		wantReq   int32
+		wantResp  int32
 	}{
 		{
 			name: "explicit",
@@ -81,7 +88,8 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 				LocalControlStreamID: 77,
 			},
 			normalize: true,
-			want:      77,
+			wantReq:   77,
+			wantResp:  DefaultControlResponseStreamID,
 		},
 		{
 			name: "fallback",
@@ -90,7 +98,9 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 				LocalControlStreamID:   0,
 				ControlRequestStreamID: 42,
 			},
-			want: 42,
+			// Without Normalize, the response stream stays zero.
+			wantReq:  42,
+			wantResp: 0,
 		},
 	}
 	for _, tc := range tests {
@@ -100,7 +110,7 @@ func TestEffectiveChannels_ipcStreamID(t *testing.T) {
 				cfg = cfg.Normalize()
 			}
 			cfg = applyEffectiveChannels(cfg)
-			requireEffectiveStreamIDs(t, cfg, tc.want)
+			requireEffectiveStreamIDs(t, cfg, tc.wantReq, tc.wantResp)
 		})
 	}
 }

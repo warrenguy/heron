@@ -103,6 +103,10 @@ type Client struct {
 // When cfg.Aeron is nil, ctx also bounds owned transport attach (CNC ready and
 // driver heartbeat) via NewAsyncConnect. Shared Aeron skips that wait.
 //
+// Outside response mode, NewAsyncConnect draws a session id before the
+// handshake. The transport client DriverTimeout bounds the draw, not ctx.
+// Connect returns a draw error as is, not ctx.Err().
+//
 // NewAsyncConnect normalizes and validates cfg; pre-normalizing is harmless.
 //
 // On handshake failure or ctx cancellation, partial resources are released via

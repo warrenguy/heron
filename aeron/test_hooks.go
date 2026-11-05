@@ -19,6 +19,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/record"
 )
 
 // HeaderSetFragmentedFrameLenForTest seeds fragmentedFrameLen on a poll flyweight.
@@ -747,6 +748,10 @@ const (
 	// used by AsyncConnectTestHarness.
 	AsyncConnectTestIngressRegID int64 = 3001
 
+	// AsyncConnectTestSessionID is the default session id AsyncConnectTestHarness
+	// returns to a next session id request.
+	AsyncConnectTestSessionID int32 = 5003
+
 	asyncConnectTestIngressRegID = AsyncConnectTestIngressRegID
 )
 
@@ -754,17 +759,31 @@ const (
 type AsyncConnectTestHarness struct {
 	Client  *Client
 	LogPath string
+
 	// ConcurrentLogPath backs non-exclusive AddPublication responses.
 	ConcurrentLogPath string
+
 	// MediaDriverDir is the synthetic driver directory for member log paths.
 	MediaDriverDir string
 
 	fixture *testutil.ConductorFixture
+
 	// registrationIDs holds the publication registration ids behind the
 	// conductor counters reader.
 	registrationIDs []int64
+
 	// imageLogCount counts the image log files TransmitAvailableImage wrote.
 	imageLogCount int
+
+	nextSessionID int32
+
+	// nextSessionIDErr fails each next session id request when non-nil.
+	nextSessionIDErr error
+
+	nextSessionIDRequests int
+
+	// nextSessionIDStreamID is the stream id of the last answered request.
+	nextSessionIDStreamID int32
 }
 
 // NewAsyncConnectTestHarness builds a synthetic driver-backed client for connect tests.
@@ -786,15 +805,98 @@ func NewAsyncConnectTestHarness(tb testing.TB) *AsyncConnectTestHarness {
 		ConcurrentLogPath: concurrentLogPath,
 		MediaDriverDir:    dir,
 		fixture:           fixture,
+		nextSessionID:     AsyncConnectTestSessionID,
 	}
 	harness.SetCountersReaderForRegs(tb)
+	setAwaitPollSleepingHook(client, harness.handleAwaitPollSleeping)
 	tb.Cleanup(func() {
 		if harness.Client != nil {
 			setDoWorkAfterHook(harness.Client, nil)
+			setAwaitPollSleepingHook(harness.Client, nil)
 			_ = harness.Client.Close()
 		}
 	})
 	return harness
+}
+
+// SetNextSessionIDResultForTest sets the answer to later next session id
+// requests. A nil err answers with sessionID. A non-nil err fails the request.
+// The harness clock never advances, so the harness answers every request.
+func (harness *AsyncConnectTestHarness) SetNextSessionIDResultForTest(sessionID int32, err error) {
+	if harness == nil {
+		return
+	}
+	harness.nextSessionID = sessionID
+	harness.nextSessionIDErr = err
+}
+
+// NextSessionIDRequestsForTest returns the number of next session id requests
+// the harness answered.
+func (harness *AsyncConnectTestHarness) NextSessionIDRequestsForTest() int {
+	if harness == nil {
+		return 0
+	}
+	return harness.nextSessionIDRequests
+}
+
+// NextSessionIDStreamIDForTest returns the stream id of the last answered next
+// session id request, or 0 before the first answer.
+func (harness *AsyncConnectTestHarness) NextSessionIDStreamIDForTest() int32 {
+	if harness == nil {
+		return 0
+	}
+	return harness.nextSessionIDStreamID
+}
+
+// handleAwaitPollSleeping completes the active pending entry when it is a next
+// session id request. RespondPendingAdds later drops the command from the ring.
+//
+// Concurrency: the client calls it from awaitPendingPoll under clientLock, on
+// the goroutine that called NextAvailableSessionID.
+func (harness *AsyncConnectTestHarness) handleAwaitPollSleeping() {
+	conductorInstance := harness.fixture.Conductor
+	correlationID := conductorInstance.ActiveCorrelationID()
+	pending, ok := conductorInstance.PendingResult(correlationID)
+	if !ok || pending.Kind != conductor.PendingKindNextSessionID {
+		return
+	}
+	err := conductorInstance.CompletePendingForTest(
+		correlationID,
+		harness.nextSessionID,
+		harness.nextSessionIDErr,
+	)
+	if err == nil {
+		harness.nextSessionIDRequests++
+		harness.nextSessionIDStreamID = harness.peekNextSessionIDStreamID(correlationID)
+	}
+}
+
+// peekNextSessionIDStreamID returns the stream id of the unread
+// GET_NEXT_AVAILABLE_SESSION_ID command with correlationID, or 0 when the ring
+// does not hold the command. It does not consume a record.
+func (harness *AsyncConnectTestHarness) peekNextSessionIDStreamID(correlationID int64) int32 {
+	ring := harness.fixture.Ring
+	buffer := ring.Buffer()
+	mask := ring.Capacity() - 1
+	producerPosition := ring.ProducerPosition()
+	for position := ring.ConsumerPosition(); position < producerPosition; {
+		recordIndex := int(position) & mask
+		recordLength := int(buffer.GetInt32Volatile(record.LengthOffset(recordIndex)))
+		if recordLength <= 0 {
+			return 0
+		}
+		position += int64(record.AlignRecordLength(recordLength))
+		if buffer.GetInt32(record.TypeOffset(recordIndex)) != conductor.GetNextAvailableSessionID {
+			continue
+		}
+		bodyOffset := record.EncodedMsgOffset(recordIndex)
+		decoded, err := conductor.DecodeCorrelated(buffer, bodyOffset)
+		if err != nil || decoded.CorrelationID != correlationID {
+			continue
+		}
+		return buffer.GetInt32(bodyOffset + conductor.CorrelatedMessageLength)
+	}
+	return 0
 }
 
 // SetErrorHandler installs a conductor ErrorHandler. The handler maps each
@@ -854,6 +956,7 @@ func (harness *AsyncConnectTestHarness) TransmitAvailableImage(
 
 	require.NotNil(tb, harness)
 	require.NotNil(tb, sub)
+
 	// Each call gets its own file. An attached image keeps the earlier one
 	// mapped.
 	harness.imageLogCount++

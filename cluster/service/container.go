@@ -40,8 +40,8 @@ const (
 	MaxServiceCount = codecs.RecoveryStateMaxServiceCount
 
 	// archiveResponseStreamBase is the upstream service archive response
-	// stream for service 0 at cluster id 0: 100 + 20 + 1.
-	archiveResponseStreamBase int32 = 121
+	// stream for service 0 at cluster id 0.
+	archiveResponseStreamBase = 100 + archive.DefaultControlResponseStreamID + 1
 
 	ipcChannelPrefix = "aeron:ipc"
 )

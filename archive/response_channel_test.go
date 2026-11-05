@@ -215,6 +215,81 @@ func TestValidateResponseMode(t *testing.T) {
 	})
 }
 
+func TestValidateControlStreamIDs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		requestChannel   string
+		responseChannel  string
+		requestStreamID  int32
+		responseStreamID int32
+		wantErr          string
+	}{
+		{
+			name:             "ipc equal streams",
+			requestChannel:   "aeron:ipc",
+			responseChannel:  "aeron:ipc?term-length=64k",
+			requestStreamID:  10,
+			responseStreamID: 10,
+			wantErr: "archive: ipc control response stream id must differ " +
+				"from request stream id 10",
+		},
+		{
+			name:             "ipc different streams",
+			requestChannel:   "aeron:ipc",
+			responseChannel:  "aeron:ipc",
+			requestStreamID:  10,
+			responseStreamID: 20,
+		},
+		{
+			name:             "ipc response mode equal streams",
+			requestChannel:   "aeron:ipc",
+			responseChannel:  "aeron:ipc?control-mode=response",
+			requestStreamID:  10,
+			responseStreamID: 10,
+		},
+		{
+			name:             "udp equal streams",
+			requestChannel:   "aeron:udp?endpoint=localhost:8010",
+			responseChannel:  "aeron:udp?endpoint=localhost:0",
+			requestStreamID:  10,
+			responseStreamID: 10,
+		},
+		{
+			name:             "udp request ipc response equal streams",
+			requestChannel:   "aeron:udp?endpoint=localhost:8010",
+			responseChannel:  "aeron:ipc",
+			requestStreamID:  10,
+			responseStreamID: 10,
+		},
+		{
+			name:             "ipcx request ipc response equal streams",
+			requestChannel:   "aeron:ipcx?alias=request",
+			responseChannel:  "aeron:ipc",
+			requestStreamID:  10,
+			responseStreamID: 10,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateControlStreamIDs(
+				tc.requestChannel,
+				tc.responseChannel,
+				tc.requestStreamID,
+				tc.responseStreamID,
+			)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestApplyUDPRejoinFalse(t *testing.T) {
 	t.Run("udp", func(t *testing.T) {
 		for _, tc := range []struct {
