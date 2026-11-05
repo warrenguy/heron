@@ -454,6 +454,8 @@ type Agent struct {
 	lastSnapshotTake    SnapshotTakeResult
 	hasLastSnapshotTake bool
 
+	errorHandler func(error)
+
 	// snapshotControl, snapshotAdder and snapshotRecordingLog are the module
 	// snapshot seams. A take that finds any of them nil fails.
 	snapshotControl      SnapshotRecordingControl
@@ -605,6 +607,17 @@ type AgentConfig struct {
 	// ServiceCount sizes the ServiceAck tracker. Zero for a member without
 	// clustered services. A negative value panics at NewAgent.
 	ServiceCount int
+
+	// ErrorHandler receives each error the agent reports. Nil drops each
+	// report.
+	//
+	// Behaviour: the agent reports a snapshot recording log Force error after
+	// the take resolves. LastSnapshotTake already returns that result.
+	//
+	// Concurrency: invoker-only. ErrorHandler runs inside DoWork.
+	// ErrorHandler must not call DoWork or a method that sends or changes
+	// agent state.
+	ErrorHandler func(error)
 }
 
 // NewAgent constructs an [Agent] from cfg.
@@ -693,6 +706,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		authenticator:             auth,
 		serviceAcks:               newServiceAckTracker(cfg.ServiceCount),
 		timers:                    newTimerService(),
+		errorHandler:              cfg.ErrorHandler,
 
 		expiredTimerCountByCorrelationID: make(map[int64]int64),
 	}
@@ -703,6 +717,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 	a.timerExpiryHandler = a.handleTimerExpiry
 	a.SetLogAdapter(cfg.LogAdapter)
 	return a
+}
+
+// reportError passes err to errorHandler when set. err must be non-nil.
+func (a *Agent) reportError(err error) {
+	if a.errorHandler != nil {
+		a.errorHandler(err)
+	}
 }
 
 // AppendRankFailure returns the marked append-rank failure, or nil.

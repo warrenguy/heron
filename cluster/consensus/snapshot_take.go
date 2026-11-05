@@ -24,8 +24,8 @@ var (
 	errSnapshotRecordingLog   = errors.New("consensus: write snapshot rows to recording log")
 )
 
-// errSnapshotRecordingLogForce is the cause of SnapshotTakeResult.ForceErr.
-var errSnapshotRecordingLogForce = errors.New("consensus: force snapshot rows to recording log")
+// ErrSnapshotRecordingLogForce is the cause of SnapshotTakeResult.ForceErr.
+var ErrSnapshotRecordingLogForce = errors.New("consensus: force snapshot rows to recording log")
 
 // SnapshotTakeResult describes one resolved module snapshot take.
 type SnapshotTakeResult struct {
@@ -51,7 +51,8 @@ type SnapshotTakeResult struct {
 	Err error
 
 	// ForceErr is the recording log Force error after the module row is in
-	// the log. The rows stay in the log. Err stays nil.
+	// the log. The rows stay in the log. Err stays nil. The Agent error
+	// handler receives ForceErr once.
 	ForceErr error
 }
 
@@ -498,7 +499,7 @@ func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error)
 	}
 	result := take.result(take.recordingID, nil)
 	if err := take.recordingLog.Force(take.recordingLogSyncLevel); err != nil {
-		result.ForceErr = fmt.Errorf("%w: %w", errSnapshotRecordingLogForce, err)
+		result.ForceErr = fmt.Errorf("%w: %w", ErrSnapshotRecordingLogForce, err)
 	}
 	a.resolveSnapshotTake(result)
 	return true, nil
@@ -564,6 +565,9 @@ func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
 	a.lastSnapshotTake = result
 	a.hasLastSnapshotTake = true
 	a.endSnapshotState(moduleStateReasonSnapshotComplete)
+	if result.ForceErr != nil {
+		a.reportError(result.ForceErr)
+	}
 }
 
 // cancelSnapshotTake discards a take in flight. The module then returns to

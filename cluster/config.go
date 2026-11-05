@@ -210,6 +210,36 @@ type Config struct {
 	// and open-session idle close. Zero takes the 10s upstream default
 	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
 	SessionTimeoutNs int64
+
+	// ErrorHandler receives each error the consensus module reports. Nil drops
+	// each report.
+	//
+	// Behaviour:
+	//   - The module reports each error passed to election.Election.HandleError,
+	//     election events included.
+	//   - The module reports each snapshot recording log Force error.
+	//   - The module counts each report on the Cluster Errors counter (type 212)
+	//     before the call. A dropped report still counts.
+	//   - After ConsensusModule.Close the module does not count or report.
+	//   - A report does not stop the member.
+	//
+	// Concurrency: invoker-only. ErrorHandler runs inside consensus.Agent.DoWork,
+	// within Runner.DoWork. ErrorHandler must not:
+	//   - panic
+	//   - block the duty cycle
+	//   - call Runner.DoWork, Runner.Run, consensus.Agent.DoWork or
+	//     ConsensusModule.Close
+	//   - call a ConsensusModule or consensus.Agent method that sends or changes
+	//     state
+	//
+	// ErrorHandler may call the ConsensusModule read accessors. The module
+	// stores the failed step result before each call. An election error arrives
+	// before the election enters INIT, so ElectionState still reports the failed
+	// state.
+	//
+	// The error text may hold archive remote text and channel URIs. Sanitize it
+	// before an untrusted sink.
+	ErrorHandler func(error)
 }
 
 // Normalize applies defaults and returns a copy. Idempotent.

@@ -300,12 +300,14 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			role = RoleLeader
 		}
 		commit := new(atomic.Int64)
+		var reported []error
 		a := NewAgent(AgentConfig{
 			Role:             role,
 			ServiceCount:     serviceCount,
 			Commit:           commit,
 			LeadershipTermID: 4,
 			SessionTimeoutNs: sessionTimeoutNs,
+			ErrorHandler:     func(err error) { reported = append(reported, err) },
 		})
 		stateCounter := &recordingModuleStateCounter{}
 		a.SetModuleStateCounter(stateCounter)
@@ -371,6 +373,9 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		// wantLog is the fake log before any write, then at resolve. Later
 		// steps must not change it.
 		wantLog := *recordingLog
+		// wantReported is empty until resolve, then holds the resolve reports.
+		// A cancelled or retired action never reports.
+		var wantReported []error
 		acks := &snapshotTakeAckModel{queues: make([][]int64, serviceCount)}
 		acksSent := false
 		sendAcks := func() {
@@ -417,6 +422,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			result, ok := a.LastSnapshotTake()
 			require.Equal(rt, status == actionStatusResolved, ok, step)
 			require.Equal(rt, wantLog, *recordingLog, step)
+			require.Equal(rt, wantReported, reported, step)
 			if ok {
 				require.NotEqual(rt, fakeSnapshotPreProofID, result.RecordingID, step)
 			}
@@ -447,9 +453,10 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			if _, ok := a.LastSnapshotTake(); ok && status == actionStatusTake {
 				status = actionStatusResolved
 				requireSnapshotTakeResult(
-					rt, a, archive, recordingLog, script, position, serviceCount, timerRows,
+					rt, a, archive, recordingLog, reported, script, position, serviceCount, timerRows,
 				)
 				wantLog = *recordingLog
+				wantReported = reported
 			}
 			if held && a.isLeaderHeld() {
 				requireHeldUntouched("held tick")
@@ -543,6 +550,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		a.DoWork(nowNs)
 		require.Equal(rt, ModuleStateClosed, a.ModuleState())
 		require.Equal(rt, ModuleStateClosed, stateCounter.last())
+		require.Equal(rt, wantReported, reported)
 	})
 }
 
@@ -552,6 +560,7 @@ func requireSnapshotTakeResult(
 	a *Agent,
 	archive *fakeSnapshotArchive,
 	recordingLog *fakeSnapshotRecordingLog,
+	reported []error,
 	script snapshotTakeScript,
 	position int64,
 	serviceCount int,
@@ -567,6 +576,7 @@ func requireSnapshotTakeResult(
 	possible, certain := script.outcome()
 	if result.Err != nil {
 		require.NoError(rt, result.ForceErr)
+		require.Empty(rt, reported)
 		require.Equal(rt, int64(nullValue), result.RecordingID)
 		matched := certain != nil && errors.Is(result.Err, certain)
 		for _, cause := range possible {
@@ -582,10 +592,12 @@ func requireSnapshotTakeResult(
 
 	require.NoError(rt, certain)
 	if script.logOutcome == scriptLogForceError {
-		require.ErrorIs(rt, result.ForceErr, errSnapshotRecordingLogForce)
+		require.ErrorIs(rt, result.ForceErr, ErrSnapshotRecordingLogForce)
 		require.ErrorIs(rt, result.ForceErr, errSnapshotTakeRapidBoom)
+		require.Equal(rt, []error{result.ForceErr}, reported)
 	} else {
 		require.NoError(rt, result.ForceErr)
+		require.Empty(rt, reported)
 	}
 	group := fakeSnapshotGroup(result, script.startID)
 	require.Equal(rt, group, recordingLog.rows)
