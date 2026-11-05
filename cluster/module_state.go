@@ -10,19 +10,31 @@ import (
 
 const moduleStateCounterLabel = "Consensus Module state - clusterId=0"
 
-// moduleStateCounterKey holds cluster id 0 as a little-endian int32.
-var moduleStateCounterKey = []byte{0, 0, 0, 0}
+// clusterIDCounterKey holds cluster id 0 as a little-endian int32.
+var clusterIDCounterKey = []byte{0, 0, 0, 0}
 
-func addModuleStateCounter(client *aeron.Client) (*aeron.Counter, error) {
-	counter, err := client.AddCounter(
-		consensus.ClusterConsensusModuleStateCounterTypeID,
-		moduleStateCounterKey,
-		moduleStateCounterLabel,
-	)
+func addClusterCounter(
+	client *aeron.Client,
+	typeID int32,
+	label, name string,
+) (
+	*aeron.Counter,
+	error,
+) {
+	counter, err := client.AddCounter(typeID, clusterIDCounterKey, label)
 	if err != nil {
-		return nil, fmt.Errorf("cluster: add module state counter: %w", err)
+		return nil, fmt.Errorf("cluster: add %s counter: %w", name, err)
 	}
 	return counter, nil
+}
+
+func addModuleStateCounter(client *aeron.Client) (*aeron.Counter, error) {
+	return addClusterCounter(
+		client,
+		consensus.ClusterConsensusModuleStateCounterTypeID,
+		moduleStateCounterLabel,
+		"module state",
+	)
 }
 
 type moduleStateCounter struct {

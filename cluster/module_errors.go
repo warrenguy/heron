@@ -13,19 +13,13 @@ import (
 
 const moduleErrorCounterLabel = "Cluster Errors - clusterId=0"
 
-// moduleErrorCounterKey holds cluster id 0 as a little-endian int32.
-var moduleErrorCounterKey = []byte{0, 0, 0, 0}
-
 func addModuleErrorCounter(client *aeron.Client) (*aeron.Counter, error) {
-	counter, err := client.AddCounter(
+	return addClusterCounter(
+		client,
 		consensus.ClusterConsensusModuleErrorCountCounterTypeID,
-		moduleErrorCounterKey,
 		moduleErrorCounterLabel,
+		"module error",
 	)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: add module error counter: %w", err)
-	}
-	return counter, nil
 }
 
 // moduleErrorHandler counts each module error on the type 212 counter. It

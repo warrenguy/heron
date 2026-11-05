@@ -449,6 +449,10 @@ type Agent struct {
 	moduleState        ModuleState
 	moduleStateCounter ModuleStateCounter
 
+	// Tools in other processes write both toggles.
+	controlToggle     ToggleCounter
+	nodeControlToggle ToggleCounter
+
 	// lastSnapshotTake is the latest resolved take. hasLastSnapshotTake is
 	// false before any take resolves.
 	lastSnapshotTake    SnapshotTakeResult
@@ -1780,8 +1784,15 @@ func (a *Agent) IsPrepareInProgress() bool {
 //
 // The module snapshot take cancel runs before StopAllCatchups. The take
 // closes its archive requests before the catchup stop uses the same client.
+//
+// The cluster control toggle stays INACTIVE for the rest of the teardown. The
+// snapshot wait retire and the take cancel run on a follower. A follower does
+// not reset the toggle.
 func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.RoleSet(RoleFollower)
+	if a.controlToggle != nil {
+		a.controlToggle.Store(int64(ControlToggleInactive))
+	}
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
@@ -2143,26 +2154,30 @@ func (a *Agent) adoptLogRecording(
 	return nil
 }
 
-// ElectionComplete clears the [ElectionRunner] and stamps timeOfLastLogUpdateNs
-// (settled log-update clock). [PositionTable] and [ConsensusEgress] stay wired.
+// ElectionComplete clears the [ElectionRunner]. ElectionComplete then sets the
+// settled log-update clock for the new role.
 //
 // Behaviour:
-//   - leader: stamps nowNs minus one heartbeat interval so the first steady
-//     tick publishes a commit heartbeat. Stamps the timer wheel current time
-//     to nowNs. Winding does not expire timers. A startup leader marks each
-//     open session closing with TIMEOUT. Any other leader rebinds
-//     open-session egress. Does not read the log
-//   - any other role: stamps nowNs so the quiet-tick trigger waits one full
-//     leader heartbeat timeout. Does not touch session state
-//   - without a write to timeOfLastLogUpdateNs the field stays 0. A duty
-//     cycle on an absolute clock re-enters election on the next tick
-//   - does not write timeOfLastLeaderUpdateNs
-//   - does not call [Agent.SetElection]
+//   - leader: sets the clock to nowNs minus one heartbeat interval, so the
+//     first steady tick publishes a commit heartbeat. Sets the timer wheel
+//     time to nowNs without expiring timers. A startup leader marks each open
+//     session closing with TIMEOUT. Any other leader rebinds open-session
+//     egress
+//   - any other role: sets the clock to nowNs. The quiet-tick trigger then
+//     waits one full leader heartbeat timeout
+//   - the clock starts at 0. Without this write, a duty cycle on an absolute
+//     clock re-enters an election on the next tick
 //
 // Concurrency: invoker-only.
 func (a *Agent) ElectionComplete(nowNs int64) {
 	a.election = nil
+	if a.nodeControlToggle != nil {
+		a.nodeControlToggle.Store(int64(NodeControlToggleNeutral))
+	}
 	if a.role == RoleLeader {
+		if a.controlToggle != nil {
+			a.controlToggle.Store(int64(ControlToggleNeutral))
+		}
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
 		a.timers.currentTime(nowNs)
 		if a.isLeaderStartup {

@@ -147,6 +147,16 @@ func TestCountersReaderCounterValue(t *testing.T) {
 	gotValue, err := reader.CounterValue(1)
 	require.NoError(t, err)
 	require.Equal(t, int64(1_700_000_000_123), gotValue)
+
+	swapped, err := reader.CompareAndSetCounterValue(1, 7, 8)
+	require.NoError(t, err)
+	require.False(t, swapped)
+	swapped, err = reader.CompareAndSetCounterValue(1, gotValue, 8)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	gotValue, err = reader.CounterValue(1)
+	require.NoError(t, err)
+	require.Equal(t, int64(8), gotValue)
 }
 
 func TestCountersReaderFindHeartbeat(t *testing.T) {
@@ -320,6 +330,120 @@ func TestCountersReaderFindCounterOfType(t *testing.T) {
 	}
 }
 
+func TestCountersReaderFindCounterOfTypeWithKeyPrefix(t *testing.T) {
+	const (
+		typeID    int32 = 202
+		otherType int32 = 233
+		label           = "toggle"
+	)
+	key := []byte{1, 0, 0, 0, 9}
+	// overlongPrefix runs one byte past the key area. That byte equals the
+	// label length, so a read past the key area matches.
+	overlongPrefix := make([]byte, cnc.CounterMetadataMaxKeyLength+1)
+	copy(overlongPrefix, key)
+	overlongPrefix[cnc.CounterMetadataMaxKeyLength] = byte(len(label))
+	type keyedRecord struct {
+		counterID int32
+		state     int32
+		typeID    int32
+		key       []byte
+	}
+	tests := []struct {
+		name    string
+		records []keyedRecord
+		prefix  []byte
+		wantID  int32
+		wantOK  bool
+	}{
+		{
+			name: "match",
+			records: []keyedRecord{
+				{0, cnc.CounterRecordAllocated, otherType, key},
+				{1, cnc.CounterRecordAllocated, typeID, []byte{2, 0, 0, 0}},
+				{2, cnc.CounterRecordAllocated, typeID, key},
+			},
+			prefix: []byte{1, 0, 0, 0},
+			wantID: 2,
+			wantOK: true,
+		},
+		{
+			name:    "wrong type",
+			records: []keyedRecord{{0, cnc.CounterRecordAllocated, otherType, key}},
+			prefix:  []byte{1, 0, 0, 0},
+			wantID:  cnc.NullCounterID,
+		},
+		{
+			name:    "wrong key",
+			records: []keyedRecord{{0, cnc.CounterRecordAllocated, typeID, key}},
+			prefix:  []byte{1, 0, 0, 1},
+			wantID:  cnc.NullCounterID,
+		},
+		{
+			name: "reclaimed record",
+			records: []keyedRecord{
+				{0, cnc.CounterRecordReclaimed, typeID, key},
+				{1, cnc.CounterRecordAllocated, typeID, key},
+			},
+			prefix: []byte{1, 0, 0, 0},
+			wantID: 1,
+			wantOK: true,
+		},
+		{
+			name:    "match after an unused record",
+			records: []keyedRecord{{1, cnc.CounterRecordAllocated, typeID, key}},
+			prefix:  []byte{1, 0, 0, 0},
+			wantID:  cnc.NullCounterID,
+		},
+		{
+			name: "empty prefix",
+			records: []keyedRecord{
+				{0, cnc.CounterRecordAllocated, otherType, key},
+				{1, cnc.CounterRecordAllocated, typeID, key},
+			},
+			prefix: nil,
+			wantID: 1,
+			wantOK: true,
+		},
+		{
+			name:    "prefix past the key length",
+			records: []keyedRecord{{0, cnc.CounterRecordAllocated, typeID, key}},
+			prefix:  overlongPrefix,
+			wantID:  cnc.NullCounterID,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			meta, values := syntheticCountersBuffers(t, 3)
+			for _, record := range tc.records {
+				require.NoError(t, cnc.WriteCounterRecordWithKey(
+					meta,
+					values,
+					record.counterID,
+					record.state,
+					record.typeID,
+					record.key,
+					label,
+					42,
+					0,
+				))
+			}
+			reader, err := cnc.NewCountersReader(meta, values)
+			require.NoError(t, err)
+
+			gotID, ok := reader.FindCounterOfTypeWithKeyPrefix(typeID, tc.prefix)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantID, gotID)
+		})
+	}
+
+	t.Run("nil reader", func(t *testing.T) {
+		var reader *cnc.CountersReader
+		gotID, ok := reader.FindCounterOfTypeWithKeyPrefix(typeID, nil)
+		require.False(t, ok)
+		require.Equal(t, cnc.NullCounterID, gotID)
+	})
+}
+
 func TestCountersReaderCounterValueOutOfRange(t *testing.T) {
 	meta, values := syntheticCountersBuffers(t, 1)
 	reader, err := cnc.NewCountersReader(meta, values)
@@ -333,6 +457,10 @@ func TestCountersReaderCounterValueOutOfRange(t *testing.T) {
 
 	err = reader.SetCounterValue(1, 1)
 	require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
+
+	swapped, err := reader.CompareAndSetCounterValue(1, 0, 1)
+	require.EqualError(t, err, "cnc: counter id 1 out of range: maxCounterId=0")
+	require.False(t, swapped)
 }
 
 func TestCountersReaderIsCounterActive(t *testing.T) {
@@ -536,6 +664,10 @@ func TestCountersReaderNilReceiver(t *testing.T) {
 
 	err = reader.SetCounterValue(0, 1)
 	require.EqualError(t, err, "cnc: counters reader is nil")
+
+	swapped, err := reader.CompareAndSetCounterValue(0, 0, 1)
+	require.EqualError(t, err, "cnc: counters reader is nil")
+	require.False(t, swapped)
 
 	counterID, ok := reader.FindHeartbeatCounter(1, cnc.ClientHeartbeatTypeID)
 	require.False(t, ok)

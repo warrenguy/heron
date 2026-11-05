@@ -274,14 +274,14 @@ func (a *Agent) slowTickIfDue(nowNs int64) int {
 // slowTickWork runs the settled timeout triggers when no election is live.
 //
 // Behaviour: returns 0 while an election is live so the deadline still advances
-// from slowTickIfDue. A leader checks active-member quorum. Any other role
-// checks the leader heartbeat timeout.
+// from slowTickIfDue. A leader acts on the cluster control toggle, then checks
+// active-member quorum. Any other role checks the leader heartbeat timeout.
 func (a *Agent) slowTickWork(nowNs int64) int {
 	if a.election != nil {
 		return 0
 	}
 	if a.role == RoleLeader {
-		return a.activeQuorumTick(nowNs)
+		return a.clusterControlToggleWork(nowNs) + a.activeQuorumTick(nowNs)
 	}
 	return a.leaderWentQuietTick(nowNs)
 }
