@@ -152,6 +152,15 @@ func (b *BoundedLogAdapter) MaxLogPosition() int64 {
 	return b.maxLogPosition
 }
 
+// isDone reports whether the image can unbind.
+func (b *BoundedLogAdapter) isDone() bool {
+	if b == nil || b.image == nil {
+		return false
+	}
+	image := b.image
+	return image.Position() >= b.maxLogPosition || image.IsEndOfStream() || image.IsClosed()
+}
+
 // Poll delivers whole messages whose frames start before
 // min(boundPosition, maxLogPosition).
 //

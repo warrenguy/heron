@@ -32,7 +32,11 @@ type modelMessage struct {
 // stream cursor including padding. The session registry matches the delivered
 // open/close set. Positions are monotonic. No callback delivers twice.
 //
-// Ops: append a committed frame (or padding), advance commit, DoWork.
+// End of stream: a zero-fragment tick at the end-of-stream word unbinds.
+// LogPosition then covers trailing padding.
+//
+// Ops: append a committed frame (or padding), advance commit, DoWork, and
+// write the end-of-stream word at the stream end once. Appends stop after the word.
 // Session-open clash is constrained out; unit rows assert the clash path.
 func TestAgent_boundedConsume_rapid(t *testing.T) {
 	t.Parallel()
@@ -54,6 +58,7 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 		agent.adapter.SetImage(image)
 		agent.adapter.SetMaxLogPosition(1 << 40)
 		agent.started = true
+		agent.role = codecs.RoleLeader
 
 		sessionPool := []int64{1, 2, 3, 4, 5}
 		appendSessions := make(map[int64]struct{})
@@ -69,6 +74,9 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 		var wantOpens []int64
 		var wantCloses []int64
 
+		eosWritten := false
+		logBound := true
+
 		// record appends one model entry and advances logEnd by span.
 		record := func(m modelMessage, span int) {
 			m.startPos = logEnd
@@ -77,11 +85,21 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 			logEnd = m.endPos
 		}
 
+		modelImagePosition := func() int64 {
+			if nextMsg == 0 {
+				return 0
+			}
+			return messages[nextMsg-1].endPos
+		}
+
 		// modelDoWork advances the reference model one Poll-shaped step:
 		// messages with last-frame start below committed deliver in order,
 		// at most fragmentLimit non-padding fragments (padding free).
 		modelDoWork := func() {
 			rt.Helper()
+			if !logBound {
+				return
+			}
 			frags := 0
 			for nextMsg < len(messages) && frags < fragmentLimit {
 				m := &messages[nextMsg]
@@ -109,6 +127,10 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 				// fragment-budget unit. Unit rows pin multi-fragment trains.
 				frags++
 			}
+			atEndOfStream := eosWritten && modelImagePosition() == logEnd
+			if frags == 0 && atEndOfStream {
+				logBound = false
+			}
 		}
 
 		assertInvariants := func() {
@@ -125,19 +147,20 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 
 			// Frame-granular delivery: a frame that starts before the bound
 			// delivers whole, so LogPosition may pass the raw commit value.
-			// LogPosition must equal the end of the last delivered message
-			// (bound rounded up to that message end). Zero when nothing has
-			// been delivered yet.
-			require.Equal(rt, lastDeliveredEnd, agent.LogPosition())
+			wantLogPosition := lastDeliveredEnd
+			wantRole := codecs.RoleLeader
+			if !logBound {
+				wantLogPosition = modelImagePosition()
+				wantRole = codecs.RoleFollower
+			}
+			require.Equal(rt, wantLogPosition, agent.LogPosition())
+			require.Equal(rt, logBound, agent.IsLogBound())
+			require.Equal(rt, wantRole, agent.Role())
 
 			// Image position tracks the stream cursor, including padding.
 			// LogPosition skips padding. nextMsg advances over padding in the
 			// model.
-			wantImagePos := int64(0)
-			if nextMsg > 0 {
-				wantImagePos = messages[nextMsg-1].endPos
-			}
-			require.Equal(rt, wantImagePos, image.Position())
+			require.Equal(rt, modelImagePosition(), image.Position())
 
 			// Model session set must match agent registry size and membership.
 			require.Equal(rt, len(modelSessions), agent.SessionCount())
@@ -159,10 +182,10 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 
 		stepCount := rapid.IntRange(1, 64).Draw(rt, "stepCount")
 		for step := range stepCount {
-			op := rapid.IntRange(0, 2).Draw(rt, "op")
+			op := rapid.IntRange(0, 3).Draw(rt, "op")
 			switch op {
 			case 0: // append frame (unfragmented + padding; fragmented pinned by unit rows)
-				if logEnd > 1<<16 {
+				if logEnd > 1<<16 || eosWritten {
 					break
 				}
 				var m modelMessage
@@ -253,6 +276,13 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 
 			case 2: // DoWork
 				runDoWork()
+
+			case 3: // end of stream, once
+				if eosWritten {
+					break
+				}
+				eosWritten = true
+				aeron.ImageSetEndOfStreamPositionForHooks(image, logEnd)
 			}
 
 			assertInvariants()
@@ -268,6 +298,12 @@ func TestAgent_boundedConsume_rapid(t *testing.T) {
 			assertInvariants()
 		}
 		require.Equal(rt, len(messages), nextMsg)
+
+		if eosWritten {
+			runDoWork()
+			assertInvariants()
+			require.False(rt, agent.IsLogBound())
+		}
 	})
 }
 

@@ -471,6 +471,7 @@ func TestNewBoundedLogAdapter_nilSinkPanics(t *testing.T) {
 func TestBoundedLogAdapter_nilImagePoll(t *testing.T) {
 	a := NewBoundedLogAdapter(&recordingSink{}, 0)
 	require.Equal(t, 0, a.Poll(1<<20))
+	require.False(t, a.isDone())
 }
 
 func TestBoundedLogAdapter_nilReceiver(t *testing.T) {
@@ -479,6 +480,7 @@ func TestBoundedLogAdapter_nilReceiver(t *testing.T) {
 	require.Equal(t, int64(0), a.MaxLogPosition())
 	require.Nil(t, a.Image())
 	require.Equal(t, 0, a.Poll(1<<20))
+	require.False(t, a.isDone())
 	require.NotPanics(t, func() {
 		a.SetImage(nil)
 		a.SetMaxLogPosition(1)
@@ -536,6 +538,41 @@ func TestBoundedLogAdapter_freshAdapter_maxPositionDefault(t *testing.T) {
 	writeAndPollOne(t, a, image, encodeTrivialSessionMessage(t))
 	require.Equal(t, 1, sink.sessionMessages)
 	require.Equal(t, int64(math.MaxInt64), a.MaxLogPosition())
+}
+
+func TestBoundedLogAdapter_isDone(t *testing.T) {
+	const position int64 = 128
+	tests := []struct {
+		name string
+		// Zero keeps the math.MaxInt64 default.
+		maxLogPosition int64
+		// Zero leaves the end-of-stream word unset.
+		word   int64
+		closed bool
+		want   bool
+	}{
+		{name: "open below cap"},
+		{name: "at cap", maxLogPosition: position, want: true},
+		{name: "end of stream below cap", word: position, want: true},
+		{name: "word above the position", word: position + 64},
+		{name: "closed below cap", closed: true, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a, image, _ := boundAdapter(t)
+			aeron.ImageSetSubscriberPositionForHooks(image, position)
+			if tc.maxLogPosition != 0 {
+				a.SetMaxLogPosition(tc.maxLogPosition)
+			}
+			if tc.word != 0 {
+				aeron.ImageSetEndOfStreamPositionForHooks(image, tc.word)
+			}
+			if tc.closed {
+				aeron.ImageInternalCloseForHooks(image)
+			}
+			require.Equal(t, tc.want, a.isDone())
+		})
+	}
 }
 
 func TestBoundedLogAdapter_dispatch_SessionMessage(t *testing.T) {
