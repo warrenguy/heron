@@ -87,11 +87,16 @@ func (a *Agent) HasPendingSnapshotAction() bool {
 	return a.snapshotHoldPosition() != 0
 }
 
-// handleClusterAction queues a snapshot wait for a committed
-// ClusterActionRequest. logPosition is the frame end.
+// handleClusterAction applies a committed ClusterActionRequest. logPosition
+// is the frame end.
 //
-// Behaviour: the method queues one wait at logPosition. Any skip below
-// changes nothing:
+// Behaviour for SUSPEND and RESUME: the method does not check the term, the
+// flags, or the wire position. The agent term does not follow a replayed
+// NewLeadershipTermEvent. A term check would drop earlier-term actions at
+// restart.
+//
+// Behaviour for SNAPSHOT: the method queues one snapshot wait at
+// logPosition. The method does not change state when:
 //   - Action is not SNAPSHOT, or Flags is not 0.
 //   - Wire LogPosition differs from logPosition. No service acks such a frame.
 //   - A snapshot wait pends. One field holds one snapshot wait.
@@ -114,6 +119,10 @@ func (a *Agent) handleClusterAction(
 	logPosition int64,
 ) {
 	switch {
+	case fields.Action == clusterwire.ClusterAction_SUSPEND:
+		a.setModuleState(ModuleStateSuspended, moduleStateReasonReplaySuspend)
+	case fields.Action == clusterwire.ClusterAction_RESUME:
+		a.setModuleState(ModuleStateActive, moduleStateReasonReplayResume)
 	case fields.Action != clusterwire.ClusterAction_SNAPSHOT || fields.Flags != 0:
 	case fields.LogPosition != logPosition:
 	case a.snapshotWaitPosition != 0:

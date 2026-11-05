@@ -152,22 +152,44 @@ func (a *Agent) SetNodeControlToggle(counter ToggleCounter) {
 // leader.
 //
 // Behaviour:
+//   - ACTIVE, SUSPEND: appends a SUSPEND action. Then enters SUSPENDED. The
+//     toggle stays SUSPEND until RESUME or the next election.
 //   - ACTIVE, SNAPSHOT: calls [Agent.RequestSnapshot]. The toggle stays
 //     SNAPSHOT until the snapshot ends.
 //   - ACTIVE, STANDBY_SNAPSHOT: appends a SNAPSHOT action with
 //     [clusterActionFlagsStandbySnapshot]. Then sets NEUTRAL by
 //     compare-and-set from STANDBY_SNAPSHOT. A tool write during the append
 //     stays.
-//   - A value outside the toggle codes: does not act or report.
+//   - SUSPENDED, RESUME: appends a RESUME action. Then enters ACTIVE. Then
+//     sets NEUTRAL by compare-and-set from RESUME.
+//   - Any other state or value: does not act or report.
 //   - A refusal or a failed append keeps the toggle. The next slow tick
 //     retries.
 //
 // Returns 1 after an append, else 0.
 func (a *Agent) clusterControlToggleWork(nowNs int64) int {
-	if a.controlToggle == nil || a.moduleState != ModuleStateActive {
+	if a.controlToggle == nil {
 		return 0
 	}
-	switch a.controlToggle.Load() {
+	toggle := a.controlToggle.Load()
+	if a.moduleState == ModuleStateSuspended && toggle == int64(ControlToggleResume) {
+		if !a.appendModuleStateAction(clusterwire.ClusterAction_RESUME, nowNs) {
+			return 0
+		}
+		a.setModuleState(ModuleStateActive, moduleStateReasonControlResume)
+		a.resetControlToggleFrom(ControlToggleResume)
+		return 1
+	}
+	if a.moduleState != ModuleStateActive {
+		return 0
+	}
+	switch toggle {
+	case int64(ControlToggleSuspend):
+		if !a.appendModuleStateAction(clusterwire.ClusterAction_SUSPEND, nowNs) {
+			return 0
+		}
+		a.setModuleState(ModuleStateSuspended, moduleStateReasonControlSuspend)
+		return 1
 	case int64(ControlToggleSnapshot):
 		if a.RequestSnapshot(nowNs) != nil {
 			return 0

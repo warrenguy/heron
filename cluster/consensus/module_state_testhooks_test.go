@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 // heldModuleStates lists every state that holds a leader.
@@ -346,6 +348,53 @@ func TestAgent_moduleStateTransitions(t *testing.T) {
 		p.requireState(t, f.agent, ModuleStateClosed)
 		require.Equal(t, wantStates, p.counter.states)
 		require.Len(t, p.changes, 1)
+	})
+
+	t.Run("control toggle suspend and resume", func(t *testing.T) {
+		a, _ := settledLeaderWithLog(t, 0)
+		p := newModuleStateProbe(t, a)
+		control := newFakeToggle(int64(ControlToggleSuspend))
+		a.SetClusterControlToggle(control)
+
+		require.Equal(t, 1, a.slowTickWork(100))
+		p.requireTransition(t, a, ModuleStateActive, ModuleStateSuspended, "ClusterControl.SUSPEND")
+
+		require.True(t, ControlToggleResume.Toggle(control))
+		require.Equal(t, 1, a.slowTickWork(101))
+		p.requireTransition(t, a, ModuleStateSuspended, ModuleStateActive, "ClusterControl.RESUME")
+		require.Len(t, p.changes, 2)
+	})
+
+	t.Run("replayed suspend and resume", func(t *testing.T) {
+		const consumePos int64 = 4096
+		a := NewAgent(AgentConfig{Role: RoleFollower, ServiceCount: 1})
+		p := newModuleStateProbe(t, a)
+		fields := snapshotActionFields(consumePos)
+
+		fields.Action = clusterwire.ClusterAction_SUSPEND
+		a.handleClusterAction(fields, consumePos)
+		p.requireTransition(
+			t, a, ModuleStateActive, ModuleStateSuspended, "ReplayClusterAction.SUSPENDED",
+		)
+
+		fields.Action = clusterwire.ClusterAction_RESUME
+		a.handleClusterAction(fields, consumePos)
+		p.requireTransition(t, a, ModuleStateSuspended, ModuleStateActive, "ReplayClusterAction.ACTIVE")
+		require.Len(t, p.changes, 2)
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		a, _ := settledLeaderWithLog(t, 0)
+		p := newModuleStateProbe(t, a)
+		a.SetClusterControlToggle(newFakeToggle(int64(ControlToggleSuspend)))
+		require.Equal(t, 1, a.slowTickWork(100))
+		p.requireState(t, a, ModuleStateSuspended)
+
+		_, prepared, err := a.PrepareForNewLeadership(0, 101)
+		require.NoError(t, err)
+		require.True(t, prepared)
+		p.requireTransition(t, a, ModuleStateSuspended, ModuleStateActive, "rollback")
+		require.Len(t, p.changes, 2)
 	})
 
 	recordingElection := func(ElectionSeed) ElectionRunner {

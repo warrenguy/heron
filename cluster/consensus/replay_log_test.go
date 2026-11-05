@@ -437,6 +437,27 @@ func TestReplayLogPoll(t *testing.T) {
 			},
 		},
 		{
+			name: "replayed SUSPEND leaves the member SUSPENDED",
+			run: func(t *testing.T) {
+				a, _, image := replayLogFollower(t, 1)
+				actionEnd := writeClusterActionFrame(t, image, 0, clusterwire.ClusterAction_SUSPEND, 0)
+				messageEnd := writeSessionMessageFrame(t, image, int(actionEnd), 9)
+				a.BindReplayLog(image)
+
+				// Phase 1: the poll breaks after the action.
+				require.Equal(t, 1, a.ReplayLogPoll(messageEnd, nowNs))
+				require.Equal(t, ModuleStateSuspended, a.ModuleState())
+				require.False(t, a.HasPendingSnapshotAction())
+				require.Equal(t, actionEnd, a.LogAdapter().Position())
+
+				// Phase 2: a SUSPENDED member still polls to the stop position.
+				require.Equal(t, 1, a.ReplayLogPoll(messageEnd, nowNs))
+				require.Equal(t, ModuleStateSuspended, a.ModuleState())
+				require.Equal(t, messageEnd, a.LogAdapter().Position())
+				require.Equal(t, messageEnd, a.CommitPosition())
+			},
+		},
+		{
 			name: "pending replay JoinLog holds the bound at its start",
 			run: func(t *testing.T) {
 				a, _, image := replayLogFollower(t, 1)

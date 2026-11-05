@@ -4,6 +4,7 @@ package consensus
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,17 +34,42 @@ func newToggleLeader(t testing.TB, toggle int64) toggleLeader {
 	return toggleLeader{agent: a, pub: pub, toggle: counter}
 }
 
+// scanClusterActions decodes each ClusterActionRequest in term 0 in log
+// order. It fails on any other frame.
+func scanClusterActions(
+	t fragmentRequireT,
+	pub *aeron.ExclusivePublication,
+) []codecs.ClusterActionRequestFields {
+	t.Helper()
+	end := pub.Position()
+	require.Less(t, end, int64(pub.TermBuffer(0).Capacity()))
+	var actions []codecs.ClusterActionRequestFields
+	for offset := 0; int64(offset) < end; {
+		var wire []byte
+		wire, offset = termWireAt(t, pub, offset)
+		fields, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0)
+		require.True(t, ok)
+		require.Equal(t, int64(offset), fields.LogPosition)
+		actions = append(actions, fields)
+	}
+	return actions
+}
+
 func TestClusterControlToggleWork(t *testing.T) {
 	t.Parallel()
 
 	type action struct {
-		flags int32
+		action clusterwire.ClusterAction
+		flags  int32
 	}
 	type setupFunc = func(*testing.T, toggleLeader)
 	type row struct {
-		name       string
-		toggle     int64
-		setup      setupFunc
+		name   string
+		toggle int64
+		setup  setupFunc
+		// direct calls RequestSnapshot in place of the slow tick.
+		direct     bool
+		wantErr    error
 		wantWork   int
 		wantToggle int64
 		wantState  ModuleState
@@ -52,6 +78,15 @@ func TestClusterControlToggleWork(t *testing.T) {
 	}
 	unbindPublisher := func(_ *testing.T, l toggleLeader) {
 		l.agent.SetLogPublisher(NewLogPublisher())
+	}
+	inState := func(state ModuleState) setupFunc {
+		return func(_ *testing.T, l toggleLeader) {
+			l.agent.setModuleState(state, "test")
+		}
+	}
+	suspended := inState(ModuleStateSuspended)
+	pendingAck := func(t *testing.T, l toggleLeader) {
+		require.NoError(t, l.agent.RequestServiceAck(42))
 	}
 	unchanged := func(name string, toggle int64, state ModuleState, setup setupFunc) row {
 		return row{
@@ -64,13 +99,64 @@ func TestClusterControlToggleWork(t *testing.T) {
 	}
 	rows := []row{
 		{
+			name:       "SUSPEND in ACTIVE",
+			toggle:     int64(ControlToggleSuspend),
+			wantWork:   1,
+			wantToggle: int64(ControlToggleSuspend),
+			wantState:  ModuleStateSuspended,
+			wantAction: &action{action: clusterwire.ClusterAction_SUSPEND},
+		},
+		unchanged(
+			"SUSPEND append fails",
+			int64(ControlToggleSuspend),
+			ModuleStateActive,
+			unbindPublisher,
+		),
+		{
+			name:       "RESUME in SUSPENDED",
+			toggle:     int64(ControlToggleResume),
+			setup:      suspended,
+			wantWork:   1,
+			wantToggle: int64(ControlToggleNeutral),
+			wantState:  ModuleStateActive,
+			wantAction: &action{action: clusterwire.ClusterAction_RESUME},
+		},
+		unchanged(
+			"RESUME append fails",
+			int64(ControlToggleResume),
+			ModuleStateSuspended,
+			func(t *testing.T, l toggleLeader) {
+				suspended(t, l)
+				unbindPublisher(t, l)
+			},
+		),
+		{
 			name:       "SNAPSHOT in ACTIVE",
 			toggle:     int64(ControlToggleSnapshot),
 			wantWork:   1,
 			wantToggle: int64(ControlToggleSnapshot),
 			wantState:  ModuleStateSnapshot,
-			wantAction: &action{flags: 0},
+			wantAction: &action{action: clusterwire.ClusterAction_SNAPSHOT},
 			wantWaits:  1,
+		},
+		{
+			name:       "direct RequestSnapshot in ACTIVE",
+			toggle:     int64(ControlToggleNeutral),
+			direct:     true,
+			wantToggle: int64(ControlToggleNeutral),
+			wantState:  ModuleStateSnapshot,
+			wantAction: &action{action: clusterwire.ClusterAction_SNAPSHOT},
+			wantWaits:  1,
+		},
+		{
+			name:       "direct RequestSnapshot refused, coordination wait",
+			toggle:     int64(ControlToggleNeutral),
+			direct:     true,
+			wantErr:    errCoordinationOutstanding,
+			wantToggle: int64(ControlToggleNeutral),
+			wantState:  ModuleStateActive,
+			wantWaits:  1,
+			setup:      pendingAck,
 		},
 		{
 			name:       "STANDBY_SNAPSHOT in ACTIVE",
@@ -78,7 +164,10 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleNeutral),
 			wantState:  ModuleStateActive,
-			wantAction: &action{flags: clusterActionFlagsStandbySnapshot},
+			wantAction: &action{
+				action: clusterwire.ClusterAction_SNAPSHOT,
+				flags:  clusterActionFlagsStandbySnapshot,
+			},
 		},
 		{
 			name:       "SNAPSHOT refused, coordination wait",
@@ -86,9 +175,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantToggle: int64(ControlToggleSnapshot),
 			wantState:  ModuleStateActive,
 			wantWaits:  1,
-			setup: func(t *testing.T, l toggleLeader) {
-				require.NoError(t, l.agent.RequestServiceAck(42))
-			},
+			setup:      pendingAck,
 		},
 		unchanged(
 			"SNAPSHOT refused, ack failure",
@@ -110,7 +197,10 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleSnapshot),
 			wantState:  ModuleStateActive,
-			wantAction: &action{flags: clusterActionFlagsStandbySnapshot},
+			wantAction: &action{
+				action: clusterwire.ClusterAction_SNAPSHOT,
+				flags:  clusterActionFlagsStandbySnapshot,
+			},
 			setup: func(t *testing.T, l toggleLeader) {
 				l.toggle.afterLoad = func() {
 					l.toggle.Store(int64(ControlToggleNeutral))
@@ -126,7 +216,6 @@ func TestClusterControlToggleWork(t *testing.T) {
 		),
 	}
 	for _, toggle := range []int64{
-		int64(ControlToggleSuspend),
 		int64(ControlToggleShutdown),
 		int64(ControlToggleAbort),
 		int64(ControlToggleResume),
@@ -141,17 +230,19 @@ func TestClusterControlToggleWork(t *testing.T) {
 	}
 	for _, state := range heldModuleStates {
 		for _, toggle := range allControlToggleStates {
+			if state == ModuleStateSuspended && toggle == ControlToggleResume {
+				continue
+			}
 			rows = append(rows, unchanged(
 				toggle.String()+" in "+state.String(),
 				int64(toggle),
 				state,
-				func(_ *testing.T, l toggleLeader) {
-					l.agent.setModuleState(state, "test")
-				},
+				inState(state),
 			))
 		}
 	}
 	for _, toggle := range []ControlToggleState{
+		ControlToggleSuspend,
 		ControlToggleSnapshot,
 		ControlToggleStandbySnapshot,
 	} {
@@ -191,25 +282,40 @@ func TestClusterControlToggleWork(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, l)
 			}
-			prePosition := l.pub.Position()
+			preState := l.agent.ModuleState()
 
-			require.Equal(t, tt.wantWork, l.agent.slowTickWork(toggleTestNowNs))
+			if tt.direct {
+				err := l.agent.RequestSnapshot(toggleTestNowNs)
+				if tt.wantErr != nil {
+					require.ErrorIs(t, err, tt.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+			} else {
+				require.Equal(t, tt.wantWork, l.agent.slowTickWork(toggleTestNowNs))
+			}
 			require.Equal(t, tt.wantToggle, l.toggle.Load())
 			require.Equal(t, tt.wantState, l.agent.ModuleState())
 			require.Equal(t, tt.wantWaits, l.agent.PendingServiceAckWaits())
-			if tt.wantAction == nil {
-				require.Equal(t, prePosition, l.pub.Position())
-				return
+			if tt.wantState == preState || tt.wantState == ModuleStateSnapshot {
+				require.Empty(t, l.agent.uncommittedModuleStates)
+			} else {
+				require.Equal(t, []uncommittedModuleState{{
+					appendPosition: l.pub.Position(),
+					previous:       preState,
+				}}, l.agent.uncommittedModuleStates)
 			}
-			require.Greater(t, l.pub.Position(), prePosition)
-			fields := decodeClusterActionAtTermStart(t, l.pub)
-			require.Equal(t, codecs.ClusterActionRequestFields{
-				LeadershipTermID: toggleTestTermID,
-				LogPosition:      l.pub.Position(),
-				Timestamp:        toggleTestNowNs,
-				Action:           clusterwire.ClusterAction_SNAPSHOT,
-				Flags:            tt.wantAction.flags,
-			}, fields)
+			var wantActions []codecs.ClusterActionRequestFields
+			if tt.wantAction != nil {
+				wantActions = []codecs.ClusterActionRequestFields{{
+					LeadershipTermID: toggleTestTermID,
+					LogPosition:      l.pub.Position(),
+					Timestamp:        toggleTestNowNs,
+					Action:           tt.wantAction.action,
+					Flags:            tt.wantAction.flags,
+				}}
+			}
+			require.Equal(t, wantActions, scanClusterActions(t, l.pub))
 		})
 	}
 }
@@ -360,4 +466,67 @@ func TestClusterControlToggle_lifecycle(t *testing.T) {
 			tt.run(t)
 		})
 	}
+}
+
+// TestClusterControlToggle_suspendedAcrossElection asserts that a SUSPENDED
+// leader stays SUSPENDED through an election it wins. A RESUME toggle then
+// resumes the leader in the new term.
+func TestClusterControlToggle_suspendedAcrossElection(t *testing.T) {
+	t.Parallel()
+
+	const nextTermID = toggleTestTermID + 1
+	nowNs := toggleTestNowNs
+	a := NewAgent(AgentConfig{Commit: new(atomic.Int64)})
+	pub := bindLeaderLog(t, a)
+	a.SetLeadershipTermID(toggleTestTermID)
+	control, node := wireToggles(a, int64(ControlToggleNeutral), int64(ControlToggleNeutral))
+
+	// suspend: the leader appends SUSPEND. The commit position reaches it.
+	require.True(t, ControlToggleSuspend.Toggle(control))
+	require.Equal(t, 1, a.slowTickWork(nowNs))
+	require.Equal(t, ModuleStateSuspended, a.ModuleState())
+	suspendEnd := pub.Position()
+	require.Equal(t, 1, a.UpdateLeaderPosition(nowNs, suspendEnd))
+	require.Equal(t, suspendEnd, a.CommitPosition())
+	require.Empty(t, a.uncommittedModuleStates)
+
+	// election: the member leads again in the next term.
+	a.SetElectionFactory(func(ElectionSeed) ElectionRunner { return &orderRunner{} })
+	require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false))
+	_, prepared, err := a.PrepareForNewLeadership(a.CommitPosition(), nowNs)
+	require.NoError(t, err)
+	require.True(t, prepared)
+	require.Equal(t, int64(ControlToggleInactive), control.Load())
+	require.Equal(t, ModuleStateSuspended, a.ModuleState())
+	require.NoError(t, a.JoinLogAsLeader(nextTermID, suspendEnd, 0, false))
+	nowNs++
+	a.ElectionComplete(nowNs)
+	require.Equal(t, ModuleStateSuspended, a.ModuleState())
+	require.Equal(t, int64(ControlToggleNeutral), control.Load())
+	require.Equal(t, int64(NodeControlToggleNeutral), node.Load())
+
+	// resume: a RESUME toggle appends RESUME in the next term.
+	require.True(t, ControlToggleResume.Toggle(control))
+	nowNs++
+	require.Equal(t, 1, a.slowTickWork(nowNs))
+	require.Equal(t, ModuleStateActive, a.ModuleState())
+	require.Equal(t, int64(ControlToggleNeutral), control.Load())
+	require.Equal(t, []codecs.ClusterActionRequestFields{
+		{
+			LeadershipTermID: toggleTestTermID,
+			LogPosition:      suspendEnd,
+			Timestamp:        toggleTestNowNs,
+			Action:           clusterwire.ClusterAction_SUSPEND,
+		},
+		{
+			LeadershipTermID: nextTermID,
+			LogPosition:      pub.Position(),
+			Timestamp:        nowNs,
+			Action:           clusterwire.ClusterAction_RESUME,
+		},
+	}, scanClusterActions(t, pub))
+	require.Equal(t, []uncommittedModuleState{{
+		appendPosition: pub.Position(),
+		previous:       ModuleStateSuspended,
+	}}, a.uncommittedModuleStates)
 }

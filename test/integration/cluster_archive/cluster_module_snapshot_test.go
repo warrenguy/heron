@@ -210,7 +210,9 @@ func TestClusterModule_recordsModuleSnapshot(t *testing.T) {
 		t, sc,
 		"module state counter active",
 		durableWorkBound,
-		func() bool { return readModuleStateCounter(set.Module(0)).isActive() },
+		func() bool {
+			return readModuleStateCounter(set.Module(0)).hasState(consensus.ModuleStateActive)
+		},
 		func() string { return readModuleStateCounter(set.Module(0)).String() },
 	)
 	restarted := set.Module(0)
@@ -303,12 +305,12 @@ func readModuleStateCounter(member *cluster.ConsensusModule) moduleStateCounterV
 	return moduleStateCounterView{found: true, key: key, label: label, value: value}
 }
 
-func (v moduleStateCounterView) isActive() bool {
+func (v moduleStateCounterView) hasState(state consensus.ModuleState) bool {
 	var wantKey [cnc.CounterMetadataMaxKeyLength]byte
 	return v.found &&
 		v.key == wantKey &&
 		v.label == moduleStateCounterLabel &&
-		v.value == int64(consensus.ModuleStateActive)
+		v.value == int64(state.Code())
 }
 
 func (v moduleStateCounterView) String() string {
@@ -324,7 +326,7 @@ func (v moduleStateCounterView) String() string {
 func requireModuleStateCounterActive(t *testing.T, member *cluster.ConsensusModule, label string) {
 	t.Helper()
 	view := readModuleStateCounter(member)
-	require.True(t, view.isActive(), "%s:\n%s", label, view)
+	require.True(t, view.hasState(consensus.ModuleStateActive), "%s:\n%s", label, view)
 }
 
 func withRecordingLog(t *testing.T, dir string, fn func(*recordinglog.Log)) {

@@ -43,7 +43,7 @@ type termBufferSource interface {
 // termWireAt returns the DATA frame payload at termOffset in term 0 and the
 // next aligned term offset.
 func termWireAt(
-	t *testing.T,
+	t fragmentRequireT,
 	pub termBufferSource,
 	termOffset int,
 ) ([]byte, int) {

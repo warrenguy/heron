@@ -22,6 +22,7 @@ const (
 	uncommittedOpTimeoutClose
 	uncommittedOpUpdateLeader
 	uncommittedOpPrepare
+	uncommittedOpToggle
 )
 
 // openSessionIDs returns the ids of every open session, in accept order.
@@ -47,15 +48,21 @@ func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
 }
 
 // TestUncommittedEntries_rollback_rapid drives a leader through random timer
-// fires, session connects and opens, client and timeout closes, commit
-// raises, and prepares. A scan of the log publication is the oracle. The
-// expected tracked lists hold only the frames above both commit and the
-// publication position at the last prepare.
+// fires, session connects and opens, client and timeout closes, SUSPEND and
+// RESUME toggles, commit raises, and prepares. A scan of the log publication
+// is the oracle. The expected tracked lists hold only the frames above both
+// commit and the publication position at the last prepare.
+//
+// A SUSPENDED leader does not poll client ingress or run session work. The
+// open and close ops skip while the module state is SUSPENDED.
 //
 // After each op:
 //   - uncommittedTimers equals those log TimerEvents, in order.
 //   - uncommittedCloses equals those log SessionCloseEvents, in order. Each
 //     entry holds the closing session outside the registry.
+//   - uncommittedModuleStates equals those log SUSPEND and RESUME actions, in
+//     order. Each entry holds the state before its action: ACTIVE for SUSPEND,
+//     SUSPENDED for RESUME.
 //   - Each live session holds the end position of its SessionOpenEvent.
 //
 // A prepare runs at a drawn P at or below the commit C. After the prepare:
@@ -64,7 +71,10 @@ func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
 //   - The closing sessions are the earlier ones plus each close above C,
 //     less each session opened above P.
 //   - No session opened above P remains. No pre-open session remains.
-//   - Both lists are empty.
+//   - The module state reverts to the previous state of the first
+//     uncommittedModuleStates entry. With an empty list, the module state does
+//     not change.
+//   - Every list is empty.
 //
 // The member then leads again through JoinLogAsLeader and ElectionComplete.
 func TestUncommittedEntries_rollback_rapid(t *testing.T) {
@@ -78,12 +88,14 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 		})
 		wireImmediateEgress(t, a)
 		clientIngress := attachQueueClientIngress(a)
+		toggle := newFakeToggle(int64(ControlToggleNeutral))
+		a.SetClusterControlToggle(toggle)
 
 		nowNs := int64(0)
 		nextCorrelationID := int64(1)
 		termID := leadershipTermID
 		// preparedEnd is the publication position at the last prepare. That
-		// prepare emptied both lists, so no frame at or below it is tracked.
+		// prepare emptied every list, so no frame at or below it is tracked.
 		preparedEnd := int64(0)
 
 		assertInvariants := func() {
@@ -95,6 +107,7 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 
 			wantTimers := make([]uncommittedTimer, 0)
 			wantCloses := make([]logEntryFrame, 0)
+			wantStates := make([]uncommittedModuleState, 0)
 			openEnds := make(map[int64]int64)
 			for _, frame := range scanLogEntryFrames(rt, pub, publicationPosition) {
 				switch frame.templateID {
@@ -112,10 +125,24 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 					if frame.endPosition > trackedFloor {
 						wantCloses = append(wantCloses, frame)
 					}
+				case clusterwire.ClusterActionRequestSbeTemplateID:
+					previous := ModuleStateActive
+					if frame.action == clusterwire.ClusterAction_RESUME {
+						previous = ModuleStateSuspended
+					} else {
+						require.Equal(rt, clusterwire.ClusterAction_SUSPEND, frame.action)
+					}
+					if frame.endPosition > trackedFloor {
+						wantStates = append(wantStates, uncommittedModuleState{
+							appendPosition: frame.endPosition,
+							previous:       previous,
+						})
+					}
 				}
 			}
 
 			require.Equal(rt, wantTimers, append([]uncommittedTimer{}, a.uncommittedTimers...))
+			require.Equal(rt, wantStates, append([]uncommittedModuleState{}, a.uncommittedModuleStates...))
 			require.Len(rt, a.sessions.uncommittedCloses, len(wantCloses))
 			for i, want := range wantCloses {
 				entry := a.sessions.uncommittedCloses[i]
@@ -137,7 +164,7 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 			}
 		}
 
-		ops := []uncommittedEntriesOpKind{
+		ops := rapid.SampledFrom([]uncommittedEntriesOpKind{
 			uncommittedOpSchedule,
 			uncommittedOpSchedule,
 			uncommittedOpTimerWork,
@@ -148,10 +175,22 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 			uncommittedOpUpdateLeader,
 			uncommittedOpUpdateLeader,
 			uncommittedOpPrepare,
-		}
+			uncommittedOpToggle,
+		})
+		toggleStates := rapid.SampledFrom([]ControlToggleState{
+			ControlToggleSuspend,
+			ControlToggleResume,
+		})
 		stepCount := rapid.IntRange(1, 60).Draw(rt, "stepCount")
 		for range stepCount {
-			switch rapid.SampledFrom(ops).Draw(rt, "op") {
+			op := ops.Draw(rt, "op")
+			sessionOp := op == uncommittedOpOpen ||
+				op == uncommittedOpClientClose ||
+				op == uncommittedOpTimeoutClose
+			if sessionOp && a.ModuleState() == ModuleStateSuspended {
+				continue
+			}
+			switch op {
 			case uncommittedOpSchedule:
 				correlationID := rapid.Int64Range(1, 8).Draw(rt, "timerID")
 				deadline := nowNs + rapid.Int64Range(0, 6*timerWheelTickResolutionNs).Draw(rt, "deadlineDelta")
@@ -200,9 +239,18 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 				quorum := rapid.Int64Range(a.CommitPosition(), a.logPublisher.Position()).Draw(rt, "quorum")
 				a.UpdateLeaderPosition(nowNs, quorum)
 
+			case uncommittedOpToggle:
+				toggleStates.Draw(rt, "toggle").Toggle(toggle)
+				model := controlToggleModel{value: toggle.Load(), state: a.ModuleState()}
+				require.Equal(rt, model.slowTick(), a.clusterControlToggleWork(nowNs))
+
 			case uncommittedOpPrepare:
 				commitPosition := a.CommitPosition()
 				prepareAt := rapid.Int64Range(0, commitPosition).Draw(rt, "prepareAt")
+				wantState := a.ModuleState()
+				if len(a.uncommittedModuleStates) > 0 {
+					wantState = a.uncommittedModuleStates[0].previous
+				}
 				wantTimers := scheduledTimerDeadlines(rt, a)
 				for _, timer := range a.uncommittedTimers {
 					wantTimers[timer.correlationID] = 0
@@ -235,6 +283,8 @@ func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 				requireAgentTimers(rt, a, wantTimers, nil)
 				require.Empty(rt, a.uncommittedTimers)
 				require.Empty(rt, a.sessions.uncommittedCloses)
+				require.Empty(rt, a.uncommittedModuleStates)
+				require.Equal(rt, wantState, a.ModuleState())
 				require.Empty(rt, a.sessions.pending)
 				gotClosing := make([]int64, 0)
 				gotOpen := make([]int64, 0)
