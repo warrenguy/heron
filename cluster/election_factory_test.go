@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -260,6 +261,24 @@ func TestNewElectionFactory_usableAndNoPanic(t *testing.T) {
 			require.Equal(t, int64(0), e.LogPosition())
 			require.Equal(t, fx.plan.AppendedLogPosition, e.AppendPosition())
 		})
+	})
+
+	t.Run("a returned election reports through the deps error handler", func(t *testing.T) {
+		t.Parallel()
+
+		var recorder errorRecorder
+		deps := fx.deps
+		deps.ErrorHandler = recorder.record
+		runner := newElectionFactory(fx.base, deps, fx.plan)(consensus.ElectionSeed{
+			LeadershipTermID:       10,
+			GracefulClosedLeaderID: election.NullMemberID,
+		})
+		e, ok := runner.(*election.Election)
+		require.True(t, ok)
+
+		errBoom := errors.New("boom")
+		e.HandleError(1, errBoom)
+		require.Equal(t, []error{errBoom}, recorder.reported)
 	})
 }
 

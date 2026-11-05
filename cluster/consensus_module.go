@@ -86,6 +86,13 @@ type ConsensusModule struct {
 	// the wait pops. Close closes the counter too.
 	recoveryState *aeron.Counter
 
+	// errorCounter is the module error counter (type 212).
+	errorCounter *aeron.Counter
+
+	// errorHandler reports module errors to errorCounter and
+	// Config.ErrorHandler. Close stops it first.
+	errorHandler *moduleErrorHandler
+
 	// moduleState is the consensus module state counter (type 200).
 	moduleState *aeron.Counter
 
@@ -140,7 +147,7 @@ type ConsensusModule struct {
 // those awaits.
 //
 // Open blocks on:
-//   - the module state counter add, bounded by the transport DriverTimeout
+//   - each counter add, bounded by the transport DriverTimeout
 //   - the archive control connect, bounded by archive.DefaultConnectTimeout
 //   - on a restart, the term recording stop and its catalog wait. The wait
 //     ends ControlResponseTimeout after the stop reply. The wait checks that
@@ -153,26 +160,13 @@ type ConsensusModule struct {
 // Archive before opening any member. Keep the total connect cost below each
 // member's Client.InterServiceTimeout.
 //
-// Open does not start a log recording or a snapshot. The cluster log
-// publication and subscription open before return, so the first duty tick
-// can win leadership.
-//
 // With ServiceCount > 0, Open opens service control and adds the recovery
 // state counter. A service container with Recovery set reads that counter in
 // its Open. The election does not wait for the service start acks.
 //
-// Returns an error when:
-//   - Config fails Validate
-//   - the transport client cannot connect
-//   - the module state counter add fails
-//   - the archive control client cannot connect
-//   - recovery fails
-//   - the module snapshot load fails
-//   - the recovery state counter add fails
-//   - consensus publications, consensus subscription, log streams, client
-//     ingress subscription, or service control publication or subscription
-//     (when ServiceCount > 0) fail to open
-//   - the transport client has no counters reader
+// Returns an error when Config fails Validate, a connect fails, a counter add
+// or lookup fails, recovery or the snapshot load fails, or a stream fails to
+// open.
 //
 // On error Open closes every handle it opened. Open then releases the cluster
 // directory lock and returns nil.
@@ -212,6 +206,24 @@ func OpenConsensusModule(
 		module.client = client
 		module.ownsClient = true
 	}
+
+	errorCounter, err := addModuleErrorCounter(module.client)
+	if err != nil {
+		return nil, err
+	}
+	module.errorCounter = errorCounter
+
+	counters, err := module.client.CountersReader()
+	if err != nil {
+		return nil, fmt.Errorf("cluster: counters reader: %w", err)
+	}
+
+	errorHandler, err := newModuleErrorHandler(counters, errorCounter.CounterID(), cfg.ErrorHandler)
+	if err != nil {
+		return nil, err
+	}
+	module.errorHandler = errorHandler
+	handleError := errorHandler.handleError
 
 	stateCounter, err := addModuleStateCounter(module.client)
 	if err != nil {
@@ -256,17 +268,7 @@ func OpenConsensusModule(
 	module.logPublisher = consensus.NewLogPublisher()
 	module.logAdapter = consensus.NewLogAdapter(consensus.DefaultLogFragmentLimit)
 
-	module.agent = consensus.NewAgent(consensus.AgentConfig{
-		Commit:                    commit,
-		ThisMemberID:              cfg.MemberID,
-		LeaderMemberID:            election.NullMemberID,
-		LeaderHeartbeatIntervalNs: electionCfg.LeaderHeartbeatIntervalNs,
-		LeaderHeartbeatTimeoutNs:  electionCfg.LeaderHeartbeatTimeoutNs,
-		SessionTimeoutNs:          cfg.SessionTimeoutNs,
-		AppVersion:                electionCfg.AppVersion,
-		Authenticator:             cfg.Authenticator,
-		ServiceCount:              cfg.ServiceCount,
-	})
+	module.agent = consensus.NewAgent(moduleAgentConfig(cfg, electionCfg, commit, handleError))
 
 	// Wire the recovered log recording id so term coherency can append. Skip
 	// the null sentinel: a cold start has no log term to adopt.
@@ -355,11 +357,6 @@ func OpenConsensusModule(
 	}
 	module.sub = sub
 
-	counters, err := module.client.CountersReader()
-	if err != nil {
-		return nil, fmt.Errorf("cluster: counters reader for append rank: %w", err)
-	}
-
 	appendSource := consensus.NewRecordingPosAppendPosition(
 		module.agent,
 		counters,
@@ -415,6 +412,7 @@ func OpenConsensusModule(
 		RecordingLog:              recovery.RecordingLog(),
 		RecordingLogLookup:        recovery.RecordingLog(),
 		RecordingLogFileSyncLevel: cfg.RecordingLogFileSyncLevel,
+		ErrorHandler:              handleError,
 	}
 	module.election = election.NewElection(electionCfg, electionDeps)
 	module.agent.SetElection(module.election)
@@ -633,6 +631,12 @@ func (m *ConsensusModule) Close() error {
 
 	var err error
 
+	// Stop reports first. A late DoWork error then skips the counter and
+	// Config.ErrorHandler.
+	if m.errorHandler != nil {
+		m.errorHandler.close()
+	}
+
 	// Clear each agent binding before closing the handle it references. A
 	// late DoWork call must not install an election, accept a connect, or add
 	// a publication.
@@ -742,11 +746,15 @@ func (m *ConsensusModule) Close() error {
 		m.archiveClient = nil
 	}
 
-	// Close the module state counter last before the transport client, in
-	// reverse open order. The counter reads CLOSED for the whole teardown.
+	// Close both module counters last before the transport client, in reverse
+	// open order. The state counter reads CLOSED for the whole teardown.
 	if m.moduleState != nil {
 		err = errors.Join(err, m.moduleState.Close())
 		m.moduleState = nil
+	}
+	if m.errorCounter != nil {
+		err = errors.Join(err, m.errorCounter.Close())
+		m.errorCounter = nil
 	}
 	if m.client != nil && m.ownsClient {
 		err = errors.Join(err, m.client.Close())

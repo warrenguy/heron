@@ -19,6 +19,10 @@ const (
 	// Counter value is the aeron cluster ElectionState code (0-17).
 	ClusterElectionStateCounterTypeID int32 = 207
 
+	// ClusterConsensusModuleErrorCountCounterTypeID is the aeron counter type ID
+	// CLUSTER_CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID.
+	ClusterConsensusModuleErrorCountCounterTypeID int32 = 212
+
 	// ClusterLeadershipTermIDCounterTypeID is the aeron counter type ID
 	// CLUSTER_LEADERSHIP_TERM_ID_TYPE_ID.
 	ClusterLeadershipTermIDCounterTypeID int32 = 239

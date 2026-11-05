@@ -119,6 +119,21 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Equal(t, module.Topology().LogStreamID(), desc.StreamID)
 	require.Equal(t, session, desc.SessionID)
 
+	// Error counter. The driver is fresh, so FindCounterOfType finds this
+	// module's counter.
+	counters, err := module.Client().CountersReader()
+	require.NoError(t, err)
+	errorCounterID, found := counters.FindCounterOfType(
+		consensus.ClusterConsensusModuleErrorCountCounterTypeID,
+	)
+	require.True(t, found)
+	errorKey, ok := counters.CounterKey(errorCounterID)
+	require.True(t, ok)
+	require.Zero(t, errorKey)
+	errorLabel, ok := counters.CounterLabel(errorCounterID)
+	require.True(t, ok)
+	require.Equal(t, "Cluster Errors - clusterId=0", errorLabel)
+
 	// Capture handles before Close so IsClosed can be checked after teardown.
 	pub := module.LogStreams().Publication()
 	sub := module.LogStreams().Subscription()

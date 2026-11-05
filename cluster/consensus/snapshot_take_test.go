@@ -629,14 +629,34 @@ type takeFixture struct {
 	service      *QueueConsensusIngress
 	archive      *fakeSnapshotArchive
 	recordingLog *fakeSnapshotRecordingLog
+	reported     []takeReport
+}
+
+// takeReport is one reported error and the agent state the handler read at
+// report time.
+type takeReport struct {
+	err         error
+	take        SnapshotTakeResult
+	resolved    bool
+	moduleState ModuleState
 }
 
 // newTakeFixture builds the agent from cfg with a fresh commit counter. A
 // leader also binds a log publisher.
 func newTakeFixture(t testing.TB, cfg AgentConfig) *takeFixture {
 	t.Helper()
+	var f *takeFixture
 	commit := new(atomic.Int64)
 	cfg.Commit = commit
+	cfg.ErrorHandler = func(err error) {
+		take, resolved := f.agent.LastSnapshotTake()
+		f.reported = append(f.reported, takeReport{
+			err:         err,
+			take:        take,
+			resolved:    resolved,
+			moduleState: f.agent.ModuleState(),
+		})
+	}
 	a := NewAgent(cfg)
 	q := attachQueueServiceIngress(a)
 	if cfg.Role == RoleLeader {
@@ -649,13 +669,14 @@ func newTakeFixture(t testing.TB, cfg AgentConfig) *takeFixture {
 	recordingLog := &fakeSnapshotRecordingLog{}
 	a.SetSnapshotRecordingLog(recordingLog, recordinglog.FileSyncData)
 	a.SetSnapshotStream(testSnapshotChannel, testSnapshotStreamID)
-	return &takeFixture{
+	f = &takeFixture{
 		agent:        a,
 		commit:       commit,
 		service:      q,
 		archive:      archive,
 		recordingLog: recordingLog,
 	}
+	return f
 }
 
 func newTakeLeader(t testing.TB, serviceCount int) *takeFixture {
@@ -1733,6 +1754,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.NoError(t, result.ForceErr)
 				require.Equal(t, fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID), f.recordingLog.rows)
 				require.Equal(t, syncData(1), f.recordingLog.forces)
+				require.Empty(t, f.reported)
 			},
 		},
 		{
@@ -1755,6 +1777,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.Equal(t, []int32{2, 1, 0, recordinglog.ConsensusModuleServiceID}, serviceIDs)
 				require.Equal(t, []int64{79, 78, 77, fakeSnapshotFirstRecordingID}, recordingIDs)
 				require.Equal(t, syncData(4), f.recordingLog.forces)
+				require.Empty(t, f.reported)
 			},
 		},
 		{
@@ -1768,6 +1791,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.Equal(t, []fakeSnapshotForce{
 					{level: recordinglog.FileSyncFull, rows: 3},
 				}, f.recordingLog.forces)
+				require.Empty(t, f.reported)
 			},
 		},
 		{
@@ -1783,6 +1807,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.False(t, f.agent.HasPendingSnapshotAction())
 				f.requireNoRecordingLogWrite(t)
 				f.requireCleanedUp(t)
+				require.Empty(t, f.reported)
 			},
 		},
 		{
@@ -1806,6 +1831,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 						}
 						require.Empty(t, f.recordingLog.forces)
 						f.requireCleanedUp(t)
+						require.Empty(t, f.reported)
 					})
 				}
 			},
@@ -1818,13 +1844,20 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				})
 				require.NoError(t, result.Err)
 				require.Equal(t, fakeSnapshotFirstRecordingID, result.RecordingID)
-				require.ErrorIs(t, result.ForceErr, errSnapshotRecordingLogForce)
+				require.ErrorIs(t, result.ForceErr, ErrSnapshotRecordingLogForce)
 				require.ErrorIs(t, result.ForceErr, errBoom)
 				require.Equal(t, []int64{77, 78}, result.ServiceRecordingIDs)
 				require.Equal(t, fakeSnapshotGroup(result, fakeSnapshotFirstRecordingID), f.recordingLog.rows)
 				require.Equal(t, syncData(3), f.recordingLog.forces)
 				require.False(t, f.agent.HasPendingSnapshotAction())
 				f.requireCleanedUp(t)
+
+				require.Len(t, f.reported, 1)
+				report := f.reported[0]
+				require.Same(t, result.ForceErr, report.err)
+				require.True(t, report.resolved)
+				require.Equal(t, result, report.take)
+				require.Equal(t, ModuleStateActive, report.moduleState)
 			},
 		},
 		{
@@ -1839,6 +1872,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.ErrorIs(t, first.Err, errSnapshotRecordingLog)
 				firstRows := fakeSnapshotGroup(first, fakeSnapshotFirstRecordingID)[:1]
 				require.Equal(t, firstRows, f.recordingLog.rows)
+				require.Empty(t, f.reported)
 
 				// Phase 2: a second action writes a full group at its own
 				// position.
@@ -1857,6 +1891,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 				require.Equal(t, []fakeSnapshotForce{
 					{level: recordinglog.FileSyncData, rows: 3},
 				}, f.recordingLog.forces)
+				require.Empty(t, f.reported)
 			},
 		},
 		{
@@ -1868,9 +1903,11 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 					f.recordingLog.forceErr = errBoom
 				})
 				require.NoError(t, first.Err)
-				require.ErrorIs(t, first.ForceErr, errSnapshotRecordingLogForce)
+				require.ErrorIs(t, first.ForceErr, ErrSnapshotRecordingLogForce)
 				firstGroup := fakeSnapshotGroup(first, fakeSnapshotFirstRecordingID)
 				require.Equal(t, firstGroup, f.recordingLog.rows)
+				require.Len(t, f.reported, 1)
+				require.Same(t, first.ForceErr, f.reported[0].err)
 
 				// Phase 2: a second action appends a full group behind the
 				// first, then forces the log again.
@@ -1890,6 +1927,7 @@ func TestSnapshotTake_recordingLogRows(t *testing.T) {
 					{level: recordinglog.FileSyncData, rows: 2},
 					{level: recordinglog.FileSyncData, rows: 4},
 				}, f.recordingLog.forces)
+				require.Len(t, f.reported, 1, "phase 2 does not report")
 			},
 		},
 	}
