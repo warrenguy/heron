@@ -106,7 +106,7 @@ func TestNewElection_initializesFields(t *testing.T) {
 	require.Equal(t, cfg.AppendPosition, e.AppendPosition())
 	require.Equal(t, cfg.MemberID, e.ThisMemberID())
 	require.Nil(t, e.Leader())
-	require.Equal(t, election.NullMemberID, e.LogSessionID())
+	require.Equal(t, election.NullSessionID, e.LogSessionID())
 	require.Equal(t, int64(0), e.NotifiedCommitPosition())
 	require.Equal(t, []election.ElectionState{election.ElectionStateInit}, observer.states)
 

@@ -338,7 +338,7 @@ func (h *HostAdapter) PublishAppendPosition(
 //   - the recording-log lookup is nil
 //   - the canvasser is unknown
 //   - the canvasser is this member
-//   - answer.LogSessionID is NullMemberID
+//   - answer.LogSessionID is NullSessionID
 //   - this leader's current term has no recording-log entry
 func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) bool {
 	if h.recordingLogLookup == nil {
@@ -348,7 +348,7 @@ func (h *HostAdapter) PublishNewLeadershipTerm(answer consensus.CanvassAnswer) b
 	if member == nil || member.ID == h.thisMember.ID {
 		return false
 	}
-	if answer.LogSessionID == NullMemberID {
+	if answer.LogSessionID == NullSessionID {
 		return false
 	}
 	current := h.recordingLogLookup.FindTermEntry(answer.LeadershipTermID)

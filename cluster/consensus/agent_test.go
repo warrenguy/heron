@@ -528,7 +528,7 @@ func TestHostDelegate_stubsSmoke(t *testing.T) {
 
 	sessionID, err := a.AddLogPublication(100)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, nullSessionID, sessionID)
 	require.Equal(t, int64(-1), a.LocalLogRecordingID())
 	a.SetLogRecordingID(99)
 	require.Equal(t, int64(99), a.LocalLogRecordingID())
@@ -1659,7 +1659,7 @@ func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
 		ans := eg.answers[0]
 		require.Equal(t, lp.Position(), ans.LogPosition)
 		require.Equal(t, lp.SessionID(), ans.LogSessionID)
-		require.NotEqual(t, nullMemberID, ans.LogSessionID)
+		require.NotEqual(t, nullSessionID, ans.LogSessionID)
 		require.Equal(t, commitPos, ans.CommitPosition)
 		require.Equal(t, recordingID, ans.LeaderRecordingID)
 	})
@@ -1703,8 +1703,7 @@ func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
 		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, nil)
 		drive(a, baseCanvass)
 		require.Len(t, eg.answers, 1)
-		require.Equal(t, nullMemberID, eg.answers[0].LogSessionID)
-		require.NotEqual(t, int32(0), eg.answers[0].LogSessionID)
+		require.Equal(t, nullSessionID, eg.answers[0].LogSessionID)
 		require.Equal(t, int64(0), eg.answers[0].LogPosition)
 	})
 
@@ -1713,8 +1712,7 @@ func TestOnSteadyCanvassPosition_agentMatrix(t *testing.T) {
 		a, _, eg := newLeaderFixture(RoleLeader, leaderTerm, NewLogPublisher())
 		drive(a, baseCanvass)
 		require.Len(t, eg.answers, 1)
-		require.Equal(t, nullMemberID, eg.answers[0].LogSessionID)
-		require.NotEqual(t, int32(0), eg.answers[0].LogSessionID)
+		require.Equal(t, nullSessionID, eg.answers[0].LogSessionID)
 	})
 
 	t.Run("nil positions or egress does not panic", func(t *testing.T) {

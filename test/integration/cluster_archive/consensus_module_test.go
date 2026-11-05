@@ -73,7 +73,7 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	// Bind at open: log publication and join/append sources before first tick.
 	session, err := module.Agent().AddLogPublication(0)
 	require.NoError(t, err)
-	require.NotEqual(t, int32(-1), session)
+	require.NotEqual(t, election.NullSessionID, session)
 	require.Equal(t, module.LogPublisher().SessionID(), session)
 	require.Equal(t, module.LogStreams().Publication().SessionID(), session)
 	require.NotNil(t, module.Agent().AppendSource())
@@ -151,7 +151,7 @@ func TestConsensusModule_electsAndClosesAgainstALiveDriver(t *testing.T) {
 	require.Nil(t, agent.Election())
 	sessionID, err := agent.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 	require.Nil(t, module.LogStreams())
 	require.Nil(t, module.RecordingLog())
 	require.Nil(t, module.Client())

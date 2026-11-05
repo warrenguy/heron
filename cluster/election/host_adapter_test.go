@@ -900,7 +900,7 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.NotPanics(t, host.AddLiveLogDestination)
 	sessionID, err := host.AddLogPublication(100)
 	require.NoError(t, err)
-	require.Equal(t, int32(election.NullMemberID), sessionID)
+	require.Equal(t, election.NullSessionID, sessionID)
 	require.False(t, host.AppendNewLeadershipTermEvent(1))
 	require.Equal(t, 0, host.PollArchiveEvents())
 	require.Error(t, host.TruncateLogEntry(1, 2))
@@ -1195,7 +1195,7 @@ func TestHostAdapter_PublishNewLeadershipTerm_answerConstruction(t *testing.T) {
 	selfMember := baseAnswer
 	selfMember.FollowerMemberID = int32(thisIdx)
 	nullSession := baseAnswer
-	nullSession.LogSessionID = election.NullMemberID
+	nullSession.LogSessionID = election.NullSessionID
 
 	refuseTests := []struct {
 		name   string

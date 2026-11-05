@@ -595,13 +595,13 @@ func TestAgent_AddLogPublication_inject(t *testing.T) {
 	a := NewAgent(AgentConfig{})
 	sessionID, err := a.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, nullSessionID, sessionID)
 
 	// Publisher without publication still unbound.
 	a.SetLogPublisher(NewLogPublisher())
 	sessionID, err = a.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, nullSessionID, sessionID)
 
 	lp, pub := boundLogPublisher(t)
 
@@ -616,7 +616,7 @@ func TestAgent_AddLogPublication_inject(t *testing.T) {
 	lp.SetPublication(nil)
 	sessionID, err = a.AddLogPublication(0)
 	require.NoError(t, err)
-	require.Equal(t, int32(-1), sessionID)
+	require.Equal(t, nullSessionID, sessionID)
 }
 
 // Asserts reseed failure reports the session the publisher still holds.
@@ -637,7 +637,7 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 
 		sessionID, err := a.AddLogPublication(100)
 		require.ErrorIs(t, err, cause)
-		require.Equal(t, int32(nullValue), sessionID)
+		require.Equal(t, nullSessionID, sessionID)
 	})
 
 	// The test publication sits at 0, so the first call targets 100 to reach
@@ -672,7 +672,7 @@ func TestAddLogPublication_reseedFailureReportsBoundSession(t *testing.T) {
 			// Phase: the add fails after the unbind.
 			sessionID, err := a.AddLogPublication(100)
 			require.ErrorIs(t, err, cause)
-			require.Equal(t, int32(nullValue), sessionID)
+			require.Equal(t, nullSessionID, sessionID)
 
 			// Phase: the retry rebuilds from the unbound state.
 			sessionID, err = a.AddLogPublication(tt.target)
@@ -766,7 +766,7 @@ func TestAddLogPublication_reseedsOnPositionMismatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := NewAgent(AgentConfig{})
 			a.SetLogRecordingID(tt.recordingID)
-			want := int32(nullValue)
+			want := nullSessionID
 			switch {
 			case tt.noPublication:
 				a.SetLogPublisher(NewLogPublisher())

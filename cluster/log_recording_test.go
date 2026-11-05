@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 )
 
@@ -213,7 +214,7 @@ func TestSessionScopedLogChannel(t *testing.T) {
 		{
 			name:         "sentinel session id",
 			logChannel:   "aeron:udp?endpoint=239.255.12.1:9004",
-			logSessionID: -1,
+			logSessionID: election.NullSessionID,
 			want:         "aeron:udp?endpoint=239.255.12.1:9004|session-id=-1",
 		},
 	}

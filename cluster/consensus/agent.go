@@ -36,7 +36,7 @@ var (
 	)
 )
 
-// nullValue mirrors aeron cnc NullValue (-1) for recording IDs and null session.
+// nullValue mirrors aeron cnc NullValue (-1).
 //
 // Local unexported const - do not import election.
 const nullValue = -1
@@ -45,6 +45,10 @@ const nullValue = -1
 // election.NullMemberID / cnc.NullValue. Member id 0 is valid - never treat
 // zero as "unset".
 const nullMemberID int32 = int32(nullValue)
+
+// nullSessionID is the unset log session id sentinel. Same numeric value as
+// election.NullSessionID.
+const nullSessionID int32 = nullValue
 
 // DefaultLeaderHeartbeatIntervalNs is the default commit re-publish and
 // follower append cadence (200ms).
@@ -1471,7 +1475,7 @@ func (a *Agent) OnCatchupPosition(fields codecs.CatchupPositionFields) {
 	// Session id -1 is the null sentinel. Other negative values are valid
 	// Aeron session ids.
 	logSessionID, bound := a.boundLogSessionID()
-	if !bound || logSessionID == int32(nullValue) {
+	if !bound || logSessionID == nullSessionID {
 		return
 	}
 	replaySessionID, err := a.catchupControl.StartCatchupReplay(
@@ -1555,7 +1559,7 @@ func (a *Agent) AddLogPublication(appendPosition int64) (int32, error) {
 // and false otherwise.
 func (a *Agent) boundLogSessionID() (sessionID int32, ok bool) {
 	if a.logPublisher == nil || a.logPublisher.Publication() == nil {
-		return int32(nullValue), false
+		return nullSessionID, false
 	}
 	return a.logPublisher.SessionID(), true
 }

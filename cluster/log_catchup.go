@@ -8,6 +8,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/cluster/election"
 )
 
 // catchupControl is the production [consensus.CatchupControl].
@@ -349,7 +350,7 @@ func catchupReplayChannel(
 	logSessionID int32,
 ) string {
 	ch := catchupDestinationURI(logChannel, catchupEndpoint)
-	if logSessionID != -1 {
+	if logSessionID != election.NullSessionID {
 		ch = sessionScopedLogChannel(ch, logSessionID)
 	}
 	ch = aeron.AppendChannelParam(ch, "linger=", "0")

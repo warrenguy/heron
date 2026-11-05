@@ -892,7 +892,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 
 	images := -1
 	logPubPos := int64(-1)
-	logPubSession := int32(-1)
+	logPubSession := election.NullSessionID
 	if streams := m.LogStreams(); streams != nil {
 		if sub := streams.Subscription(); sub != nil {
 			images = sub.ImageCount()
@@ -906,7 +906,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 	adapterPos := int64(-1)
 	imagePos := int64(-1)
 	joinPos := int64(-1)
-	imageSession := int32(-1)
+	imageSession := election.NullSessionID
 	if adapter := m.LogAdapter(); adapter != nil {
 		adapterPos = adapter.Position()
 		if img := adapter.Image(); img != nil {
@@ -916,10 +916,10 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		}
 	}
 
-	memberID := int32(-1)
+	memberID := election.NullMemberID
 	role := consensus.Role(-1)
 	term := int64(-1)
-	leaderID := int32(-1)
+	leaderID := election.NullMemberID
 	appendSrc := int64(-1)
 	commit := int64(-1)
 	notified := int64(-1)

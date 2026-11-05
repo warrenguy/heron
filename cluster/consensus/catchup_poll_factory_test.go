@@ -1030,7 +1030,7 @@ func TestOnCatchupPosition_oneReplayPerFollower(t *testing.T) {
 	const catchupEndpoint = "127.0.0.1:9100"
 
 	a, control, publisher := newLeaderCatchupAgent(t, AgentConfig{}, "")
-	require.NotEqual(t, int32(nullValue), publisher.SessionID())
+	require.NotEqual(t, nullSessionID, publisher.SessionID())
 
 	served := codecs.CatchupPositionFields{
 		LogPosition:      100,
