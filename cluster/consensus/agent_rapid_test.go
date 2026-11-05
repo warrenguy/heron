@@ -1,8 +1,9 @@
-//go:build rapid
+//go:build rapid && testhooks
 
 package consensus
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -735,18 +736,18 @@ func TestRecordingAppendPosition_highWater_rapid(t *testing.T) {
 			}
 
 			// Model-side failure tracking (independent of agent fields).
-			if ready {
+			if ready || !model.active {
 				modelNotReadySince = nullValue
 			} else {
 				if modelNotReadySince == nullValue {
 					modelNotReadySince = nowNs
 				}
-				if model.active && nowNs-modelNotReadySince >= timeoutNs {
+				if nowNs-modelNotReadySince >= timeoutNs {
 					modelFailed = true
 				}
 			}
 
-			// Failure only when active and the not-ready run is past the bound.
+			// Failure only when the not-ready run stays active past the bound.
 			gotFail := a.AppendRankFailure()
 			if !modelFailed {
 				require.NoError(rt, gotFail)
@@ -760,6 +761,109 @@ func TestRecordingAppendPosition_highWater_rapid(t *testing.T) {
 				second := a.AppendRankFailure()
 				require.Equal(rt, gotFail, second)
 			}
+		}
+	})
+}
+
+type terminationOp int
+
+const (
+	terminationOpOutOfSequenceAck terminationOp = iota
+	terminationOpNullStartAck
+	terminationOpTerminalJoinLog
+	terminationOpRefusedTimer
+	terminationOpPlannedTerminate
+	terminationOpDoWork
+)
+
+// TestAgent_terminationKeepsFirstCause_rapid draws fatal marks, planned ends,
+// and DoWork calls. The agent reports only a fatal first cause, at most once.
+func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
+	t.Parallel()
+	errPlanned := errors.New("planned")
+	closed, closedPub := boundServiceProxy(t)
+	require.NoError(t, closedPub.Close())
+	rapid.Check(t, func(rt *rapid.T) {
+		a, reported := agentWithReports(AgentConfig{ServiceCount: 1})
+		a.SetServiceProxy(closed)
+		a.SetLocalLogStream("aeron:ipc", 100)
+		a.timers = newSmallTimerService(testWheelCapacity)
+
+		const startPosition int64 = 64
+		var want *TerminationError
+		wantReports := 0
+		nextTimerID := int64(1)
+		nowNs := int64(0)
+
+		end := func(cause error, expected bool) {
+			if want != nil {
+				return
+			}
+			want = &TerminationError{Cause: cause, Expected: expected}
+			if !expected {
+				wantReports = 1
+			}
+		}
+
+		ops := rapid.SampledFrom([]terminationOp{
+			terminationOpOutOfSequenceAck,
+			terminationOpNullStartAck,
+			terminationOpTerminalJoinLog,
+			terminationOpRefusedTimer,
+			terminationOpPlannedTerminate,
+			terminationOpDoWork,
+		})
+		n := rapid.IntRange(1, 30).Draw(rt, "n")
+		for range n {
+			op := ops.Draw(rt, "op")
+			switch op {
+			case terminationOpOutOfSequenceAck:
+				a.handleServiceAck(codecs.ServiceAckFields{LogPosition: 1, AckID: 1 << 40})
+				end(ErrServiceAckOutOfSequence, false)
+			case terminationOpNullStartAck:
+				// A wait queued by an earlier draw makes this call return an error.
+				_ = a.AwaitServiceStart(startPosition, func() {})
+				a.handleServiceAck(codecs.ServiceAckFields{
+					LogPosition: startPosition,
+					AckID:       0,
+					RelevantID:  nullValue,
+				})
+				a.serviceControlWork()
+				end(ErrServiceStartFailed, false)
+			case terminationOpTerminalJoinLog:
+				a.publishOrQueueJoinLog(codecs.JoinLogFields{LogPosition: 1, MaxLogPosition: 1})
+				end(ErrServicePublish, false)
+			case terminationOpRefusedTimer:
+				// A spoke holds two timers. The wheel refuses a third at the
+				// same deadline.
+				for range 3 {
+					a.scheduleTimerOrMarkFailure(nextTimerID, 0)
+					nextTimerID++
+				}
+				end(ErrTimerCapacity, false)
+			case terminationOpPlannedTerminate:
+				a.terminate(errPlanned, true, "planned")
+				end(errPlanned, true)
+			case terminationOpDoWork:
+				nowNs++
+				work := a.DoWork(nowNs)
+				if want != nil {
+					require.Equal(rt, 0, work, "DoWork after the end")
+				}
+			}
+
+			require.Len(rt, *reported, wantReports)
+			if want == nil {
+				require.NoError(rt, a.TerminationError())
+				require.Equal(rt, ModuleStateActive, a.ModuleState())
+				continue
+			}
+			require.ErrorIs(rt, a.TerminationError(), want.Cause)
+			cause := want.Cause
+			if !want.Expected {
+				cause = (*reported)[0]
+			}
+			requireTerminated(rt, a, cause, want.Expected)
 		}
 	})
 }

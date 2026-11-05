@@ -191,12 +191,16 @@ func TestHandleServiceAck_receiveTimeMismatch(t *testing.T) {
 	require.Equal(t, 1, a.ServiceAckQueueDepth(0))
 	first := a.ServiceAckFailure()
 	require.ErrorIs(t, first, ErrServiceAckOutOfSequence)
+	requireTerminated(t, a, first, false)
 
-	// Second mismatched receive keeps the first cause (marked once).
+	// Second mismatched receive keeps the first cause. DoWork does not poll
+	// after termination, so the test polls directly.
 	enqueueServiceAck(t, q, 20, 2, 0)
-	require.Equal(t, 1, a.DoWork(2))
+	require.Equal(t, 0, a.DoWork(2))
+	require.Equal(t, 1, a.pollServiceControl())
 	require.Equal(t, 2, a.ServiceAckQueueDepth(0))
 	require.Same(t, first, a.ServiceAckFailure())
+	requireTerminated(t, a, first, false)
 }
 
 func TestHandleServiceAck_emptyLowerNoReceiveMark(t *testing.T) {
@@ -573,7 +577,9 @@ func TestJoinLog_terminalPublishMarksOnce(t *testing.T) {
 
 	require.NoError(t, a.JoinLogAsLeader(1, 10, 1, false))
 	first := a.ServicePublishFailure()
-	require.Error(t, first)
+	require.ErrorIs(t, first, ErrServicePublish)
+	require.ErrorContains(t, first, "consensus: service control publish failed: code=")
+	requireTerminated(t, a, first, false)
 	require.False(t, a.HasPendingJoinLog())
 	require.Equal(t, 0, a.PendingServiceAckWaits())
 
@@ -717,6 +723,7 @@ func TestServiceControlWork_contractViolation_marksFailure(t *testing.T) {
 
 	require.Equal(t, 0, a.serviceControlWork())
 	require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+	requireTerminated(t, a, a.ServiceAckFailure(), false)
 	require.Equal(t, 2, a.PendingServiceAckWaits())
 	require.Equal(t, int64(10), a.ExpectedAckPosition())
 	require.Equal(t, int64(0), a.ExpectedServiceAckID())
@@ -875,7 +882,8 @@ func TestServiceControlWork_startWait(t *testing.T) {
 		require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceStartFailed)
 		require.ErrorContains(t, a.ServiceAckFailure(), "service 1 acked NULL_VALUE")
 		require.Equal(t, 0, a.PendingServiceAckWaits())
-		require.True(t, a.IsReplayLogJoined())
+		require.False(t, a.IsReplayLogJoined())
+		requireTerminated(t, a, a.ServiceAckFailure(), false)
 	})
 
 	t.Run("null value keeps a later wait", func(t *testing.T) {

@@ -307,24 +307,97 @@ func TestAgent_moduleStateTransitions(t *testing.T) {
 		f.agent.DoWork(101)
 		require.ErrorIs(t, f.agent.ServiceAckFailure(), ErrServiceAckOutOfSequence)
 		require.Nil(t, f.agent.snapshotTake)
-		p.requireTransition(t, f.agent, ModuleStateSnapshot, ModuleStateActive, "service ack failure")
+		p.requireTransition(
+			t, f.agent, ModuleStateSnapshot, ModuleStateClosed, "unexpected termination",
+		)
 	})
 
 	t.Run("ack failure after pop", func(t *testing.T) {
 		f, p, position := probePoppedTake(t)
-		mark := p.mark()
 
 		f.ack(t, position, 5, 77, 0)
 		f.agent.DoWork(102)
 		require.Error(t, f.agent.ServiceAckFailure())
 		require.NotNil(t, f.agent.snapshotTake)
-		p.requireUnchangedSince(t, f.agent, ModuleStateSnapshot, mark)
+		p.requireTransition(
+			t, f.agent, ModuleStateSnapshot, ModuleStateClosed, "unexpected termination",
+		)
 
-		f.archive.stopNever = false
-		f.archive.stopDelay = 0
-		result, _ := f.tickUntilResolved(t, 103, 1)
-		require.NoError(t, result.Err)
-		p.requireTransition(t, f.agent, ModuleStateSnapshot, ModuleStateActive, "snapshot complete")
+		require.Equal(t, 0, f.agent.DoWork(103))
+		_, resolved := f.agent.LastSnapshotTake()
+		require.False(t, resolved)
+	})
+
+	t.Run("terminate stores the caller reason", func(t *testing.T) {
+		a := NewAgent(AgentConfig{})
+		p := newModuleStateProbe(t, a)
+		a.terminate(nil, true, "planned reason")
+		p.requireTransition(t, a, ModuleStateActive, ModuleStateClosed, "planned reason")
+		require.Equal(t, []ModuleState{ModuleStateActive, ModuleStateClosed}, p.counter.states)
+	})
+
+	t.Run("fatal mark from active", func(t *testing.T) {
+		cases := []struct {
+			name string
+			mark func(t *testing.T, a *Agent)
+		}{
+			{
+				name: "append rank failure",
+				mark: func(t *testing.T, a *Agent) {
+					armAppendRankTimeout(a)
+					a.resolveAppendPosition(0)
+					a.resolveAppendPosition(100)
+					require.Error(t, a.AppendRankFailure())
+				},
+			},
+			{
+				name: "service ack failure",
+				mark: func(t *testing.T, a *Agent) {
+					q := attachQueueServiceIngress(a)
+					enqueueServiceAck(t, q, 10, 1, 0)
+					require.Equal(t, 1, a.pollServiceControl())
+					require.Error(t, a.ServiceAckFailure())
+				},
+			},
+			{
+				name: "service publish failure",
+				mark: func(t *testing.T, a *Agent) {
+					proxy, pub := boundServiceProxy(t)
+					require.NoError(t, pub.Close())
+					a.SetServiceProxy(proxy)
+					a.SetLocalLogStream("aeron:ipc", 100)
+					require.NoError(t, a.JoinLogAsLeader(1, 10, 1, false))
+					require.Error(t, a.ServicePublishFailure())
+				},
+			},
+			{
+				name: "timer failure",
+				mark: func(t *testing.T, a *Agent) {
+					a.timers = newSmallTimerService(testWheelCapacity)
+					for id := int64(1); id <= 3; id++ {
+						a.scheduleTimerOrMarkFailure(id, 0)
+					}
+					require.Error(t, a.TimerFailure())
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				a := NewAgent(AgentConfig{Role: RoleFollower, ServiceCount: 1})
+				p := newModuleStateProbe(t, a)
+				tc.mark(t, a)
+				p.requireTransition(
+					t, a, ModuleStateActive, ModuleStateClosed, "unexpected termination",
+				)
+				require.Equal(t, []ModuleState{ModuleStateActive, ModuleStateClosed}, p.counter.states)
+				require.Len(t, p.changes, 1)
+				require.ErrorIs(t, a.TerminationError(), ErrTerminated)
+
+				mark := p.mark()
+				a.MarkClosed()
+				p.requireUnchangedSince(t, a, ModuleStateClosed, mark)
+			})
+		}
 	})
 
 	t.Run("mark closed", func(t *testing.T) {

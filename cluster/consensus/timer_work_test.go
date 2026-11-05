@@ -340,7 +340,8 @@ func TestHandleScheduleTimer_capacityRefusal(t *testing.T) {
 	enqueueScheduleTimer(t, q, 3, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	first := a.TimerFailure()
-	require.ErrorIs(t, first, errTimerCapacity)
+	require.ErrorIs(t, first, ErrTimerCapacity)
+	requireTerminated(t, a, first, false)
 	requireTimerCount(t, a.timers, 2)
 	require.NotContains(t, a.timers.timerIDByCorrelationID, int64(3))
 
@@ -351,6 +352,7 @@ func TestHandleScheduleTimer_capacityRefusal(t *testing.T) {
 	enqueueScheduleTimer(t, q, 5, 0)
 	require.Equal(t, 1, a.pollServiceControl())
 	require.Same(t, first, a.TimerFailure())
+	requireTerminated(t, a, first, false)
 	requireTimerCount(t, a.timers, 3)
 }
 

@@ -553,34 +553,15 @@ type replayJoinModelWait struct {
 	replay   bool
 }
 
-// Asserts replay JoinLog tracking against a FIFO model with ServiceCount 1.
-// The model service acks every published coordination point in publish
-// order. serviceAckFailure marks at most once, late in the run.
+// Asserts replay JoinLog tracking against a FIFO model with ServiceCount 1. The
+// model service acks every published coordination point in publish order.
 //
-// The setup may retire a snapshot wait at one of the op positions before the
-// ops. The model service read that action first, so it sends its snapshot ack
-// first. That ack either reached the tracker before the retire or arrives
-// during the ops.
+// The setup may retire a snapshot wait at an op position. The model service
+// read that action first, so it sends its snapshot ack first.
 //
-// Ops:
-//   - queue a RequestServiceAck wait
-//   - publish or store an earlier JoinLog
-//   - publish the replay JoinLog with a drawn outcome
-//   - retry a pending publish
-//   - ack the next point
-//   - run one serviceControlWork tick
-//   - UnbindReplayLog
-//
-// Invariants each step:
-//   - IsReplayLogJoined matches the model, or reports true after the
-//     failure mark.
-//   - IsReplayLogJoined stays false until the model service sends the
-//     replay JoinLog ack, unless the failure mark is set. The check uses the
-//     delivered index, not an ack id, so a skipped id at a retire does not
-//     affect it.
-//   - Queued wait positions match the model. Positions repeat, so a
-//     position match alone does not cover the count.
-//   - HasPendingJoinLog matches the model.
+// IsReplayLogJoined reports false before the model service sends the tracked
+// replay JoinLog ack. The check uses the delivered index, not an ack id, because
+// a retired snapshot ack skips its id.
 func TestReplayJoinTracking_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -637,9 +618,9 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 		assertInvariants := func() {
 			rt.Helper()
 			require.Equal(rt, failed, a.ServiceAckFailure() != nil)
-			require.Equal(rt, state == replayJoinModelNone || failed, a.IsReplayLogJoined())
+			require.Equal(rt, state == replayJoinModelNone && !failed, a.IsReplayLogJoined())
 			replayAckUnsent := replayIndex >= 0 && cursor <= replayIndex
-			if replayAckUnsent && !failed {
+			if replayAckUnsent {
 				require.False(rt, a.IsReplayLogJoined())
 			}
 			positions := make([]int64, 0, len(modelWaits))

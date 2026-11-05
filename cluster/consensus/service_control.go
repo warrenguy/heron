@@ -34,6 +34,10 @@ var ErrServiceControlUnbound = errors.New(
 // NULL_VALUE.
 var ErrServiceStartFailed = errors.New("consensus: service start failed")
 
+// ErrServicePublish reports a terminal publication code on the service
+// control publish path.
+var ErrServicePublish = errors.New("consensus: service control publish failed")
+
 // SetServiceIngress replaces the service control poller (stream 105).
 //
 // Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
@@ -104,9 +108,11 @@ func (a *Agent) HasPendingJoinLog() bool {
 }
 
 // ServicePublishFailure returns the first terminal publish failure on the
-// stream 104 publish path, or nil. Marked once. Never cleared in this surface.
+// stream 104 publish path, or nil. The failure wraps [ErrServicePublish].
 //
-// The stream 105 receive-path mark is [Agent.ServiceAckFailure].
+// Behaviour:
+//   - marked once, never cleared
+//   - a mark ends the member. Full contract on [Agent.TerminationError].
 //
 // Concurrency: invoker-only.
 func (a *Agent) ServicePublishFailure() error {
@@ -172,37 +178,16 @@ func (a *Agent) AwaitServiceStart(logPosition int64, startHandler func()) error 
 // serviceControlWork consumes the first coordination wait when every service's
 // first queued entry has reached the wait position.
 //
-// Behaviour:
-//  1. serviceAckFailure non-nil: skip. The wait stays queued.
-//  2. Empty waits: return.
-//  3. First queued entry check via hasReachedServiceAcks:
-//     - (true, nil): removeServiceAckHead, pop the first wait, count work
-//     - (false, nil): not every first queued entry has reached; return
-//     - (false, ErrServiceAckOutOfSequence): mark serviceAckFailure once
+// The snapshot take and the service start check read first RelevantIDs, so
+// both run before removeServiceAckHead. [Agent.snapshotTakeWork] advances the
+// take.
 //
-// At most one wait completes per DoWork call.
-//
-// A consumed wait that matches snapshotWaitPosition builds the module snapshot
-// take before removeServiceAckHead. The take copies each service's first
-// RelevantID and the module state. The pop then clears snapshotWaitPosition.
-// [Agent.snapshotTakeWork] advances the take.
-//
-// A leading service start wait reads each service's first RelevantID before
-// the pop. The pop runs the start handler once and clears it. A NULL_VALUE
-// RelevantID then marks [ErrServiceStartFailed] with the lowest such service
-// id. The handler still runs.
-//
-// A consumed wait at a retired snapshot position drops leftover tracker
-// entries at the consumed position. A remaining wait at the consumed position
-// keeps the entries.
-//
-// Pending JoinLog retry is [Agent.retryPendingJoinLog]. DoWork runs the retry
-// after the election or steady branch. PrepareForNewLeadership can then drop a
-// superseded pending before any offer.
+// A service start wait always runs the start handler. A NULL_VALUE RelevantID
+// then marks [ErrServiceStartFailed].
 //
 // Concurrency: invoker-only.
 //
-// Returns 1 when a wait is consumed, else 0.
+// Returns 1 when the call consumes a wait, else 0.
 func (a *Agent) serviceControlWork() int {
 	if a.serviceAckFailure != nil || len(a.serviceAckWaits) == 0 {
 		return 0
@@ -279,15 +264,8 @@ func (a *Agent) publishOrQueueJoinLog(fields codecs.JoinLogFields) int {
 
 // publishJoinLog offers fields and applies the outcome to waits and pending.
 //
-// Behaviour:
-//  1. Nil proxy: return 0. No wait. No failure mark.
-//  2. Success (position > 0): clear pendingJoinLog and return 1. When
-//     serviceAckFailure is nil, append LogPosition to serviceAckWaits. When
-//     serviceAckFailure is marked, the frame still publishes and no wait is
-//     queued (waits would never drain).
-//  3. Retriable offer code: store fields as pendingJoinLog (replace); no wait;
-//     return 0.
-//  4. Terminal code: mark servicePublishFailure once; clear pending; return 0.
+// Behaviour: a publish under a marked serviceAckFailure does not queue a wait,
+// because waits would never drain.
 //
 // Concurrency: invoker-only.
 //
@@ -312,15 +290,13 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 		a.pendingJoinLog = fields
 		return 0
 	}
-	if a.servicePublishFailure == nil {
-		a.servicePublishFailure = fmt.Errorf(
-			"consensus: service control publish failed: code=%d",
-			pos,
-		)
-	}
 	a.pendingJoinLog = nil
 	if a.replayJoinWaitsAhead == replayJoinUnpublished {
 		a.replayJoinWaitsAhead = 0
+	}
+	if a.servicePublishFailure == nil {
+		a.servicePublishFailure = fmt.Errorf("%w: code=%d", ErrServicePublish, pos)
+		a.failMember(a.servicePublishFailure)
 	}
 	return 0
 }
@@ -439,23 +415,6 @@ func (a *Agent) handleServiceControlFragment(buf []byte, offset int) {
 
 // handleServiceAck offers one decoded ServiceAck, then runs the receive-time
 // sequence check.
-//
-// Behaviour:
-//   - A frame at a retired snapshot position drops before the offer when
-//     dropAbandonedSnapshotAck reports true. The drop clears the owed flag of
-//     the sending service at that position, then notes the dropped AckID
-//     through [serviceAckTracker.noteDropped].
-//   - A refused offer (service id out of range) drops the frame and runs no
-//     check.
-//   - A successful offer calls afterOfferSequenceError. The check uses the
-//     first entry in queue 0, not the incoming frame position.
-//   - An empty lower-id queue stops the walk. Later queues are not examined.
-//     No mark in that case.
-//   - ErrServiceAckOutOfSequence marks serviceAckFailure once. The first cause
-//     is kept. Later mismatches do not replace the cause.
-//
-// Timestamp is decoded and not stored. Wait paths keep exact (ackID,
-// logPosition) match via hasReachedServiceAcks at the wait position.
 func (a *Agent) handleServiceAck(fields codecs.ServiceAckFields) {
 	if a.dropAbandonedSnapshotAck(fields.ServiceID, fields.LogPosition) {
 		a.serviceAcks.noteDropped(fields.ServiceID, fields.AckID)
@@ -478,7 +437,7 @@ func (a *Agent) markServiceAckFailure(cause error) {
 		return
 	}
 	a.serviceAckFailure = cause
-	a.endSnapshotState(moduleStateReasonServiceAckFailure)
+	a.failMember(cause)
 }
 
 // handleServiceCloseSession marks one session closing with SERVICE_ACTION.

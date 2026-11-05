@@ -219,7 +219,7 @@ func TestPublishReplayJoinLog(t *testing.T) {
 				require.Equal(t, 0, a.replayJoinWaitsAhead)
 				require.False(t, a.HasPendingJoinLog())
 				require.Equal(t, 1, a.PendingServiceAckWaits())
-				require.True(t, a.IsReplayLogJoined())
+				require.False(t, a.IsReplayLogJoined())
 			},
 		},
 		{

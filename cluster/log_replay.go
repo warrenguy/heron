@@ -248,9 +248,6 @@ func (r *logReplay) DoWork(nowNs int64) int {
 	if r.image == nil {
 		return r.awaitImage(nowNs)
 	}
-	// A marked service ack failure reports the replay joined. An unpublished
-	// replay JoinLog has reached no service, so the drain waits and the
-	// deadline keeps running.
 	agent := r.deps.Agent
 	if !agent.IsReplayLogJoined() || agent.HasPendingJoinLog() {
 		if nowNs >= r.deadlineNs {

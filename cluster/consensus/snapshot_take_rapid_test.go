@@ -336,6 +336,9 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		// reclaim still removes the pending session at its timeout.
 		var ingress *QueueClientIngress
 		acceptNs := nowNs
+		// The tick that ends the member skips session work, so the pending
+		// reclaim stops at lastFullTickNs.
+		lastFullTickNs := acceptNs
 		timerRows := 1
 		if isLeader {
 			wireImmediateEgress(t, a)
@@ -351,7 +354,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			rt.Helper()
 			require.Equal(rt, 1, ingress.Len(), step)
 			wantPending := 1
-			if nowNs-acceptNs >= sessionTimeoutNs {
+			if lastFullTickNs-acceptNs >= sessionTimeoutNs {
 				wantPending = 0
 			}
 			require.Equal(rt, wantPending, a.PendingSessionCount(), step)
@@ -373,7 +376,6 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		// wantLog is the fake log before any write, then at resolve. Later
 		// steps must not change it.
 		wantLog := *recordingLog
-		// wantReported is empty until resolve, then holds the resolve reports.
 		// A cancelled or retired action never reports.
 		var wantReported []error
 		acks := &snapshotTakeAckModel{queues: make([][]int64, serviceCount)}
@@ -406,17 +408,17 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			if a.snapshotTake != nil {
 				require.Equal(rt, position, a.snapshotTake.logPosition, step)
 			}
-			marked := a.ServiceAckFailure() != nil
-			require.Equal(rt, acks.marked, marked, step)
-			waitCanPop := status == actionStatusWaiting && !marked
-			wantSnapshot := status == actionStatusTake || waitCanPop
+			require.Equal(rt, acks.marked, a.ServiceAckFailure() != nil, step)
 			wantState := ModuleStateActive
-			if wantSnapshot {
+			switch {
+			case acks.marked:
+				wantState = ModuleStateClosed
+			case active:
 				wantState = ModuleStateSnapshot
 			}
 			require.Equal(rt, wantState, a.ModuleState(), step)
 			require.Equal(rt, wantState, stateCounter.last(), step)
-			wantHold := a.Role() == RoleLeader && wantSnapshot
+			wantHold := a.Role() == RoleLeader && wantState != ModuleStateActive
 			require.Equal(rt, wantHold, a.isLeaderHeld(), step)
 
 			result, ok := a.LastSnapshotTake()
@@ -442,6 +444,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			rt.Helper()
 			nowNs += stepNs
 			held := a.isLeaderHeld()
+			wasMarked := acks.marked
 			a.DoWork(nowNs)
 
 			if status == actionStatusWaiting || status == actionStatusTake {
@@ -457,6 +460,12 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 				)
 				wantLog = *recordingLog
 				wantReported = reported
+			}
+			if acks.marked && !wasMarked {
+				wantReported = append(slices.Clip(wantReported), a.ServiceAckFailure())
+			}
+			if !acks.marked {
+				lastFullTickNs = nowNs
 			}
 			if held && a.isLeaderHeld() {
 				requireHeldUntouched("held tick")
@@ -534,7 +543,8 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			if status != actionStatusWaiting && status != actionStatusTake {
 				break
 			}
-			if status == actionStatusWaiting && acks.marked {
+			// DoWork does not advance a wait or take after the mark ends the member.
+			if acks.marked {
 				break
 			}
 			tick(2 * timeoutNs)

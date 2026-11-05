@@ -6,12 +6,15 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 )
 
-// errTimerCapacity is the first timer registry failure when the wheel refuses
-// a schedule. Marked once on [Agent.timerFailure].
-var errTimerCapacity = errors.New("cluster: timer wheel capacity refused")
+// ErrTimerCapacity reports a schedule that the timer wheel refused.
+// [Agent.TimerFailure] returns it.
+var ErrTimerCapacity = errors.New("consensus: timer wheel capacity refused")
 
-// TimerFailure returns the first timer registry failure, or nil. Marked once.
-// Never cleared in this surface.
+// TimerFailure returns the first timer registry failure, or nil.
+//
+// Behaviour:
+//   - marked once, never cleared
+//   - a mark ends the member. Full contract on [Agent.TerminationError].
 //
 // Concurrency: invoker-only.
 func (a *Agent) TimerFailure() error {
@@ -36,10 +39,8 @@ func (a *Agent) ExpiredTimerCount() int {
 // handleScheduleTimer schedules the wire correlation id at the wire deadline.
 // Runs on every role and while an election is live.
 //
-// A TimerEvent for this id that left a count means the timer fired.
-// handleScheduleTimer then ignores the request. A refused schedule marks
-// timerFailure once and drops the frame. After a refusal no timer remains for
-// the correlation id.
+// An expired count for this id means the timer fired. handleScheduleTimer then
+// ignores the request.
 func (a *Agent) handleScheduleTimer(fields codecs.ScheduleTimerFields) {
 	correlationID := fields.CorrelationID
 	if count := a.expiredTimerCountByCorrelationID[correlationID]; count > 0 {
@@ -53,15 +54,15 @@ func (a *Agent) handleScheduleTimer(fields codecs.ScheduleTimerFields) {
 	a.scheduleTimerOrMarkFailure(correlationID, fields.Deadline)
 }
 
-// scheduleTimerOrMarkFailure schedules correlationID at deadline. The schedule
-// replaces a live timer for the id. A refused schedule marks timerFailure
-// once.
+// scheduleTimerOrMarkFailure schedules correlationID at deadline. A refused
+// schedule marks timerFailure once, then ends the member.
 func (a *Agent) scheduleTimerOrMarkFailure(correlationID, deadline int64) {
 	if a.timers.schedule(correlationID, deadline) {
 		return
 	}
 	if a.timerFailure == nil {
-		a.timerFailure = errTimerCapacity
+		a.timerFailure = ErrTimerCapacity
+		a.failMember(a.timerFailure)
 	}
 }
 

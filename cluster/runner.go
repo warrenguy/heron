@@ -47,6 +47,7 @@ func (noArchiveInvoker) Poll() int { return 0 }
 // agentInvoker is the consensus half of one duty tick.
 type agentInvoker interface {
 	DoWork(nowNs int64) int
+	TerminationError() error
 }
 
 // RunnerDeps are the collaborators [NewRunner] needs.
@@ -90,12 +91,9 @@ type RunnerDeps struct {
 }
 
 // Runner drives one consensus member's duty cycle on the calling goroutine.
-// Tick order is transport client DoWork, then archive control Poll, then agent
-// DoWork.
 //
 // Build with [NewRunner]. Drive with [Runner.DoWork] for one tick, or with
-// [Runner.Run] until the context is done or the transport client enters
-// termination.
+// [Runner.Run] for the loop.
 //
 //	module, err := cluster.OpenConsensusModule(ctx, deps)
 //	if err != nil {
@@ -114,31 +112,25 @@ type RunnerDeps struct {
 //	}
 //	return runner.Run(ctx)
 //
-// Behaviour: [Runner.Run] does not return because of Close. A closed client
-// reports no termination. Run calls Idle(0) until the context is done.
+// Behaviour: [ConsensusModule.Close] does not stop [Runner.Run]. With a closed
+// transport client, Run calls Idle(0) until the context is done. Run returns
+// [consensus.TerminationError] after one tick when the member ended before
+// Close.
 //
-// Only a done context or [ErrTransportTerminating] stops the loop. Stop the
-// duty cycle before closing the module. Build a new Runner rather than reusing
-// one across a close.
+// Stop the duty cycle before closing the module. Do not reuse a Runner across a
+// close.
 //
-// Concurrency: invoker-only. One Runner per goroutine. Every Runner method must
-// run on that member's duty cycle goroutine. Other goroutines must not call
-// Runner methods or non-atomic agent accessors.
-// [ConsensusModule.CommitPosition] remains safe to read via the module from any
-// goroutine.
+// Concurrency: invoker-only. One Runner per goroutine. Other goroutines must not
+// call non-atomic agent accessors.
 //
 // Lifetime: Runner remains a usable Go value after [ConsensusModule.Close].
-// [ConsensusModule.Close] closes the transport client when the module owns it.
-// A client supplied via Config.Aeron stays open. [ConsensusModule.Close] always
-// closes the archive control client the Runner borrows. [ConsensusModule.Close]
-// clears agent bindings. DoWork after Close reports zero work on a closed client.
-// DoWork after Close polls nothing on a closed consensus subscription. DoWork
-// after Close reports zero archive work on a closed archive control client.
+// [Runner.DoWork] then reports zero work from each closed handle: the transport
+// client, the archive control client, and the consensus subscription.
 //
-// Ownership: Runner does not own its collaborators. Runner closes none of them.
+// Ownership: Runner does not own its collaborators.
 //
-// Do not copy. A copy shares the same collaborators and the same idle strategy.
-// The strategy contract forbids sharing.
+// Do not copy. A copy shares the idle strategy. Strategies are not safe to
+// share.
 type Runner struct {
 	client  transportInvoker
 	archive archiveInvoker
@@ -218,23 +210,21 @@ func (r *Runner) DoWork() int {
 	return r.client.DoWork() + r.archive.Poll() + r.agent.DoWork(r.clock())
 }
 
-// Run pumps [Runner.DoWork] and idles on each tick's work count until stop.
+// Run pumps [Runner.DoWork] and paces it with the idle strategy.
 //
 // Returns:
 //   - ctx.Err when ctx is done
-//   - [ErrTransportTerminating] when the transport client enters termination
+//   - [ErrTransportTerminating] when the transport client enters termination,
+//     even when the member terminates in the same tick
+//   - the agent's [consensus.TerminationError] when the member terminates
 //
-// Run checks ctx before the first tick. An already-done context runs none.
+// A caller that drives [Runner.DoWork] reads [consensus.Agent.TerminationError]
+// itself.
 //
-// Run installs no signal handler. A caller that wants one builds ctx with
-// signal.NotifyContext.
+// Run does not run a tick when ctx is already done.
 //
-// Run closes nothing when it returns. Run drains nothing when it returns.
-// The transport client's Close drains its conductor and its linger log buffers.
-// Close the module after Run returns.
-//
-// Run resets the idle strategy when it returns. A strategy that stopped after
-// Idle does not start the next loop still stopped.
+// Run resets the idle strategy when it returns. Run does not close or drain
+// anything. Close the module after Run returns.
 func (r *Runner) Run(ctx context.Context) error {
 	defer r.idle.Reset()
 
@@ -245,6 +235,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		work := r.DoWork()
 		if r.client.IsTerminating() {
 			return ErrTransportTerminating
+		}
+		if err := r.agent.TerminationError(); err != nil {
+			return err
 		}
 		r.idle.Idle(work)
 	}

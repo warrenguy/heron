@@ -734,11 +734,64 @@ func TestResolveAppendPosition_failsOnlyWhileRecordingActive(t *testing.T) {
 			if tc.want {
 				require.Error(t, a.AppendRankFailure())
 				require.ErrorIs(t, a.AppendRankFailure(), ErrAppendPositionUnavailable)
+				require.ErrorIs(t, a.TerminationError(), ErrAppendPositionUnavailable)
+				require.ErrorIs(t, a.TerminationError(), ErrTerminated)
+				require.Equal(t, ModuleStateClosed, a.ModuleState())
 			} else {
 				require.NoError(t, a.AppendRankFailure())
+				require.NoError(t, a.TerminationError())
+				require.Equal(t, ModuleStateActive, a.ModuleState())
 			}
 		})
 	}
+}
+
+func TestResolveAppendPosition_runCountsActiveTimeOnly(t *testing.T) {
+	const timeoutNs int64 = 100
+	src := &scriptedAppendSource{
+		results: []scriptedAppendResult{
+			{0, false}, // inactive
+			{0, false}, // inactive, past the bound
+			{0, false}, // active: opens the run
+			{0, false}, // active, under the bound
+			{0, false}, // stopped: clears the run
+			{0, false}, // restarted: opens a fresh run
+			{0, false}, // restarted, at the bound
+		},
+	}
+	control := &fakeLogRecordingControl{}
+	a := NewAgent(AgentConfig{
+		Role:                            RoleFollower,
+		AppendSource:                    src,
+		AppendPositionNotReadyTimeoutNs: timeoutNs,
+	})
+	a.SetLogRecordingID(77)
+	a.SetLogRecordingControl(control)
+
+	// Phase: inactive time does not open a run.
+	a.resolveAppendPosition(0)
+	a.resolveAppendPosition(timeoutNs)
+	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
+
+	// Phase: the first active read opens the run and does not mark.
+	control.active = true
+	a.resolveAppendPosition(timeoutNs + 1)
+	require.NoError(t, a.AppendRankFailure())
+	require.Equal(t, timeoutNs+1, a.appendNotReadySinceNs)
+	a.resolveAppendPosition(2 * timeoutNs)
+	require.NoError(t, a.AppendRankFailure())
+
+	// Phase: a stop clears the run.
+	control.active = false
+	a.resolveAppendPosition(2*timeoutNs + 1)
+	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
+
+	// Phase: a restart counts from its first read.
+	control.active = true
+	a.resolveAppendPosition(3 * timeoutNs)
+	require.NoError(t, a.AppendRankFailure())
+	a.resolveAppendPosition(4 * timeoutNs)
+	require.ErrorIs(t, a.AppendRankFailure(), ErrAppendPositionUnavailable)
 }
 
 // Asserts a marked append-rank failure freezes rank and publish even after the
@@ -1859,10 +1912,7 @@ func TestAgent_TruncateLogEntry_successWithoutAdapter(t *testing.T) {
 	require.Equal(t, recordingID, a.LocalLogRecordingID())
 }
 
-// TestAgent_PrepareForNewLeadership_clearsAppendRankFailure asserts prepare
-// always clears a marked append-rank failure and the not-ready run time so a
-// leadership transition does not freeze ranking.
-func TestAgent_PrepareForNewLeadership_clearsAppendRankFailure(t *testing.T) {
+func TestAgent_PrepareForNewLeadership_keepsAppendRankFailure(t *testing.T) {
 	t.Parallel()
 
 	// Seed marked state. Mark path lives in resolveAppendPosition tests.
@@ -1873,7 +1923,7 @@ func TestAgent_PrepareForNewLeadership_clearsAppendRankFailure(t *testing.T) {
 	_, prepared, err := a.PrepareForNewLeadership(1234, 1)
 	require.NoError(t, err)
 	require.True(t, prepared)
-	require.NoError(t, a.AppendRankFailure())
+	require.Same(t, ErrAppendPositionUnavailable, a.AppendRankFailure())
 	require.Equal(t, int64(nullValue), a.appendNotReadySinceNs)
 }
 
