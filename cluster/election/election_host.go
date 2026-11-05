@@ -57,7 +57,8 @@ type ElectionHost interface {
 	// AddLiveLogDestination adds the live log channel as a receive destination.
 	// No-op when the live feed is already attached. Idempotent.
 	//
-	// On failure LiveLogDestination stays empty. The next tick retries.
+	// On failure LiveLogDestination stays empty. The next tick retries. The
+	// catchup feed keeps running.
 	AddLiveLogDestination()
 
 	// EnsureCatchupLogDestination opens the follower catchup receive path for

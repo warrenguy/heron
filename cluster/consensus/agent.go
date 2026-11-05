@@ -1200,11 +1200,9 @@ func (a *Agent) CatchupReplayCount() int {
 	return len(a.catchupReplays)
 }
 
-// RemoveCatchupLogDestination removes the catchup receive destination and
-// restores the live destination when the live feed is absent.
-//
-// Behaviour: StopCatchup dispatch and [Agent.PrepareForNewLeadership] call
-// this. Idempotent when the catchup destination is already absent.
+// RemoveCatchupLogDestination forwards to
+// [CatchupControl.RemoveCatchupLogDestination]. Drops the error. Silent no-op
+// when no [CatchupControl] is wired.
 //
 // Concurrency: invoker-only.
 func (a *Agent) RemoveCatchupLogDestination() {
@@ -1231,11 +1229,8 @@ func (a *Agent) LiveLogDestinationSet(uri string) {
 	a.liveLogDestination = uri
 }
 
-// AddLiveLogDestination adds the live log channel as a receive destination.
-// No-op when the live feed is already attached. Idempotent.
-//
-// On failure LiveLogDestination stays empty. The next tick retries.
-// The catchup feed keeps running.
+// AddLiveLogDestination forwards to [CatchupControl.AddLiveLogDestination].
+// Drops the error. Silent no-op when no [CatchupControl] is wired.
 //
 // Concurrency: invoker-only.
 func (a *Agent) AddLiveLogDestination() {
@@ -1320,7 +1315,8 @@ type CatchupControl interface {
 	// AddLiveLogDestination adds the live log channel as a receive destination.
 	// No-op when the live feed is already attached. Idempotent.
 	//
-	// On failure LiveLogDestination stays empty. The next tick retries.
+	// On failure LiveLogDestination stays empty. The next tick retries. The
+	// catchup feed keeps running.
 	AddLiveLogDestination() error
 
 	// ReseedLogSubscription replaces the log subscription with a fresh one that

@@ -70,7 +70,7 @@ type SnapshotStartRequest interface {
 //
 // Concurrency: invoker-only.
 type SnapshotRecordingControl interface {
-	// NewStartRecording builds one LOCAL start with autoStop true.
+	// NewStartRecording builds one LOCAL start on channel with autoStop true.
 	NewStartRecording(streamID int32, channel string) SnapshotStartRequest
 
 	// ControlTimeoutsNs returns the archive offer retry and response
@@ -82,9 +82,12 @@ type SnapshotRecordingControl interface {
 	WatchStop(recordingID int64)
 
 	// StopPosition returns the STOP position of the watched recording.
+	//
+	// Returns 0, false when no watch is on or no STOP arrived.
 	StopPosition() (stopPosition int64, stopped bool)
 
-	// ClearStop ends the watch. It is idempotent.
+	// ClearStop ends the watch. Later signals do not reach the ended watch.
+	// ClearStop is idempotent.
 	ClearStop()
 }
 
