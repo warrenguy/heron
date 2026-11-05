@@ -632,3 +632,400 @@ func newTimeoutElection(
 	}
 	return newElectionFixture(t, append(base, opts...)...)
 }
+
+// installLeaderForTest installs a NewLeadershipTerm from member 1, then sets
+// state. Deadlines count from the install.
+func installLeaderForTest(
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	state election.ElectionState,
+) *election.Election {
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateFollowerBallot)
+	e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID))
+	election.SetStateForTest(e, state)
+	return e
+}
+
+// driveFollowerLogJoinToReady adopts a successor term via NewLeadershipTerm,
+// replays, and joins the follower log, asserting the FollowerReady transition
+// and returning the adopted term. Callers set deps.RecordingLog before the
+// drive; Host and Handler are installed here.
+func driveFollowerLogJoinToReady(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+) int64 {
+	t.Helper()
+
+	deps.Host = &recordingElectionHost{
+		clock:                   clock,
+		localLogRecordingID:     testRecordingID,
+		followerLogJoinOK:       true,
+		followerLogJoinPosition: cfg.LogPosition,
+	}
+	deps.Handler = &recordingAgentHandler{joinFollowerReturn: true}
+	e := election.NewElection(cfg, deps)
+
+	adoptedTerm := cfg.LeadershipTermID + 2
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	e.OnNewLeadershipTerm(installNewLeadershipTermFields(cfg, 1, adoptedTerm))
+	require.Equal(t, election.ElectionStateFollowerReplay, e.State())
+	require.Equal(t, cfg.LeadershipTermID, election.LogLeadershipTermIDForTest(e))
+
+	election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateFollowerReady, e.State())
+	require.Equal(t, adoptedTerm, election.LogLeadershipTermIDForTest(e))
+	return adoptedTerm
+}
+
+// forceFollowerCatchup installs a NewLeadershipTerm that records the notified
+// commit and catchup join bounds, then injects FOLLOWER_CATCHUP.
+//
+// joinAhead is added to cfg.AppendPosition for fields.LogPosition. Caller must
+// wire deps.Host before the call.
+//
+// Returns: the election and the recorded join position.
+func forceFollowerCatchup(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	commitPosition, joinAhead int64,
+) (*election.Election, int64) {
+	t.Helper()
+
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	joinPos := cfg.AppendPosition + joinAhead
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.CommitPosition = commitPosition
+	fields.LogPosition = joinPos
+	e.OnNewLeadershipTerm(fields)
+	election.SetStateForTest(e, election.ElectionStateFollowerCatchup)
+	return e, joinPos
+}
+
+// driveToFollowerCatchupInit installs a leader term whose live log position is
+// ahead of this member, routing the follower through the no-replay branch into
+// FOLLOWER_CATCHUP_INIT. Returns the catchup join position.
+//
+// Sets catchupEndpoint on this member and clears recorded publisher traffic, so
+// the caller sees catchup sends only.
+func driveToFollowerCatchupInit(fx *electionFixture, catchupEndpoint string) int64 {
+	fx.t.Helper()
+
+	e := fx.election
+	fx.doWork()
+	require.Equal(fx.t, election.ElectionStateCanvass, e.State())
+
+	catchupJoinPosition := fx.cfg.AppendPosition + 100
+	fields := installNewLeadershipTermFields(fx.cfg, 1, fx.cfg.LeadershipTermID)
+	fields.LogPosition = catchupJoinPosition
+	e.OnNewLeadershipTerm(fields)
+	require.Equal(fx.t, election.ElectionStateFollowerReplay, e.State())
+
+	fx.doWork()
+	require.Equal(fx.t, election.ElectionStateFollowerCatchupInit, e.State())
+
+	thisMember := fx.member(fx.cfg.MemberID)
+	require.NotNil(fx.t, thisMember)
+	thisMember.CatchupEndpoint = catchupEndpoint
+
+	fx.publisher.Reset()
+	return catchupJoinPosition
+}
+
+// followerLogReplicationFields builds an installing NewLeadershipTerm whose
+// successor term base sits past this node's append position.
+func followerLogReplicationFields(
+	cfg election.ElectionConfig,
+	nextTermBase int64,
+	nextLogPosition int64,
+) codecs.NewLeadershipTermFields {
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.TermBaseLogPosition = cfg.AppendPosition + 100
+	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+	fields.NextTermBaseLogPosition = nextTermBase
+	fields.NextLogPosition = nextLogPosition
+	return fields
+}
+
+// driveToFollowerLogReplication installs a successor term whose base position
+// this node has not reached, routing the follower into
+// FOLLOWER_LOG_REPLICATION.
+func driveToFollowerLogReplication(
+	t *testing.T,
+	e *election.Election,
+	cfg election.ElectionConfig,
+	nextTermBase, nextLogPosition int64,
+) {
+	t.Helper()
+
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+	e.OnNewLeadershipTerm(followerLogReplicationFields(cfg, nextTermBase, nextLogPosition))
+	require.Equal(t, election.ElectionStateFollowerLogReplication, e.State())
+}
+
+// hostWithLogReplication wires a recordingElectionHost whose replication
+// factory returns the given helper.
+func hostWithLogReplication(
+	clock *FakeClock,
+	lr election.LogReplication,
+) *recordingElectionHost {
+	return &recordingElectionHost{
+		clock: clock,
+		newLogReplication: func(_, _ string, _, _, _ int64) election.LogReplication {
+			return lr
+		},
+	}
+}
+
+// replicationStopAhead puts the leader's next term base this far past the
+// append position, so the install routes into FOLLOWER_LOG_REPLICATION.
+const replicationStopAhead int64 = 50
+
+// installNewLeadershipTermFields builds a NewLeadershipTerm anchored at cfg's
+// baseline log term and position with null successor-term sentinels, matching
+// what a leader with no recording log publishes.
+func installNewLeadershipTermFields(
+	cfg election.ElectionConfig,
+	leaderID int32,
+	term int64,
+) codecs.NewLeadershipTermFields {
+	return codecs.NewLeadershipTermFields{
+		LogLeadershipTermID:     cfg.LeadershipTermID,
+		NextLeadershipTermID:    election.NullValue,
+		NextTermBaseLogPosition: election.NullPosition,
+		NextLogPosition:         election.NullPosition,
+		LeadershipTermID:        term,
+		TermBaseLogPosition:     cfg.LogPosition,
+		LogPosition:             cfg.LogPosition,
+		LeaderMemberID:          leaderID,
+		LogSessionID:            fixtureLogSessionID,
+	}
+}
+
+// countingLogReplicationForTest is a duty-cycle double for the
+// FOLLOWER_LOG_REPLICATION and Init stop tests. Position changes only when a
+// test sets it.
+//
+// Behaviour:
+//   - DoWork returns work, or err once. The error closes the double unless
+//     holdOpen is true. A production helper also closes itself on failure.
+//   - Close counts each call and closes the double unless holdOpen is true.
+//   - OnSignal counts each call.
+type countingLogReplicationForTest struct {
+	doWorkCalls int
+	signalCalls int
+	work        int
+	err         error
+	done        bool
+	recordingID int64
+	position    int64
+	closeCalls  int
+	closed      bool
+	holdOpen    bool
+}
+
+func (c *countingLogReplicationForTest) DoWork(int64) (int, error) {
+	c.doWorkCalls++
+	if err := c.err; err != nil {
+		c.err = nil
+		c.closed = !c.holdOpen
+		return 0, err
+	}
+	return c.work, nil
+}
+
+func (c *countingLogReplicationForTest) RecordingID() int64 { return c.recordingID }
+
+func (c *countingLogReplicationForTest) Position() int64 { return c.position }
+
+func (c *countingLogReplicationForTest) IsDone() bool { return c.done }
+
+func (c *countingLogReplicationForTest) OnSignal(int64, int64, int64, election.RecordingSignal) {
+	c.signalCalls++
+}
+
+func (c *countingLogReplicationForTest) Close() {
+	c.closeCalls++
+	c.closed = !c.holdOpen
+}
+
+func (c *countingLogReplicationForTest) IsClosed() bool { return c.closed }
+
+// truncateInstallErrs holds the inject errors for one truncate install round.
+type truncateInstallErrs struct {
+	truncate error
+	commit   error
+	force    error
+}
+
+// truncateInstallResult holds the election, spies, and pre-install tracked
+// positions after one OnNewLeadershipTerm that took the truncate path.
+type truncateInstallResult struct {
+	e            *election.Election
+	host         *recordingElectionHost
+	spy          *recordingLogCoherencySpy
+	termID       int64
+	appendBefore int64
+	termBefore   int64
+	fields       codecs.NewLeadershipTermFields
+}
+
+const truncateInstallBase int64 = 128
+
+// runTruncateInstall calls OnNewLeadershipTerm with next-term base below the
+// append position so the install takes the truncate path.
+//
+// hostCommit seeds Host.CommitPosition. HandleError syncs logPosition from that
+// value. On truncate success, logPosition ends capped at the truncate end when
+// host commit is higher.
+func runTruncateInstall(
+	t *testing.T,
+	errs truncateInstallErrs,
+	hostCommit int64,
+) truncateInstallResult {
+	t.Helper()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	return runTruncateInstallOver(t, cfg, deps, clock, errs, hostCommit)
+}
+
+// runTruncateInstallOver runs runTruncateInstall over cfg and deps.
+func runTruncateInstallOver(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+	errs truncateInstallErrs,
+	hostCommit int64,
+) truncateInstallResult {
+	t.Helper()
+
+	cfg.LogPosition = cfg.AppendPosition
+	host := &recordingElectionHost{
+		clock:               clock,
+		localLogRecordingID: 42,
+		truncateErr:         errs.truncate,
+		commitPosition:      hostCommit,
+	}
+	deps.Host = host
+	spy := &recordingLogCoherencySpy{commitErr: errs.commit, forceErr: errs.force}
+	deps.RecordingLog = spy
+
+	// Init reruns prepare on a retry drive; a zero return would clobber the
+	// append position and skip the truncate branch on the second install.
+	deps.Handler = &recordingAgentHandler{appendPositionReturn: election.NullPosition}
+	e := election.NewElection(cfg, deps)
+	election.SetStateForTest(e, election.ElectionStateCanvass)
+
+	result := truncateInstallResult{
+		e:            e,
+		host:         host,
+		spy:          spy,
+		termID:       cfg.LeadershipTermID,
+		appendBefore: e.AppendPosition(),
+		termBefore:   election.LogLeadershipTermIDForTest(e),
+	}
+	require.Less(t, truncateInstallBase, result.appendBefore)
+
+	fields := installNewLeadershipTermFields(cfg, 1, cfg.LeadershipTermID)
+	fields.NextLeadershipTermID = cfg.LeadershipTermID + 1
+	fields.NextTermBaseLogPosition = truncateInstallBase
+	result.fields = fields
+	e.OnNewLeadershipTerm(fields)
+	return result
+}
+
+// replicationFixture is one election in FOLLOWER_LOG_REPLICATION. The first
+// Init pass has run, so a later Init pass stops a helper.
+type replicationFixture struct {
+	cfg          election.ElectionConfig
+	clock        *FakeClock
+	host         *recordingElectionHost
+	handler      *recordingAgentHandler
+	spy          *recordingLogCoherencySpy
+	publisher    election.Publisher
+	e            *election.Election
+	stopPosition int64
+}
+
+// newReplicationFixture builds a replicationFixture over an SbePublisher.
+func newReplicationFixture(t *testing.T, lr election.LogReplication) *replicationFixture {
+	t.Helper()
+	return newReplicationFixtureWith(t, lr, &election.SbePublisher{})
+}
+
+// newReplicationFixtureWith builds a replicationFixture over publisher.
+func newReplicationFixtureWith(
+	t *testing.T,
+	lr election.LogReplication,
+	publisher election.Publisher,
+) *replicationFixture {
+	t.Helper()
+
+	cfg, deps, clock, _, _ := testElectionDeps(t)
+	deps.Publisher = publisher
+	return newReplicationFixtureOver(t, cfg, deps, clock, lr)
+}
+
+// newReplicationFixtureOver builds a replicationFixture over cfg and deps.
+// Prepare returns the append position, so the first Init pass keeps it.
+func newReplicationFixtureOver(
+	t *testing.T,
+	cfg election.ElectionConfig,
+	deps election.ElectionDeps,
+	clock *FakeClock,
+	lr election.LogReplication,
+) *replicationFixture {
+	t.Helper()
+
+	host := hostWithLogReplication(clock, lr)
+	host.localLogRecordingID = 42
+	handler := &recordingAgentHandler{appendPositionReturn: cfg.AppendPosition}
+	spy := &recordingLogCoherencySpy{}
+	deps.Host = host
+	deps.Handler = handler
+	deps.RecordingLog = spy
+	e := election.NewElection(cfg, deps)
+	require.Equal(t, 1, e.DoWork(clock.nowNs))
+	require.Equal(t, election.ElectionStateCanvass, e.State())
+
+	stopPosition := cfg.AppendPosition + replicationStopAhead
+	driveToFollowerLogReplication(t, e, cfg, stopPosition, election.NullPosition)
+	return &replicationFixture{
+		cfg:          cfg,
+		clock:        clock,
+		host:         host,
+		handler:      handler,
+		spy:          spy,
+		publisher:    deps.Publisher,
+		e:            e,
+		stopPosition: stopPosition,
+	}
+}
+
+// appendPositions returns the AppendPosition sends to member 1, the leader.
+func (fx *replicationFixture) appendPositions(t *testing.T) []int64 {
+	t.Helper()
+
+	pub, ok := fx.publisher.(*election.SbePublisher)
+	require.True(t, ok)
+	var positions []int64
+	for _, msg := range pub.Sent {
+		if msg.TemplateID != clusterwire.AppendPositionSbeTemplateID {
+			continue
+		}
+		fields, ok := msg.Fields.(codecs.AppendPositionFields)
+		require.True(t, ok)
+		require.Equal(t, int32(1), msg.Dst.MemberID)
+		require.Equal(t, fx.e.LeadershipTermID(), fields.LeadershipTermID)
+		require.Equal(t, fx.cfg.MemberID, fields.FollowerMemberID)
+		require.Equal(t, consensus.AppendPositionFlagNone, fields.Flags)
+		positions = append(positions, fields.LogPosition)
+	}
+	return positions
+}
