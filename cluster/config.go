@@ -1,22 +1,3 @@
-// Package cluster holds the consensus module member process assembly:
-// configuration, validation, cluster channel topology derived from a cluster
-// members string, per-peer consensus publication lifecycle, the inbound
-// consensus subscription, the client ingress subscription, and the cluster log
-// publication and subscription bound into the consensus agent before the first
-// duty cycle.
-//
-// This package is not the consensus agent library. The agent, log publisher, and
-// log adapter live in cluster/consensus; the election state machine and member
-// parsing live in cluster/election. Package cluster is the only package that
-// imports both.
-//
-// It also opens the member recovery state, the recording log and the node state
-// file, and seeds the election configuration from the recovery plan.
-//
-// Concurrency: Config is a value; Normalize returns a copy and mutates nothing.
-// A Topology's own fields are fixed after NewTopology, but the cluster members it
-// exposes are shared mutable state written by the election state machine; touch
-// them only from the invoker goroutine. See [Topology].
 package cluster
 
 import (

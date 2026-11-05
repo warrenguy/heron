@@ -1,13 +1,3 @@
-// Package aeron implements the Aeron transport client.
-//
-// Connect maps the media driver CnC file and returns a Client. The Client adds
-// publications and subscriptions through an external C or Java media driver.
-//
-// The caller drives conductor work with Client.DoWork. The package does not
-// start a background conductor goroutine.
-//
-// A Client starts one goroutine when it maps its first log buffer. The
-// goroutine unmaps released log buffers. Client.Close stops it.
 package aeron
 
 import (
@@ -32,6 +22,9 @@ const (
 
 // Client is the Aeron media driver client. The caller drives conductor work
 // with DoWork. Client does not start a conductor goroutine.
+//
+// A Client starts one goroutine when it maps its first log buffer. The
+// goroutine unmaps released log buffers. Close stops it.
 //
 // Concurrency: clientLock admits one call at a time. These calls take it:
 //   - DoWork, IsTerminating, Close and CancelPending

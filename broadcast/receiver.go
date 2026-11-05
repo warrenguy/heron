@@ -1,9 +1,3 @@
-// Package broadcast implements Agrona broadcast buffer wire layout.
-//
-// Buffers match the Agrona/C driver broadcast descriptor layout for driver and
-// CnC interop. Trailer and record layout are fixed; not a generic pub/sub queue.
-//
-// Transmit is single-writer; ReceiveNext is single-consumer (not concurrent).
 package broadcast
 
 import (
@@ -13,6 +7,10 @@ import (
 	"github.com/warrenguy/heron/record"
 )
 
+// BroadcastReceiver receives records from a broadcast buffer.
+//
+// Concurrency: each BroadcastReceiver has one consumer. Do not call
+// ReceiveNext concurrently.
 type BroadcastReceiver struct {
 	buffer           atomicbuffer.AtomicBuffer
 	capacity         int
@@ -30,8 +28,6 @@ type BroadcastReceiver struct {
 }
 
 // NewBroadcastReceiver constructs a receiver over buffer.
-//
-// ReceiveNext is not safe for concurrent use.
 func NewBroadcastReceiver(buffer atomicbuffer.AtomicBuffer) (*BroadcastReceiver, error) {
 	capacity, err := CheckCapacity(buffer.Capacity())
 	if err != nil {

@@ -93,15 +93,19 @@ func stopSharedDriver(md *MediaDriver) {
 	md.Stop()
 }
 
-// RunTestMainWithSharedDriver starts the shared driver before m.Run and stops it after.
-// Call from each package's TestMain. Returns exit code for os.Exit.
+// RunTestMainWithSharedDriver starts the shared driver before m.Run and stops it
+// after. Call it from each package's TestMain. Pass the result to os.Exit.
 //
-// HERON_SHARED_MEDIA_DRIVER and HERON_SHARED_MEDIA_DRIVER_KEEP are documented in the
-// package comment on media_driver.go.
+// HERON_SHARED_MEDIA_DRIVER_KEEP=1 leaves the driver running after m.Run.
+// HERON_SHARED_MEDIA_DRIVER=0 or a missing aeronmd runs m.Run without a shared
+// driver. A missing aeronmd logs to stderr first. The package comment documents
+// both environment variables.
 //
-// When aeronmd is not found, logs to stderr and returns m.Run() without starting a shared
-// driver. All other start failures (CNC not ready, exec error, env validation, bad
-// AERONMD_PATH) log to stderr and return 1 without calling m.Run().
+// Returns:
+//   - the m.Run() exit code.
+//   - 1 without calling m.Run() when the driver fails to start for another
+//     reason: CnC not ready, exec error, env validation, or bad AERONMD_PATH.
+//     Logs to stderr first.
 func RunTestMainWithSharedDriver(m *testing.M) int {
 	return runTestMainWithSharedDriver(m)
 }
@@ -177,7 +181,11 @@ func restoreTestMainSharedDriverGlobals() {
 }
 
 // Shared returns the package-scoped long-lived driver when TestMain started it.
-// When HERON_SHARED_MEDIA_DRIVER=0, falls back to Start(t) for per-test ephemeral driver.
+// Shared falls back to Start(t) when HERON_SHARED_MEDIA_DRIVER=0 or when
+// TestMain did not start a shared driver.
+//
+// Concurrency: parallel-safe when tests use distinct stream IDs. Tests must not
+// kill the shared driver or change its state permanently.
 func Shared(t testing.TB) *MediaDriver {
 	t.Helper()
 	if sharedMediaDriverDisabled() || !sharedTestMainSeen.Load() {
@@ -196,15 +204,22 @@ func Shared(t testing.TB) *MediaDriver {
 	return md
 }
 
-// SharedParallel calls t.Parallel then returns the package-scoped shared driver.
-// Do not call t.Parallel again in the same test or subtest; Go panics on a second call.
+// SharedParallel calls t.Parallel, then returns Shared(t). Use it by default for
+// parallel IPC tests on the shared driver.
+//
+// Do not call t.Parallel again in the same test or subtest. Go panics on a
+// second call.
 func SharedParallel(t *testing.T) *MediaDriver {
 	t.Helper()
 	t.Parallel()
 	return Shared(t)
 }
 
-// SharedAttachedCnc returns Shared(t) with CNC mmap attach and ToDriver/ToClients drain preflight.
+// SharedAttachedCnc returns Shared(t) and a CnC attach. It waits until the
+// driver drains the ToDriver ring, then drains the ToClients ring.
+//
+// Concurrency: parallel-safe when tests use distinct stream IDs. Tests must not
+// kill the shared driver or change its state permanently.
 func SharedAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
 	t.Helper()
 	md := Shared(t)

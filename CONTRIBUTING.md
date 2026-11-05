@@ -30,7 +30,8 @@ Importable packages under `github.com/warrenguy/heron/...`.
 
 Low-level layout packages (`atomicbuffer`, `broadcast`, `record`, `ringbuffer`, `wire`)
 follow Agrona/C driver memory layouts. `ringbuffer` and `broadcast` are layout-coupled
-ports, not generic queues; see package godoc for layout and concurrency constraints.
+ports, not generic queues; see package godoc for layout and the `ManyToOneRingBuffer`,
+`BroadcastTransmitter` and `BroadcastReceiver` godoc for concurrency constraints.
 
 ## Examples
 

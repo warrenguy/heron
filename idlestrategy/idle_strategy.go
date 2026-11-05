@@ -1,14 +1,13 @@
-// Package idlestrategy provides Agrona-compatible agent idle pacing.
-//
-// Implementations are not thread-safe: use one strategy instance per agent
-// goroutine. Do not call Idle or Reset concurrently on the same instance.
-//
-// Busy-spin pacing uses runtime.procyield via //go:linkname; re-verify on Go upgrades.
 package idlestrategy
 
-// IdleStrategy paces duty cycles from agent work counts.
-// Backoff resets when workCount > 0; other implementations no-op when workCount > 0.
-// Idle(0) matches Java idleStrategy.idle() with no work count.
+// IdleStrategy paces duty cycles from agent work counts. Idle(0) matches Java
+// idleStrategy.idle() with no work count.
+//
+// Backoff resets when workCount > 0. The other implementations return without
+// idling when workCount > 0.
+//
+// Concurrency: implementations are not thread-safe. Use one strategy instance
+// per agent goroutine.
 type IdleStrategy interface {
 	Idle(workCount int)
 	Reset()

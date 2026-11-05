@@ -1,4 +1,3 @@
-// Package client implements the Aeron Cluster Java client contract.
 package client
 
 import (

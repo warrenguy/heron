@@ -1,8 +1,5 @@
 //go:build replicationsim && testhooks
 
-// Package replication holds the replication safety scenario catalog and soak runner.
-//
-// Build with -tags=replicationsim,testhooks. Not part of default unit packages.
 package replication
 
 import (
