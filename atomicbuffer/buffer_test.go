@@ -241,9 +241,10 @@ func TestAtomicBuffer_PutBytesSetBytes(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, 16)
 	buf := atomicBuffer.Bytes()
 	atomicBuffer.PutBytes(0, testPayload4)
+	atomicBuffer.SetBytes(1, 2, 0)
 	atomicBuffer.SetBytes(4, 4, 0xff)
 	atomicBuffer.PutBytesFrom(8, atomicbuffer.Wrap(testPayload2), 0, 2)
-	want := []byte{1, 2, 3, 4, 0xff, 0xff, 0xff, 0xff, 9, 10}
+	want := []byte{1, 0, 0, 4, 0xff, 0xff, 0xff, 0xff, 9, 10}
 	require.Equal(t, want, buf[:len(want)])
 }
 

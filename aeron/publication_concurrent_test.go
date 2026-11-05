@@ -16,7 +16,6 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 const (
@@ -79,14 +78,26 @@ func runConcurrentPublicationStress(
 
 var testPublicationPositionShift = logbuffer.PositionBitsToShift(aeron.TestPublicationTermLength)
 
+// spinRotatePublicationLog races the writers to rotate a term at its end.
 func spinRotatePublicationLog(pub *aeron.Publication, stop <-chan struct{}) {
+	const termLength = aeron.TestPublicationTermLength
+	meta := pub.MetaDataBufferForTest()
 	for {
 		select {
 		case <-stop:
 			return
 		default:
-			aeron.RotatePublicationLogForTest(pub, 0, aeron.TestPublicationInitialTermID)
 		}
+
+		termIndex := logbuffer.IndexByTermCount(logbuffer.ActiveTermCount(meta))
+		rawTail := meta.GetInt64Volatile(logbuffer.OffsetTermTailCounter(termIndex))
+		if logbuffer.TermOffset(rawTail, termLength) != termLength {
+			runtime.Gosched()
+			continue
+		}
+		termID := logbuffer.TermID(rawTail)
+		termCount := logbuffer.ComputeTermCount(termID, aeron.TestPublicationInitialTermID)
+		aeron.RotatePublicationLogForTest(pub, termCount, termID)
 	}
 }
 
@@ -129,7 +140,6 @@ func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) 
 	const termLength = aeron.TestPublicationTermLength
 	pub := consumed.pub
 	shift := testPublicationPositionShift
-	meta := pub.MetaDataBufferForTest()
 	position := consumed.position.Load()
 	for {
 		select {
@@ -138,22 +148,14 @@ func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) 
 		default:
 		}
 
-		termCount := int32(position >> shift)
-		termIndex := logbuffer.IndexByTermCount(termCount)
-		termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
-		termBuf := aeron.PublicationTermBufferForTest(pub, termIndex)
-		frameLength := logbuffer.FrameLengthVolatile(termBuf, termOffset)
-		switch {
-		case frameLength > 0:
-			position += int64(logbuffer.AlignFrameLength(int(frameLength)))
-		case isAbandonedTermEnd(meta, termCount, termOffset):
-			position = int64(termCount+1) << shift
-		default:
-			// A writer holds this frame open. Yield so the writer can commit it
-			// when GOMAXPROCS is 1.
+		frameLength := consumed.frameLengthAt(position)
+		if frameLength <= 0 {
+			// Yield so a writer can run when GOMAXPROCS is 1.
 			runtime.Gosched()
 			continue
 		}
+		termCount := int32(position >> shift)
+		position += int64(logbuffer.AlignFrameLength(int(frameLength)))
 
 		if logbuffer.ComputeTermOffsetFromPosition(position, shift) == 0 {
 			nextTermCount := termCount + 2
@@ -173,25 +175,26 @@ func (consumed consumedPublication) spin(stop <-chan struct{}, errs chan error) 
 	}
 }
 
-// isAbandonedTermEnd reports a term that a racing rotation closed before any
-// writer reached its end. A frame never fills the rest of that term. The tail
-// also equals the consumer position when the consumer catches up with the
-// active term. The check requires a count past this term, so the consumer does
-// not skip the active term.
-func isAbandonedTermEnd(meta atomicbuffer.AtomicBuffer, termCount int32, termOffset int) bool {
-	if logbuffer.ActiveTermCount(meta) <= termCount {
-		return false
+func (consumed consumedPublication) frameLengthAt(position int64) int32 {
+	shift := testPublicationPositionShift
+	termIndex := logbuffer.IndexByTermCount(int32(position >> shift))
+	termOffset := int(logbuffer.ComputeTermOffsetFromPosition(position, shift))
+	termBuf := aeron.PublicationTermBufferForTest(consumed.pub, termIndex)
+	return logbuffer.FrameLengthVolatile(termBuf, termOffset)
+}
+
+// requireFramesToTail asserts a frame at each position from the consumer to
+// the publication tail. Call it after the writers stop.
+func (consumed consumedPublication) requireFramesToTail(tb testing.TB) {
+	tb.Helper()
+
+	tail := consumed.pub.Position()
+	position := consumed.position.Load()
+	for position < tail {
+		frameLength := consumed.frameLengthAt(position)
+		require.Positive(tb, frameLength, "gap at position %d below tail %d", position, tail)
+		position += int64(logbuffer.AlignFrameLength(int(frameLength)))
 	}
-	rawTail, err := logbuffer.GetRawTail(meta, logbuffer.IndexByTermCount(termCount))
-	if err != nil {
-		return false
-	}
-	tailTermCount := logbuffer.ComputeTermCount(
-		logbuffer.TermID(rawTail),
-		aeron.TestPublicationInitialTermID,
-	)
-	tailOffset := int(logbuffer.TermOffset(rawTail, aeron.TestPublicationTermLength))
-	return tailTermCount == termCount && tailOffset == termOffset
 }
 
 func fragmentedStressPayload(pub *aeron.Publication) []byte {
@@ -253,6 +256,10 @@ func spinTryClaimCommit(
 				errs <- err
 				return
 			}
+			if position == aeron.BackPressured {
+				runtime.Gosched()
+				continue
+			}
 			if position == aeron.AdminAction {
 				continue
 			}
@@ -291,7 +298,8 @@ func requireFragmentedConcurrentOfferClean(tb testing.TB) {
 }
 
 func TestPublication_Offer_concurrentWithRotation(t *testing.T) {
-	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(256), int64(1)<<62)
+	consumed := newConsumedTestPublication(t, publicationLogConfigNearTermEnd(256))
+	pub := consumed.pub
 
 	var successCount atomic.Int64
 	errs := make(chan error, 2)
@@ -309,9 +317,13 @@ func TestPublication_Offer_concurrentWithRotation(t *testing.T) {
 		func(stop <-chan struct{}) {
 			spinRotatePublicationLog(pub, stop)
 		},
+		func(stop <-chan struct{}) {
+			consumed.spin(stop, errs)
+		},
 	)
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), 1)
+	consumed.requireFramesToTail(t)
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
 }
 
@@ -340,6 +352,7 @@ func TestPublication_Offer_concurrentFragmented(t *testing.T) {
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
 	requireFragmentedConcurrentOfferClean(t)
+	consumed.requireFramesToTail(t)
 	requireCommittedFragmentedPayloads(t, pub, payload)
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
 }
@@ -385,6 +398,7 @@ func TestPublication_OfferVector_concurrentFragmented(t *testing.T) {
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
 	requireFragmentedConcurrentOfferClean(t)
+	consumed.requireFramesToTail(t)
 	requireCommittedFragmentedPayloads(t, pub, payload)
 	requireCommittedReservedValues(t, pub)
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
@@ -442,12 +456,14 @@ func TestPublication_Offer_concurrentFragmentedWithRotation(t *testing.T) {
 
 	requireConcurrentStressSuccessCount(t, successCount.Load(), concurrentPublicationMinSuccessCount)
 	requireFragmentedConcurrentOfferClean(t)
+	consumed.requireFramesToTail(t)
 	requireCommittedFragmentedPayloads(t, pub, payload)
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
 }
 
 func TestPublication_TryClaim_concurrentWithRotation(t *testing.T) {
-	pub := aeron.NewTestPublication(t, publicationLogConfigNearTermEnd(256), int64(1)<<62)
+	consumed := newConsumedTestPublication(t, publicationLogConfigNearTermEnd(256))
+	pub := consumed.pub
 
 	var commitCount atomic.Int64
 	errs := make(chan error, 2)
@@ -460,8 +476,12 @@ func TestPublication_TryClaim_concurrentWithRotation(t *testing.T) {
 		func(stop <-chan struct{}) {
 			spinRotatePublicationLog(pub, stop)
 		},
+		func(stop <-chan struct{}) {
+			consumed.spin(stop, errs)
+		},
 	)
 
 	requireConcurrentStressSuccessCount(t, commitCount.Load(), 1)
+	consumed.requireFramesToTail(t)
 	aeron.VerifyPublicationLogIntegrityForTest(t, pub)
 }

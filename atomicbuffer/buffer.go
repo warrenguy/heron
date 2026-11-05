@@ -214,7 +214,11 @@ func (b AtomicBuffer) SetBytes(offset, length int, value byte) {
 	boundsCheck(b.buf, offset, length)
 	seg := b.buf[offset : offset+length]
 	if value == 0 {
-		clear(seg)
+		// The race detector checks this loop but not clear. Outside -race the
+		// compiler lowers the loop to memclr.
+		for i := range seg {
+			seg[i] = 0
+		}
 		return
 	}
 	for i := range seg {
