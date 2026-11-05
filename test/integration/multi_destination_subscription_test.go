@@ -48,7 +48,7 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close multi-destination subscription", sub.Close)
 
-	require.NoError(t, sub.AddDestination(destA))
+	harness.RequireNoUDPBindError(t, sub.AddDestination(destA), ports[0])
 
 	pubAChannel := exclusiveUDPChannel(
 		endpointA,
@@ -81,7 +81,7 @@ func TestMultiDestinationSubscriptionMerge(t *testing.T) {
 	termID := logbuffer.ComputeTermIDFromPosition(position, bitsToShift, initialTermID)
 	termOffset := logbuffer.ComputeTermOffsetFromPosition(position, bitsToShift)
 
-	require.NoError(t, sub.AddDestination(destB))
+	harness.RequireNoUDPBindError(t, sub.AddDestination(destB), ports[1])
 
 	pubBChannel := exclusiveUDPChannel(
 		endpointB,

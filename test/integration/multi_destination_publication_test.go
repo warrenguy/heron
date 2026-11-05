@@ -149,7 +149,7 @@ func newSendDestinationEndpoints(
 	for index, port := range harness.FreeUDPPorts(t, count) {
 		channel := "aeron:udp?endpoint=" + harness.LoopbackUDPEndpoint(port)
 		sub, err := client.AddSubscription(streamID, channel)
-		require.NoError(t, err)
+		harness.RequireNoUDPBindError(t, err, port)
 		harness.CleanupClose(t, "close destination subscription", sub.Close)
 		endpoints[index] = sendDestinationEndpoint{channel: channel, sub: sub}
 	}
