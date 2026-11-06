@@ -8,6 +8,8 @@ run:
     - bench
     - stress
     - example
+    - electionsim
+    - replicationsim
 
 formatters:
   enable:
