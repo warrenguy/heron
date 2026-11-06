@@ -5,6 +5,8 @@ import (
 	"math"
 	"os"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/mmap"
 )
@@ -48,9 +50,13 @@ func MapLogBufferFromBytes(data []byte) (*MappedLogBuffer, error) {
 }
 
 // MapLogFile maps a driver-created log file.
+//
+// MapLogFile refuses a symlink at the final path component. MapLogFile follows
+// symlinks in parent directories.
 func MapLogFile(path string) (*MappedLogBuffer, error) {
-	// The driver supplies the log file name over the CnC.
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	// The driver supplies the log file name over the CnC. O_NOFOLLOW refuses a
+	// symlink created after a caller resolves the path.
+	file, err := os.OpenFile(path, os.O_RDWR|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("logbuffer: open %s: %w", path, err)
 	}
