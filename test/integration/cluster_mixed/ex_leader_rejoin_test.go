@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
@@ -93,8 +92,8 @@ func TestClusterMixedGoExLeaderRejoin(t *testing.T) {
 		clusterjava.MixedRejoinBudget,
 	)
 	require.Equal(t, floor, entryStop)
-	require.Equal(t, floor, termBaseLogPosition(t, f.module, javaTerm))
-	require.Greater(t, termBaseLogPosition(t, f.module, f.module.LeadershipTermID()), floor)
+	require.Equal(t, floor, harness.TermBaseLogPosition(f.module, javaTerm))
+	require.Greater(t, harness.TermBaseLogPosition(f.module, f.module.LeadershipTermID()), floor)
 	agent := f.module.Agent()
 	require.NotNil(t, agent)
 	require.Equal(t, recordingID, agent.LocalLogRecordingID())
@@ -243,31 +242,12 @@ func awaitGoRejoinByReplication(
 	t.Helper()
 
 	m := f.module
-	memberID := m.ThisMemberID()
-	timeoutBase := moduleErrors.Count(memberID, election.ErrCommitPositionTimeout)
-	var replicated bool
-	var entryStopPosition int64
-	var timeoutErr error
+	watch := harness.NewReplicationWatch(t, m, moduleErrors, func() string {
+		return dumpMixedState(m, java)
+	})
 	start := time.Now()
 	ok := f.tickUntil(budget, func() bool {
-		if timeoutErr == nil {
-			timeoutErr = moduleErrors.MatchAt(memberID, election.ErrCommitPositionTimeout, timeoutBase)
-			if timeoutErr != nil {
-				t.Logf("go member reported %v:\n%s", timeoutErr, dumpMixedState(m, java))
-			}
-		}
-		if !replicated && m.ElectionState() == election.ElectionStateFollowerLogReplication {
-			replicated = true
-
-			// The entry tick at most installs the replication helper. The helper
-			// offers on a later tick. LogRecordingStopPosition still returns the
-			// stop from before the offer.
-			entryStopPosition = m.LogRecordingStopPosition()
-			t.Logf(
-				"go member entered FOLLOWER_LOG_REPLICATION:\n%s",
-				dumpMixedState(m, java),
-			)
-		}
+		watch.Observe()
 		if !m.ElectionComplete() || m.IsLeader() {
 			return false
 		}
@@ -288,8 +268,8 @@ func awaitGoRejoinByReplication(
 				"complete=%v isLeader=%v\n%s",
 			elapsed,
 			budget,
-			replicated,
-			timeoutErr,
+			watch.Replicated,
+			watch.TimeoutErr,
 			javaTerm,
 			m.LeadershipTermID(),
 			m.LeaderMemberID(),
@@ -298,38 +278,13 @@ func awaitGoRejoinByReplication(
 			dumpMixedState(m, java),
 		)
 	}
-	require.True(
-		t,
-		replicated,
-		"go member never entered FOLLOWER_LOG_REPLICATION:\n%s",
-		dumpMixedState(m, java),
-	)
-	require.NoError(
-		t,
-		timeoutErr,
-		"go member commit timeout:\n%s",
-		dumpMixedState(m, java),
-	)
+	entryStop := watch.RequireReplicated()
 	t.Logf(
 		"go rejoin elapsed=%s budget=%s entryStop=%d goTerm=%d",
 		elapsed,
 		budget,
-		entryStopPosition,
+		entryStop,
 		m.LeadershipTermID(),
 	)
-	return entryStopPosition
-}
-
-// termBaseLogPosition reads leadershipTermID from RecordingLog. Fatals when no
-// entry matches.
-func termBaseLogPosition(
-	t *testing.T,
-	m *cluster.ConsensusModule,
-	leadershipTermID int64,
-) int64 {
-	t.Helper()
-
-	e := m.RecordingLog().FindTermEntry(leadershipTermID)
-	require.NotNil(t, e, "no recording log entry for term %d", leadershipTermID)
-	return e.TermBaseLogPosition
+	return entryStop
 }

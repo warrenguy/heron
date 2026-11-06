@@ -8,74 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
-
-// replicationWatch samples a returning member's election once per tick.
-type replicationWatch struct {
-	t            *testing.T
-	set          *harness.ClusterMemberSet
-	moduleErrors *harness.ModuleErrors
-	index        int
-	memberID     int32
-	timeoutBase  int
-
-	// replicated reports whether the member entered FOLLOWER_LOG_REPLICATION.
-	replicated bool
-
-	// entryStopPosition is the log recording stop position on entry to
-	// FOLLOWER_LOG_REPLICATION.
-	entryStopPosition int64
-
-	// timeoutErr holds the first commit timeout after timeoutBase.
-	timeoutErr error
-}
-
-// newReplicationWatch returns a watch on the member at index. The watch
-// ignores commit timeouts that moduleErrors kept before the call.
-func newReplicationWatch(
-	t *testing.T,
-	set *harness.ClusterMemberSet,
-	moduleErrors *harness.ModuleErrors,
-	index int,
-) *replicationWatch {
-	memberID := set.MemberConfig(index).MemberID
-	return &replicationWatch{
-		t:            t,
-		set:          set,
-		moduleErrors: moduleErrors,
-		index:        index,
-		memberID:     memberID,
-		timeoutBase:  moduleErrors.Count(memberID, election.ErrCommitPositionTimeout),
-	}
-}
-
-// observe samples the member's election once.
-func (w *replicationWatch) observe() {
-	if w.timeoutErr == nil {
-		w.timeoutErr = w.moduleErrors.MatchAt(
-			w.memberID, election.ErrCommitPositionTimeout, w.timeoutBase,
-		)
-		if w.timeoutErr != nil {
-			w.t.Logf("member %d reported %v:\n%s", w.index, w.timeoutErr, w.set.State())
-		}
-	}
-	m := w.set.Module(w.index)
-	if m == nil {
-		return
-	}
-	if !w.replicated && m.ElectionState() == election.ElectionStateFollowerLogReplication {
-		w.replicated = true
-
-		// A tick runs one duty cycle. That cycle at most installs the
-		// LogReplication helper. The helper first offers on a later tick. This
-		// read therefore returns the stored stop. It does not issue a blocking
-		// catalog read beside an outstanding replicate request.
-		w.entryStopPosition = m.LogRecordingStopPosition()
-		w.t.Logf("member %d entered FOLLOWER_LOG_REPLICATION:\n%s", w.index, w.set.State())
-	}
-}
 
 // isolateNewLeader commits an append in the new leader's term while the
 // ex-leader at exIndex is down. It then stops the other survivor, which costs
@@ -120,13 +54,13 @@ func awaitReplicatedRejoin(
 ) int64 {
 	t.Helper()
 
-	watch := newReplicationWatch(t, set, moduleErrors, exIndex)
+	watch := harness.NewReplicationWatch(t, set.Module(exIndex), moduleErrors, set.State)
 	requireAwait(t, set, "post-restart log images", durableImageBound, set.AwaitLogImages)
 	requireAwaitTick(t, set, "ex-leader rejoins through replication", durableElectBound, func() bool {
 		if perTick != nil {
 			perTick()
 		}
-		watch.observe()
+		watch.Observe()
 		ex := set.Module(exIndex)
 		leader := set.Module(leaderIndex)
 		if ex == nil || leader == nil || !leader.IsLeader() {
@@ -136,14 +70,7 @@ func awaitReplicatedRejoin(
 			leader.ElectionComplete() &&
 			ex.LeadershipTermID() == leader.LeadershipTermID()
 	})
-	require.True(
-		t,
-		watch.replicated,
-		"ex-leader never entered FOLLOWER_LOG_REPLICATION:\n%s",
-		set.State(),
-	)
-	require.NoError(t, watch.timeoutErr, "ex-leader commit timeout:\n%s", set.State())
-	return watch.entryStopPosition
+	return watch.RequireReplicated()
 }
 
 // requireReplicatedCommit appends on the leader. Both live members must commit
@@ -229,7 +156,7 @@ func TestDurableCluster_replicatesAnExLeaderBehindTheTermBase(t *testing.T) {
 	require.Equal(
 		t,
 		floorPos,
-		termBaseLogPosition(newLeader, missedTerm),
+		harness.TermBaseLogPosition(newLeader, missedTerm),
 		"new term base:\n%s",
 		set.State(),
 	)
@@ -248,7 +175,7 @@ func TestDurableCluster_replicatesAnExLeaderBehindTheTermBase(t *testing.T) {
 	require.Equal(
 		t,
 		floorPos,
-		termBaseLogPosition(set.Module(exIndex), missedTerm),
+		harness.TermBaseLogPosition(set.Module(exIndex), missedTerm),
 		"ex-leader entry for the missed term:\n%s",
 		set.State(),
 	)
@@ -312,7 +239,7 @@ func TestDurableCluster_replicatesATruncatedExLeader(t *testing.T) {
 	require.Equal(
 		t,
 		diverged.newTermBase,
-		termBaseLogPosition(set.Module(exIndex), diverged.newTerm),
+		harness.TermBaseLogPosition(set.Module(exIndex), diverged.newTerm),
 		"ex-leader entry for the missed term:\n%s",
 		set.State(),
 	)
