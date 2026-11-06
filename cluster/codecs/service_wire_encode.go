@@ -14,6 +14,18 @@ func JoinLogBlockLength(actingVersion uint16) uint16 {
 	)
 }
 
+// ServiceTerminationPositionBlockLength returns the ServiceTerminationPosition
+// root block length for actingVersion: the min root below
+// ServiceTerminationPositionAckRequiredMinVersion, otherwise the full schema
+// block.
+func ServiceTerminationPositionBlockLength(actingVersion uint16) uint16 {
+	return ClusterMinRootBlockLength(
+		clusterwire.ServiceTerminationPositionSbeTemplateID,
+		actingVersion,
+		clusterwire.ServiceTerminationPositionSbeBlockLength,
+	)
+}
+
 var (
 	timerEventEncodedLen = int(
 		(&clusterwire.TimerEvent{}).SbeBlockAndHeaderLength(),
@@ -38,6 +50,9 @@ var (
 	)
 	requestServiceAckEncodedLen = int(
 		(&clusterwire.RequestServiceAck{}).SbeBlockAndHeaderLength(),
+	)
+	serviceTerminationPositionEncodedLen = int(
+		(&clusterwire.ServiceTerminationPosition{}).SbeBlockAndHeaderLength(),
 	)
 )
 
@@ -79,6 +94,11 @@ func ServiceAckEncodedLen() int {
 // RequestServiceAckEncodedLen is MessageHeader plus full schema block (8+8=16).
 func RequestServiceAckEncodedLen() int {
 	return requestServiceAckEncodedLen
+}
+
+// ServiceTerminationPositionEncodedLen is MessageHeader plus full schema block.
+func ServiceTerminationPositionEncodedLen() int {
+	return serviceTerminationPositionEncodedLen
 }
 
 // EncodeTimerEvent writes a cluster TimerEvent (SBE template id 20) at offset.
@@ -321,6 +341,35 @@ func EncodeJoinLog(
 				msg.SetIsStandby(fields.IsStandby)
 			}
 			msg.PutLogChannel(clusterVarString(fields.LogChannel))
+		},
+	)
+}
+
+// EncodeServiceTerminationPosition writes a cluster ServiceTerminationPosition
+// (SBE template id 42) at offset. It writes AckRequired, including FALSE, when
+// actingVersion >= ServiceTerminationPositionAckRequiredMinVersion. Short or
+// mis-offset buffers return wireEnd=0, ok=false without panic.
+func EncodeServiceTerminationPosition(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields ServiceTerminationPositionFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		ServiceTerminationPositionBlockLength(actingVersion),
+		clusterwire.ServiceTerminationPositionSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.ServiceTerminationPosition
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion)).
+				SetLogPosition(fields.LogPosition)
+
+			if actingVersion >= ServiceTerminationPositionAckRequiredMinVersion {
+				msg.SetAckRequired(fields.AckRequired)
+			}
 		},
 	)
 }

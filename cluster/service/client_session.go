@@ -15,13 +15,14 @@ import (
 const MockedOffer int64 = 1
 
 // LifecycleRefused is the [ClientSession.Offer] result inside Start,
-// RoleChange, or DoBackgroundWork. aeron.IsOfferRetriable reports false for
-// this code.
+// RoleChange, DoBackgroundWork, or Terminate. aeron.IsOfferRetriable reports
+// false for this code.
 const LifecycleRefused int64 = -7
 
 // ClientSession is one open client session in the service registry.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Lifetime: the agent builds a session on SessionOpen. A snapshot load in
 // [Open] also restores sessions. The load does not call SessionOpen. The
@@ -46,8 +47,8 @@ type ClientSession interface {
 	// Offer sends payload to the client behind one SessionMessageHeader.
 	//
 	// Returns:
-	//   - LifecycleRefused inside Start, RoleChange, or DoBackgroundWork.
-	//     The call reports [ErrLifecycleRefused].
+	//   - LifecycleRefused inside Start, RoleChange, DoBackgroundWork, or
+	//     Terminate. The call reports [ErrLifecycleRefused].
 	//   - MockedOffer when this member is not the leader
 	//   - aeron.NotConnected while the session holds no response
 	//     publication, including while its add is in flight

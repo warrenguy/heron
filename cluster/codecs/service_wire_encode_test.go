@@ -1,6 +1,7 @@
 package codecs_test
 
 import (
+	"bytes"
 	"math"
 	"testing"
 
@@ -394,6 +395,88 @@ func TestRequestServiceAck_roundtrip(t *testing.T) {
 	)
 }
 
+func TestServiceTerminationPosition_roundtrip(t *testing.T) {
+	currentVersion := clusterwire.ServiceTerminationPositionSbeSchemaVersion
+	fieldCases := []codecFieldsActingCase[codecs.ServiceTerminationPositionFields]{
+		{
+			name:      "current_version_ack_true",
+			actingVer: currentVersion,
+			fields: codecs.ServiceTerminationPositionFields{
+				LogPosition: 42,
+				AckRequired: clusterwire.BooleanType_TRUE,
+			},
+		},
+		{
+			name:      "current_version_ack_false",
+			actingVer: currentVersion,
+			fields: codecs.ServiceTerminationPositionFields{
+				LogPosition: 43,
+				AckRequired: clusterwire.BooleanType_FALSE,
+			},
+		},
+		{
+			name:      "v16_no_ackRequired",
+			actingVer: 16,
+			fields: codecs.ServiceTerminationPositionFields{
+				LogPosition: 44,
+				AckRequired: clusterwire.BooleanType_TRUE,
+			},
+		},
+	}
+
+	runCodecRoundtripCases(
+		t,
+		clusterwire.ServiceTerminationPositionSbeTemplateID,
+		currentVersion,
+		buildActingFieldRoundtripCases(
+			currentVersion,
+			fieldCases,
+			codecs.EncodeServiceTerminationPosition,
+			codecs.ServiceTerminationPositionOracleFields,
+		),
+	)
+}
+
+func TestServiceTerminationPositionBlockLength_versionGates(t *testing.T) {
+	cases := []struct {
+		name      string
+		actingVer uint16
+		want      uint16
+	}{
+		{"v0_base", 0, 8},
+		{"v16_base", 16, 8},
+		{"v17_full", 17, 12},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, codecs.ServiceTerminationPositionBlockLength(tc.actingVer))
+			minBlock, maxBlock, ok := codecs.ClusterRootBlockLengthBounds(
+				clusterwire.ServiceTerminationPositionSbeTemplateID, tc.actingVer,
+			)
+			require.True(t, ok)
+			require.Equal(t, tc.want, minBlock)
+			require.Equal(t, clusterwire.ServiceTerminationPositionSbeBlockLength, maxBlock)
+
+			// The encoder writes AckRequired only inside the acting block.
+			const residual byte = 0xFF
+			buf := bytes.Repeat([]byte{residual}, codecs.ServiceTerminationPositionEncodedLen())
+			wireEnd, ok := codecs.EncodeServiceTerminationPosition(
+				buf,
+				0,
+				tc.actingVer,
+				codecs.ServiceTerminationPositionFields{
+					LogPosition: 42,
+					AckRequired: clusterwire.BooleanType_TRUE,
+				},
+			)
+			require.True(t, ok)
+			require.Equal(t, messageHeaderLen+int(tc.want), wireEnd)
+			require.Equal(t, bytes.Repeat([]byte{residual}, len(buf)-wireEnd), buf[wireEnd:])
+		})
+	}
+}
+
 func TestServiceEncode_rejects(t *testing.T) {
 	v := clusterwire.TimerEventSbeSchemaVersion
 	buf := make([]byte, 8)
@@ -477,6 +560,20 @@ func TestServiceTryDecode_rejects(t *testing.T) {
 			})
 		}),
 		clusterwire.ServiceAckSbeBlockLength, 35, 8,
+	)...)
+	cases = append(cases, fixedBlockRejectCases(
+		"service_termination_position",
+		encodeClusterWire(t, func(buf []byte) (int, bool) {
+			return codecs.EncodeServiceTerminationPosition(
+				buf,
+				0,
+				v,
+				codecs.ServiceTerminationPositionFields{
+					LogPosition: 1, AckRequired: clusterwire.BooleanType_TRUE,
+				},
+			)
+		}),
+		clusterwire.ServiceTerminationPositionSbeBlockLength, 11, 8,
 	)...)
 	cases = append(
 		cases,
@@ -675,6 +772,19 @@ func TestTryDecodeAt_serviceCatalogue(t *testing.T) {
 			codecs.TryDecodeRequestServiceAckAt,
 		)
 	})
+	t.Run("service_termination_position", func(t *testing.T) {
+		requireTryDecodeAt(
+			t,
+			buf,
+			v,
+			codecs.ServiceTerminationPositionFields{
+				LogPosition: 99,
+				AckRequired: clusterwire.BooleanType_TRUE,
+			},
+			codecs.EncodeServiceTerminationPosition,
+			codecs.TryDecodeServiceTerminationPositionAt,
+		)
+	})
 }
 
 func TestTryDecodeClusterActionRequestAt_rejects(t *testing.T) {
@@ -853,6 +963,25 @@ func TestEncodeServiceTemplates_ZeroAllocs(t *testing.T) {
 				_, ok := codecs.EncodeRequestServiceAck(buf, 0, actingVersion, codecs.RequestServiceAckFields{
 					LogPosition: 42,
 				})
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
+			name:   "EncodeServiceTerminationPosition",
+			bufLen: codecs.ServiceTerminationPositionEncodedLen(),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeServiceTerminationPosition(
+					buf,
+					0,
+					actingVersion,
+					codecs.ServiceTerminationPositionFields{
+						LogPosition: 42,
+						AckRequired: clusterwire.BooleanType_TRUE,
+					},
+				)
+
 				if !ok {
 					panic("encode failed")
 				}

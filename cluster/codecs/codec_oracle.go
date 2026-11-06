@@ -82,6 +82,28 @@ func JoinLogOracleFields(fields JoinLogFields, actingVersion uint16) JoinLogFiel
 	return fields
 }
 
+// ServiceTerminationPositionAckRequiredMinVersion is the actingVersion that
+// admits AckRequired on ServiceTerminationPosition.
+var ServiceTerminationPositionAckRequiredMinVersion = uint16(
+	(&clusterwire.ServiceTerminationPosition{}).AckRequiredSinceVersion(),
+)
+
+// ServiceTerminationPositionOracleFields returns the fields a decode yields
+// after an encode at actingVersion.
+//
+// Below ServiceTerminationPositionAckRequiredMinVersion, the wire omits
+// AckRequired. Decode then returns BooleanType_NULL_VALUE. At and above that
+// version, fields roundtrip as-is.
+func ServiceTerminationPositionOracleFields(
+	fields ServiceTerminationPositionFields,
+	actingVersion uint16,
+) ServiceTerminationPositionFields {
+	if actingVersion < ServiceTerminationPositionAckRequiredMinVersion {
+		fields.AckRequired = clusterwire.BooleanType_NULL_VALUE
+	}
+	return fields
+}
+
 // ClusterActionRequestFlagsMinVersion is the actingVersion that admits Flags
 // on ClusterActionRequest (sinceVersion 11). Derived from the generated
 // flyweight FlagsSinceVersion.

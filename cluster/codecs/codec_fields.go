@@ -262,6 +262,16 @@ type JoinLogFields struct {
 	LogChannel []byte
 }
 
+// ServiceTerminationPositionFields holds ServiceTerminationPosition body fields
+// (SBE template id 42).
+type ServiceTerminationPositionFields struct {
+	LogPosition int64
+
+	// AckRequired is BooleanType_NULL_VALUE when actingVersion is below
+	// ServiceTerminationPositionAckRequiredMinVersion (field absent on wire).
+	AckRequired clusterwire.BooleanType
+}
+
 // RequestServiceAckFields holds RequestServiceAck body fields (SBE template id 108).
 type RequestServiceAckFields struct {
 	LogPosition int64

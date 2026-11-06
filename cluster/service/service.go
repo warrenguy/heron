@@ -149,8 +149,9 @@ type RoleChangeHandler interface {
 //
 // Behaviour: the agent calls DoBackgroundWork once per DoWork call, after
 // the log poll. The first call follows a successful Start. The agent does
-// not call DoBackgroundWork after a Start error, a service failure, or
-// Close. nowNs is the DoWork argument, not cluster time.
+// not call DoBackgroundWork after a Start error, a service failure, a stop
+// at the termination position, or Close. nowNs is the DoWork argument, not
+// cluster time.
 //
 // DoBackgroundWork must not change service state. The agent refuses module
 // requests and session offers inside DoBackgroundWork. See
@@ -158,16 +159,42 @@ type RoleChangeHandler interface {
 //
 // Returns the work count. DoWork adds a positive count to its own.
 //
-// Concurrency: invoker-only. A slow call delays the duty cycle.
+// Concurrency: methods run inside [Agent.DoWork]. A slow call delays the duty
+// cycle.
 type BackgroundWorkHandler interface {
 	DoBackgroundWork(nowNs int64) int
 }
 
+// TerminateHandler is the optional extension a service implements to observe
+// the end of its container. NewAgent detects the handler once with a type
+// assertion.
+//
+// Behaviour: the agent calls Terminate once, when its log reaches the
+// termination position from the module. Otherwise, Close calls Terminate after
+// a successful Start. Cluster reads stay valid inside Terminate. The agent
+// refuses module requests and session offers inside Terminate. See
+// [ErrLifecycleRefused].
+//
+// A panic propagates out of Agent.DoWork or Agent.Close. Terminate does not run
+// again. After a DoWork panic, later DoWork calls end the stop. Those calls send
+// the queued acks when the module asked for the ack. After a Close panic, a
+// second Close runs the teardown.
+//
+// A non-nil error does not fail the service. The agent reports one error that
+// wraps ErrTerminate, unless the agent has already failed.
+//
+// Concurrency: Terminate runs inside [Agent.DoWork] or [Agent.Close], on the
+// goroutine that runs DoWork.
+type TerminateHandler interface {
+	Terminate(cluster Cluster) error
+}
+
 // Cluster is the service-facing proxy into member state.
 //
-// Concurrency: invoker-only. Call from log-event callbacks and DoWork only.
-// The agent refuses module requests and session offers inside Start,
-// RoleChange, and DoBackgroundWork. See [ErrLifecycleRefused].
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines. Call from log-event callbacks, DoWork, and Terminate only.
+// The agent refuses module requests and session offers inside Start, RoleChange,
+// DoBackgroundWork, and Terminate. See [ErrLifecycleRefused].
 type Cluster interface {
 	LogPosition() int64
 	ClusterTime() int64
@@ -183,8 +210,9 @@ type Cluster interface {
 	//
 	// Returns:
 	//   - true when the request frame was sent
-	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
-	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
+	//   - false inside Start, RoleChange, DoBackgroundWork, or Terminate. The
+	//     call reports [ErrLifecycleRefused]. Must not retry inside that
+	//     callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
@@ -201,8 +229,9 @@ type Cluster interface {
 	//
 	// Returns:
 	//   - true when the request frame was sent
-	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
-	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
+	//   - false inside Start, RoleChange, DoBackgroundWork, or Terminate. The
+	//     call reports [ErrLifecycleRefused]. Must not retry inside that
+	//     callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
@@ -219,12 +248,13 @@ type Cluster interface {
 	// Behaviour: sends on every role. A follower's module marks the session
 	// closing, so a later leader still appends the close.
 	//
-	// Call from log-event callbacks or DoWork, outside Start, RoleChange, and
-	// DoBackgroundWork.
+	// Call from log-event callbacks or DoWork, outside Start, RoleChange,
+	// DoBackgroundWork, and Terminate.
 	//
 	// Returns:
-	//   - false inside Start, RoleChange, or DoBackgroundWork. The call
-	//     reports [ErrLifecycleRefused]. Must not retry inside that callback.
+	//   - false inside Start, RoleChange, DoBackgroundWork, or Terminate. The
+	//     call reports [ErrLifecycleRefused]. Must not retry inside that
+	//     callback.
 	//   - true when this member sent the frame, now or on an earlier call
 	//   - false when id is not an open session. The call reports
 	//     [ErrCloseUnknownSession]. Must not retry.

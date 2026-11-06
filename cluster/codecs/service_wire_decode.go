@@ -290,6 +290,33 @@ func TryDecodeJoinLogAt(buf []byte, offset int) (JoinLogFields, bool) {
 	)
 }
 
+func decodeServiceTerminationPositionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) ServiceTerminationPositionFields {
+	var msg clusterwire.ServiceTerminationPosition
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return ServiceTerminationPositionFields{
+		LogPosition: msg.LogPosition(),
+		AckRequired: msg.AckRequired(),
+	}
+}
+
+// TryDecodeServiceTerminationPositionAt decodes ServiceTerminationPosition
+// without interface boxing.
+func TryDecodeServiceTerminationPositionAt(
+	buf []byte,
+	offset int,
+) (ServiceTerminationPositionFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.ServiceTerminationPositionSbeTemplateID,
+		0,
+		decodeServiceTerminationPositionFields,
+	)
+}
+
 func decodeRequestServiceAckFields(
 	buf []byte,
 	body, block, version, bufLen uint64,

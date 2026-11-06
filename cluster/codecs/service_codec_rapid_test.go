@@ -229,3 +229,28 @@ func TestRequestServiceAck_codec_rapid(t *testing.T) {
 		)
 	})
 }
+
+func TestServiceTerminationPosition_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		// rapidActingVersion stops below the AckRequired version.
+		actingVersion := rapid.Uint16Range(
+			0,
+			clusterwire.ServiceTerminationPositionSbeSchemaVersion,
+		).Draw(rt, "actingVersion")
+		offset := rapidCodecOffset(rt)
+		fields := codecs.ServiceTerminationPositionFields{
+			LogPosition: rapid.Int64().Draw(rt, "logPosition"),
+			AckRequired: rapidBooleanType(rt, "ackRequired"),
+		}
+
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.ServiceTerminationPositionSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeAt(actingVersion, fields, codecs.EncodeServiceTerminationPosition),
+			codecs.ServiceTerminationPositionOracleFields(fields, actingVersion),
+		)
+	})
+}

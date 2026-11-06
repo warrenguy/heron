@@ -8,8 +8,8 @@ import (
 )
 
 // ErrLifecycleRefused reports a module request or session offer that the
-// agent refuses inside Start, RoleChange, or DoBackgroundWork. The error is
-// not fatal.
+// agent refuses inside Start, RoleChange, DoBackgroundWork, or Terminate. The
+// error is not fatal.
 var ErrLifecycleRefused = errors.New("service: refused inside lifecycle call")
 
 // lifecycleCall names the service call inside which the agent refuses module
@@ -21,6 +21,7 @@ const (
 	lifecycleCallStart
 	lifecycleCallRoleChange
 	lifecycleCallBackgroundWork
+	lifecycleCallTerminate
 
 	lifecycleCallCount
 )
@@ -45,6 +46,7 @@ func newLifecycleRefusals() (table [lifecycleCallCount][refusedCallCount]error) 
 		lifecycleCallStart:          "Start",
 		lifecycleCallRoleChange:     "RoleChange",
 		lifecycleCallBackgroundWork: "DoBackgroundWork",
+		lifecycleCallTerminate:      "Terminate",
 	}
 	refusedCallNames := [refusedCallCount]string{
 		refusedScheduleTimer:      "ScheduleTimer",
@@ -72,6 +74,31 @@ func (a *Agent) callStart() error {
 	a.activeLifecycleCall = lifecycleCallStart
 	defer a.endLifecycleCall()
 	return a.service.Start(a)
+}
+
+// callTerminate runs Terminate under the lifecycle tag when serviceActive
+// holds. It clears serviceActive first, so a panic does not rerun Terminate.
+// It reports a Terminate error after the tag clears.
+func (a *Agent) callTerminate() {
+	if !a.serviceActive {
+		return
+	}
+
+	a.serviceActive = false
+
+	if a.terminateHandler == nil {
+		return
+	}
+
+	if err := a.runTerminate(); err != nil {
+		a.reportError(fmt.Errorf("%w: %w", ErrTerminate, err))
+	}
+}
+
+func (a *Agent) runTerminate() error {
+	a.activeLifecycleCall = lifecycleCallTerminate
+	defer a.endLifecycleCall()
+	return a.terminateHandler.Terminate(a)
 }
 
 func (a *Agent) changeRole(role codecs.Role) {

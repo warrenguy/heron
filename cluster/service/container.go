@@ -179,6 +179,9 @@ type Config struct {
 	// end Runner.Run. A fatal error only makes Agent.DoWork return 0. The
 	// caller of DoWork reads [Agent.ServiceFailure], or watches ErrorHandler
 	// for ErrFailed.
+	//
+	// A stop at the termination position also makes Agent.DoWork return 0.
+	// The caller reads [Agent.IsTerminated].
 	ErrorHandler func(error)
 }
 
@@ -650,14 +653,15 @@ func (c *Container) ArchiveClient() *archive.Client {
 // reassembly, then closes the control subscription, then the control
 // publication.
 //
-// Behaviour: [Agent.Close] ends any snapshot take, then disconnects session
-// egress, then unbinds any log image and closes any owned log subscription.
-// The archive client closes after the agent, so take cleanup reaches an open
-// client. Control ingress Clear drops reassembly builders. Control handles
-// close next.
+// Behaviour: [Agent.Close] calls Terminate when the service started and did
+// not stop. [Agent.Close] then ends any snapshot take, disconnects session
+// egress, unbinds any log image, and closes any owned log subscription. The
+// archive client closes after the agent, so take cleanup reaches an open
+// client.
 //
 // Lifetime: idempotent. After Close the agent is inert. A second Close
-// returns nil. Safe on a nil receiver.
+// returns nil. A Terminate panic skips every close step. The next Close runs
+// those steps and returns the joined errors. Safe on a nil receiver.
 //
 // Ownership: the container does not own the transport client.
 //
