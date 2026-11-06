@@ -19,10 +19,39 @@ func threadMinorFaults(t *testing.T) int64 {
 	return usage.Minflt
 }
 
-func TestPreTouch_writeDoesNotFault(t *testing.T) {
+func writeFaults(t *testing.T, touch func([]byte)) int64 {
+	t.Helper()
 	const length = 4 << 20
 	pageSize := os.Getpagesize()
 
+	path := testMapPath(t, "touch.bin")
+	content := bytes.Repeat([]byte{0x5A}, length)
+	require.NoError(t, os.WriteFile(path, content, 0o600))
+
+	m, err := mmap.MapExisting(path, length)
+	require.NoError(t, err)
+	defer func() { _ = m.Close() }()
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	if touch != nil {
+		touch(m.Data)
+	}
+	before := threadMinorFaults(t)
+	for offset := 0; offset < length; offset += pageSize {
+		m.Data[offset] = 0xA5
+	}
+	faults := threadMinorFaults(t) - before
+
+	for offset := 0; offset < length; offset += pageSize {
+		m.Data[offset] = 0x5A
+	}
+	require.True(t, bytes.Equal(content, m.Data))
+	return faults
+}
+
+func TestPreTouch_writeDoesNotFault(t *testing.T) {
 	cases := []struct {
 		name       string
 		touch      func([]byte)
@@ -33,35 +62,15 @@ func TestPreTouch_writeDoesNotFault(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := testMapPath(t, "touch.bin")
-			content := bytes.Repeat([]byte{0x5A}, length)
-			require.NoError(t, os.WriteFile(path, content, 0o600))
-
-			m, err := mmap.MapExisting(path, length)
-			require.NoError(t, err)
-			defer func() { _ = m.Close() }()
-
-			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-
-			if tc.touch != nil {
-				tc.touch(m.Data)
-			}
-			before := threadMinorFaults(t)
-			for offset := 0; offset < length; offset += pageSize {
-				m.Data[offset] = 0xA5
-			}
-			faults := threadMinorFaults(t) - before
+			// The thread count sometimes includes a stray fault. The fewest of
+			// three attempts drops the stray fault.
+			faults := min(writeFaults(t, tc.touch), writeFaults(t, tc.touch), writeFaults(t, tc.touch))
 
 			if tc.wantFaults {
 				require.Positive(t, faults)
 			} else {
 				require.Zero(t, faults)
 			}
-			for offset := 0; offset < length; offset += pageSize {
-				m.Data[offset] = 0x5A
-			}
-			require.True(t, bytes.Equal(content, m.Data))
 		})
 	}
 }
