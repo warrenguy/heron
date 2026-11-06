@@ -79,12 +79,8 @@ func (a *Agent) ReplayLogPoll(stopPosition, nowNs int64) int {
 // UnbindReplayLog clears the replay join tracking. It then clears the adapter
 // image when the adapter still holds image.
 //
-// Behaviour:
-//   - The tracking clear does not depend on the image match.
-//   - The adapter keeps the image position after the clear.
-//   - [Agent.IsReplayLogJoined] reports true after the call.
-//   - An unpublished replay JoinLog drops, so a dead replay session reaches
-//     no service. A published replay JoinLog keeps its wait.
+// Behaviour: an unpublished replay JoinLog drops, so a dead replay session does
+// not reach a service. A published replay JoinLog keeps its wait.
 //
 // Concurrency: invoker-only.
 //
@@ -103,17 +99,14 @@ func (a *Agent) UnbindReplayLog(image *aeron.Image) {
 // PublishReplayJoinLog publishes the replay JoinLog, or stores it for retry.
 //
 // Behaviour:
-//   - A nil service proxy changes nothing.
-//   - The JoinLog carries the join fields, this member id, IsStartup TRUE,
-//     role follower and IsStandby FALSE.
+//   - On a nil service proxy, the call is a silent no-op.
 //   - The call replaces any stored pending JoinLog.
 //   - A successful publish queues one wait at the replay start, unless
 //     serviceAckFailure is marked.
 //   - A terminal publish code marks [Agent.ServicePublishFailure].
-//   - While serviceAckFailure is nil, [Agent.IsReplayLogJoined] reports
-//     false until the replay JoinLog wait pops, a terminal publish code
-//     lands, [Agent.UnbindReplayLog] runs, or a new election prepares
-//     through [Agent.PrepareForNewLeadership] or enterElection.
+//   - While serviceAckFailure is nil, [Agent.IsReplayLogJoined] reports false
+//     until the replay JoinLog wait pops. A terminal publish code,
+//     [Agent.UnbindReplayLog], or a new election clears the tracking earlier.
 //
 // Concurrency: invoker-only.
 func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
@@ -137,18 +130,18 @@ func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 // IsReplayLogJoined reports whether every service acked the replay JoinLog.
 //
 // Behaviour:
-//   - Reports true when no replay JoinLog is tracked.
-//   - Reports true once serviceAckFailure is marked. No wait pops after the
-//     mark.
+//   - Reports false once serviceAckFailure is marked.
+//   - Otherwise reports true when the agent does not track a replay JoinLog.
 //
 // Concurrency: invoker-only.
 func (a *Agent) IsReplayLogJoined() bool {
-	return a.replayJoinWaitsAhead == 0 || a.serviceAckFailure != nil
+	return a.serviceAckFailure == nil && a.replayJoinWaitsAhead == 0
 }
 
 // markReplayJoinPublished starts the replay join count once the replay JoinLog
-// publishes. The count is the FIFO length, so the replay JoinLog wait pops
-// last. A marked serviceAckFailure queues no wait, so the count is 0.
+// publishes. The replay JoinLog wait is the last queued entry, so the count is
+// the FIFO length. While serviceAckFailure is marked, publishJoinLog does not
+// queue a wait, so the count is 0.
 func (a *Agent) markReplayJoinPublished() {
 	if a.replayJoinWaitsAhead != replayJoinUnpublished {
 		return

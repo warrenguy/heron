@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -54,10 +55,12 @@ func (f *fakeArchive) Poll() int {
 
 // fakeAgent records the clock values each DoWork saw.
 type fakeAgent struct {
-	work  []int
-	ticks int
-	times []int64
-	steps *[]string
+	work   []int
+	ticks  int
+	times  []int64
+	steps  *[]string
+	endAt  int
+	endErr error
 }
 
 func (f *fakeAgent) DoWork(nowNs int64) int {
@@ -71,6 +74,13 @@ func (f *fakeAgent) DoWork(nowNs int64) int {
 	}
 	f.ticks++
 	return value
+}
+
+func (f *fakeAgent) TerminationError() error {
+	if f.ticks > f.endAt {
+		return f.endErr
+	}
+	return nil
 }
 
 // recordingIdle tallies Idle calls, Reset calls, and work counts.
@@ -153,47 +163,60 @@ func TestRunnerRunIdlesOncePerTick(t *testing.T) {
 }
 
 func TestRunnerRunExitPaths(t *testing.T) {
+	memberEnd := &consensus.TerminationError{Cause: errors.New("boom")}
 	for _, tc := range []struct {
 		name        string
 		terminating bool
-		ctx         func() (context.Context, context.CancelFunc)
+		memberEnd   error
+		cancelled   bool
 		wantErr     error
 		wantTicks   int
-		wantIdles   int
 	}{
 		{
-			name: "alreadyCancelledRunsNoTick",
-			ctx: func() (context.Context, context.CancelFunc) {
-				c, x := context.WithCancel(context.Background())
-				x()
-				return c, func() {}
-			},
+			name:      "alreadyCancelledRunsNoTick",
+			cancelled: true,
 			wantErr:   context.Canceled,
 			wantTicks: 0,
-			wantIdles: 0,
 		},
 		{
 			name:        "terminationBeatsIdle",
 			terminating: true,
-			ctx: func() (context.Context, context.CancelFunc) {
-				return context.WithCancel(context.Background())
-			},
-			wantErr:   ErrTransportTerminating,
+			wantErr:     ErrTransportTerminating,
+			wantTicks:   1,
+		},
+		{
+			name:      "memberTerminationEndsRun",
+			memberEnd: memberEnd,
+			wantErr:   memberEnd,
 			wantTicks: 1,
-			wantIdles: 0,
+		},
+		{
+			name:        "transportBeatsMember",
+			terminating: true,
+			memberEnd:   memberEnd,
+			wantErr:     ErrTransportTerminating,
+			wantTicks:   1,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			transport := &fakeTransport{terminating: tc.terminating}
-			agent := &fakeAgent{}
+			agent := &fakeAgent{endErr: tc.memberEnd}
 			idle := &recordingIdle{}
-			ctx, cancel := tc.ctx()
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			if tc.cancelled {
+				cancel()
+			}
 			runner := newTestRunner(transport, nil, agent, idle, func() int64 { return 0 })
 
-			require.ErrorIs(t, runner.Run(ctx), tc.wantErr)
+			err := runner.Run(ctx)
+			require.ErrorIs(t, err, tc.wantErr)
+			if tc.wantErr == memberEnd {
+				require.Same(t, memberEnd, err, "Run returns the agent value unchanged")
+				require.ErrorIs(t, err, consensus.ErrTerminated)
+			}
 			require.Equal(t, tc.wantTicks, transport.ticks)
-			require.Len(t, idle.counts, tc.wantIdles)
+			require.Empty(t, idle.counts, "Run returns before Idle on every exit path")
 			require.Equal(t, 1, idle.resets, "Run always resets when it returns")
 		})
 	}

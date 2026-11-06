@@ -34,16 +34,14 @@ type AgentHandler interface {
 	// First call of an episode runs teardown. Later calls poll only.
 	//
 	// logPosition is the committed log position the election starts from. The
-	// teardown rolls back each TimerEvent and SessionCloseEvent this member
-	// appended above logPosition. The teardown also drops each session opened
-	// above logPosition and every pre-open session. The teardown restores the
-	// module state from before the first SUSPEND or RESUME action this member
-	// appended above logPosition.
+	// teardown rolls back each TimerEvent, SessionCloseEvent, and SUSPEND or
+	// RESUME action this member appended above logPosition. The teardown also
+	// drops each session opened above logPosition and every pre-open session.
 	//
 	// nowNs is the deadline clock for [LogRecordingControl.PollStopLogRecording].
 	//
 	// Returns:
-	//   - lastAppendPosition, prepared true, nil: stop confirmed
+	//   - lastAppendPosition, prepared true, nil: stop confirmed or nil control
 	//   - NullPosition, prepared false, nil: poll again
 	//   - NullPosition, prepared false, err: fail closed
 	//

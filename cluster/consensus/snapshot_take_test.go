@@ -1013,7 +1013,7 @@ func TestSnapshotTake_refusals(t *testing.T) {
 	})
 }
 
-func TestSnapshotTake_markedFailureWithWaitLiftsHold(t *testing.T) {
+func TestSnapshotTake_markedFailureEndsHeldLeader(t *testing.T) {
 	t.Parallel()
 
 	const startNs int64 = 1_000_000_000
@@ -1024,17 +1024,16 @@ func TestSnapshotTake_markedFailureWithWaitLiftsHold(t *testing.T) {
 	h.agent.DoWork(startNs + 1)
 	h.requireUntouched(t, "wait")
 
-	// Phase 2: an out-of-sequence ack marks the failure. The marking tick
-	// opens the session and fires the timer.
+	// Phase 2: an out-of-sequence ack ends the member.
 	h.ack(t, position, 5, 77, 0)
 	h.agent.DoWork(startNs + 2)
 	require.ErrorIs(t, h.agent.ServiceAckFailure(), ErrServiceAckOutOfSequence)
-	require.Equal(t, ModuleStateActive, h.agent.ModuleState())
-	h.requireSessionAndTimerMoved(t)
+	requireTerminated(t, h.agent, h.agent.ServiceAckFailure(), false)
+	h.requireUntouched(t, "marking tick")
 
-	// Phase 3: the ingress frame moves one tick later. No take builds.
-	h.agent.DoWork(startNs + 3)
-	require.Equal(t, 0, h.ingress.Len())
+	// Phase 3: the wait stays queued after the member ends.
+	require.Equal(t, 0, h.agent.DoWork(startNs+3))
+	h.requireUntouched(t, "after the end")
 	require.Nil(t, h.agent.snapshotTake)
 	require.True(t, h.agent.HasPendingSnapshotAction())
 	_, ok := h.agent.LastSnapshotTake()
@@ -1065,6 +1064,9 @@ func TestSnapshotTake_holdLiftKeepsOpenSessions(t *testing.T) {
 		ackBeforeHeld bool
 		// lift runs the lift tick at liftNs.
 		lift func(t *testing.T, f *takeFixture, position int64)
+		// ended flags a row whose lift tick ends the member before the
+		// pending session reclaim.
+		ended bool
 	}{
 		{
 			name:          "take resolves after held ticks",
@@ -1089,13 +1091,12 @@ func TestSnapshotTake_holdLiftKeepsOpenSessions(t *testing.T) {
 				f.ack(t, position, 5, 77, 0)
 				f.agent.DoWork(liftNs)
 				require.Error(t, f.agent.ServiceAckFailure())
-				// The mark lifts the hold. The wait stays queued and no
-				// take builds.
 				require.Nil(t, f.agent.snapshotTake)
 				_, ok := f.agent.LastSnapshotTake()
 				require.False(t, ok)
 				require.True(t, f.agent.HasPendingSnapshotAction())
 			},
+			ended: true,
 		},
 		{
 			name:         "marked failure in the first tick",
@@ -1105,6 +1106,7 @@ func TestSnapshotTake_holdLiftKeepsOpenSessions(t *testing.T) {
 				f.agent.DoWork(liftNs)
 				require.Error(t, f.agent.ServiceAckFailure())
 			},
+			ended: true,
 		},
 		{
 			name:      "zero services with no control in the first tick",
@@ -1142,11 +1144,19 @@ func TestSnapshotTake_holdLiftKeepsOpenSessions(t *testing.T) {
 			}
 
 			tt.lift(t, f, position)
-			require.Equal(t, ModuleStateActive, f.agent.ModuleState())
 			session, ok := f.agent.sessions.sessionByID(1)
 			require.True(t, ok)
 			require.Equal(t, sessionOpen, session.state)
 			require.Equal(t, liftNs, session.lastActivityNs)
+			if tt.ended {
+				require.ErrorIs(t, f.agent.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+				requireTerminated(t, f.agent, f.agent.ServiceAckFailure(), false)
+				require.Equal(t, 1, f.agent.PendingSessionCount())
+				_, ok = f.agent.sessions.sessionByID(2)
+				require.True(t, ok)
+				return
+			}
+			require.Equal(t, ModuleStateActive, f.agent.ModuleState())
 			require.Equal(t, 0, f.agent.PendingSessionCount())
 			_, ok = f.agent.sessions.sessionByID(2)
 			require.False(t, ok)
@@ -1167,15 +1177,18 @@ func TestSnapshotTake_markedFailureWhileWriting(t *testing.T) {
 	f.agent.DoWork(102)
 	require.Equal(t, takeWriting, f.state(t))
 
-	// An out-of-sequence ack marks the failure. The take keeps the hold.
 	f.ack(t, position, 5, 77, 0)
 	f.agent.DoWork(103)
-	require.Error(t, f.agent.ServiceAckFailure())
-	require.Equal(t, ModuleStateSnapshot, f.agent.ModuleState())
+	require.ErrorIs(t, f.agent.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+	requireTerminated(t, f.agent, f.agent.ServiceAckFailure(), false)
 
-	result, _ := f.tickUntilResolved(t, 104, 1)
-	require.NoError(t, result.Err)
-	require.Equal(t, ModuleStateActive, f.agent.ModuleState())
+	require.Equal(t, 0, f.agent.DoWork(104))
+	require.Equal(t, takeWriting, f.state(t))
+
+	f.agent.CloseSnapshotTake()
+	require.Nil(t, f.agent.snapshotTake)
+	_, resolved := f.agent.LastSnapshotTake()
+	require.False(t, resolved)
 }
 
 func TestSnapshotTake_copyCut(t *testing.T) {

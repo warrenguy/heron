@@ -326,11 +326,16 @@ func TestRestoreUncommittedEntries(t *testing.T) {
 				for id := int64(1); id <= 4; id++ {
 					trackUncommittedTimer(a, prepareAt+id, id)
 				}
+				trackUncommittedModuleState(a, prepareAt+1, ModuleStateSuspended)
 
+				// The refusal ends the member before the rollback, so the module
+				// stays CLOSED.
 				a.restoreUncommittedEntries(prepareAt)
-				require.ErrorIs(t, a.TimerFailure(), errTimerCapacity)
+				require.ErrorIs(t, a.TimerFailure(), ErrTimerCapacity)
+				requireTerminated(t, a, ErrTimerCapacity, false)
 				requireAgentTimers(t, a, map[int64]int64{1: 0, 2: 0}, nil)
 				require.Empty(t, a.uncommittedTimers)
+				require.Empty(t, a.uncommittedModuleStates)
 			},
 		},
 		{

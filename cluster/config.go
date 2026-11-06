@@ -215,23 +215,22 @@ type Config struct {
 	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
 	SessionTimeoutNs int64
 
-	// ErrorHandler receives each error the consensus module reports. Nil drops
-	// each report.
+	// ErrorHandler receives each error the consensus module reports: every error
+	// passed to [election.ElectionDeps.ErrorHandler] or
+	// [consensus.AgentConfig.ErrorHandler]. Nil drops each report.
 	//
 	// Behaviour:
-	//   - The module reports each error that [election.ElectionDeps.ErrorHandler]
-	//     or [consensus.AgentConfig.ErrorHandler] receives, election events
-	//     included.
 	//   - The module counts each report on the Cluster Errors counter (type 212)
 	//     before the call. A dropped report still counts.
 	//   - After ConsensusModule.Close the module does not count or report.
-	//   - A report does not stop the member.
+	//   - The first fatal cause ends the member after its report. Runner.Run
+	//     then returns the [consensus.TerminationError].
 	//
 	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
 	// other error is a fault.
 	//
-	// Concurrency: invoker-only. ErrorHandler runs inside consensus.Agent.DoWork,
-	// within Runner.DoWork. ErrorHandler must not:
+	// Concurrency: invoker-only. ErrorHandler runs inside consensus.Agent.DoWork.
+	// ErrorHandler must not:
 	//   - panic
 	//   - block the duty cycle
 	//   - call Runner.DoWork, Runner.Run, consensus.Agent.DoWork, or
@@ -240,9 +239,7 @@ type Config struct {
 	//     state
 	//
 	// ErrorHandler may call the ConsensusModule read accessors. The module
-	// stores the failed step result before each call. An election error arrives
-	// before the election enters INIT, so ElectionState still reports the failed
-	// state.
+	// stores the failed step result before each call.
 	//
 	// The error text may hold archive remote text and channel URIs. Sanitize it
 	// before an untrusted sink.

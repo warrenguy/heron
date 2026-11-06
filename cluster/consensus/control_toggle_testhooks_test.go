@@ -400,7 +400,7 @@ func TestClusterControlToggle_lifecycle(t *testing.T) {
 			},
 		},
 		{
-			name: "ack failure before the pop resets SNAPSHOT",
+			name: "ack failure before the pop keeps SNAPSHOT",
 			run: func(t *testing.T) {
 				a, q, _ := settledLeaderWithControl(t, 1)
 				control, _ := wireToggles(a, snapshot, neutral)
@@ -408,8 +408,8 @@ func TestClusterControlToggle_lifecycle(t *testing.T) {
 				enqueueServiceAck(t, q, a.ExpectedAckPosition(), 5, 0)
 				require.Equal(t, 1, a.pollServiceControl())
 				require.ErrorIs(t, a.ServiceAckFailure(), ErrServiceAckOutOfSequence)
-				require.Equal(t, neutral, control.Load())
-				require.Equal(t, ModuleStateActive, a.ModuleState())
+				require.Equal(t, snapshot, control.Load())
+				requireTerminated(t, a, a.ServiceAckFailure(), false)
 			},
 		},
 		{

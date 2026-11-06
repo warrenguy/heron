@@ -5,11 +5,11 @@ import (
 	"slices"
 )
 
-// ErrServiceAckOutOfSequence reports a non-empty first queued ServiceAck that
-// does not match the expected ack id and log position exactly.
+// ErrServiceAckOutOfSequence reports a first queued ServiceAck that does not
+// match the expected ack id and log position.
 //
-// Fail-closed. Callers must surface the error. Callers must not retry the error
-// as "not reached yet".
+// The agent ends the member on this error. Callers must not retry the error as
+// "not reached yet".
 var ErrServiceAckOutOfSequence = errors.New(
 	"consensus: service ack out of sequence",
 )
@@ -255,13 +255,8 @@ func (a *Agent) ExpectedServiceAckID() int64 {
 // marks the failure.
 //
 // Behaviour:
-//   - marks once: first cause kept; later mismatches do not replace the cause
-//   - never cleared on this surface
-//   - election transitions leave the mark
-//   - the duty cycle keeps running and keeps enqueueing acks after the mark
-//
-// Callers must poll this value. Out-of-sequence first entries stay observable
-// through the queue depth getters.
+//   - marked once, never cleared
+//   - a mark ends the member. Full contract on [Agent.TerminationError].
 //
 // Concurrency: invoker-only.
 func (a *Agent) ServiceAckFailure() error {

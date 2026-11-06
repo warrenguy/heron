@@ -201,7 +201,7 @@ func TestTimerEventConsume_upstreamModel_rapid(t *testing.T) {
 					if _, ok := a.timers.timerIDByCorrelationID[id]; ok {
 						held[id] = deadline
 					} else {
-						require.ErrorIs(rt, a.TimerFailure(), errTimerCapacity)
+						require.ErrorIs(rt, a.TimerFailure(), ErrTimerCapacity)
 						delete(held, id)
 					}
 				}

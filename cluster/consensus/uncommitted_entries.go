@@ -66,18 +66,17 @@ func (a *Agent) uncommittedModuleStatesThrough(logPosition int64) int {
 // Then empties each list.
 //
 // Behaviour:
-//   - Schedules each timer again at deadline 0. The schedule replaces a live
-//     timer for the id. A refused schedule marks timerFailure once. Leaves
-//     the expired timer counts.
-//   - Re-adds each closed session as closing (restoreUncommittedCloses).
-//     clearSessionsAfter then drops the ones opened above logPosition.
+//   - Schedules each timer again at deadline 0. Leaves the expired timer
+//     counts.
+//   - Re-adds each closed session as closing. clearSessionsAfter then drops
+//     the ones opened above logPosition.
 //   - Restores the module state from before the first module state action
 //     above logPosition. A CLOSED module stays CLOSED.
 //
 // A later log read of a surviving frame cancels the timer or removes the
-// session. When the frame is lost and this member leads next, timerWork
-// fires the timer again and sessionCloseWork appends the close. Under another
-// leader, that leader's own frame settles the entry.
+// session. When the frame is lost, the next leader's own frame does the same.
+// When this member leads next, timerWork and sessionCloseWork append that
+// frame.
 //
 // Concurrency: invoker-only.
 func (a *Agent) restoreUncommittedEntries(logPosition int64) {

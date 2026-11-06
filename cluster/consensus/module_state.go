@@ -29,17 +29,17 @@ var moduleStateNames = [...]string{
 }
 
 const (
-	moduleStateReasonSnapshotAction      = "snapshot action"
-	moduleStateReasonSnapshotComplete    = "snapshot complete"
-	moduleStateReasonSnapshotCancelled   = "snapshot cancelled"
-	moduleStateReasonSnapshotWaitRetired = "snapshot wait retired"
-	moduleStateReasonServiceAckFailure   = "service ack failure"
-	moduleStateReasonClosed              = "closed"
-	moduleStateReasonControlSuspend      = "ClusterControl.SUSPEND"
-	moduleStateReasonControlResume       = "ClusterControl.RESUME"
-	moduleStateReasonReplaySuspend       = "ReplayClusterAction.SUSPENDED"
-	moduleStateReasonReplayResume        = "ReplayClusterAction.ACTIVE"
-	moduleStateReasonRollback            = "rollback"
+	moduleStateReasonSnapshotAction        = "snapshot action"
+	moduleStateReasonSnapshotComplete      = "snapshot complete"
+	moduleStateReasonSnapshotCancelled     = "snapshot cancelled"
+	moduleStateReasonSnapshotWaitRetired   = "snapshot wait retired"
+	moduleStateReasonClosed                = "closed"
+	moduleStateReasonUnexpectedTermination = "unexpected termination"
+	moduleStateReasonControlSuspend        = "ClusterControl.SUSPEND"
+	moduleStateReasonControlResume         = "ClusterControl.RESUME"
+	moduleStateReasonReplaySuspend         = "ReplayClusterAction.SUSPENDED"
+	moduleStateReasonReplayResume          = "ReplayClusterAction.ACTIVE"
+	moduleStateReasonRollback              = "rollback"
 )
 
 func (s ModuleState) String() string {
@@ -97,13 +97,8 @@ func (a *Agent) setModuleState(newState ModuleState, reason string) {
 	}
 }
 
-// isSnapshotInProgress reports a take in flight, or a queued snapshot wait
-// that can still pop. A wait can pop only while serviceAckFailure is nil.
 func (a *Agent) isSnapshotInProgress() bool {
-	if a.snapshotTake != nil {
-		return true
-	}
-	return a.snapshotWaitPosition != 0 && a.serviceAckFailure == nil
+	return a.snapshotTake != nil || a.snapshotWaitPosition != 0
 }
 
 func (a *Agent) endSnapshotState(reason string) {

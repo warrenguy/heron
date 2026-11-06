@@ -4,10 +4,13 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
+
+	"github.com/warrenguy/heron/cluster/consensus"
 )
 
 // runnerModel is the reference duty cycle that Run must match.
@@ -25,22 +28,19 @@ func workAt(schedule []int, index int) int {
 	return 0
 }
 
-// modelRun walks the drawn schedule in Run's specified order:
-// 1. check the context
-// 2. tick the transport
-// 3. tick the archive
-// 4. tick the agent
-// 5. check termination
-// 6. idle
+// modelRun walks the drawn schedule in Run's check order.
 //
-// Cancel is raised inside tick cancelAt and observed at the top of the next
-// tick. Termination is observed on the tick that raises it, before idle.
+// scheduledTransport cancels the context inside tick cancelAt. Run sees the
+// cancel at the top of the next tick. Run sees each termination on the tick
+// that raises it.
 func modelRun(
 	transportWork []int,
 	archiveWork []int,
 	agentWork []int,
 	cancelAt int,
 	terminateAt int,
+	memberEndAt int,
+	memberEnd error,
 ) runnerModel {
 	model := runnerModel{resets: 1}
 	canceled := false
@@ -55,6 +55,10 @@ func modelRun(
 		}
 		if terminateAt >= 0 && tick >= terminateAt {
 			model.err = ErrTransportTerminating
+			return model
+		}
+		if memberEndAt >= 0 && tick >= memberEndAt {
+			model.err = memberEnd
 			return model
 		}
 		model.idleCounts = append(model.idleCounts,
@@ -85,8 +89,6 @@ func (s *scheduledTransport) IsTerminating() bool {
 	return s.terminateAt >= 0 && s.ticks > s.terminateAt
 }
 
-// TestRunnerRunMatchesScheduleModel draws a tick schedule with a cancel point
-// and a termination point. Asserts Run matches the reference walk.
 func TestRunnerRunMatchesScheduleModel(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		length := rapid.IntRange(1, 40).Draw(rt, "length")
@@ -95,8 +97,18 @@ func TestRunnerRunMatchesScheduleModel(t *testing.T) {
 		agentWork := rapid.SliceOfN(rapid.IntRange(0, 8), length, length).Draw(rt, "agentWork")
 		cancelAt := rapid.IntRange(0, length-1).Draw(rt, "cancelAt")
 		terminateAt := rapid.IntRange(-1, length-1).Draw(rt, "terminateAt")
+		memberEndAt := rapid.IntRange(-1, length-1).Draw(rt, "memberEndAt")
+		memberEnd := &consensus.TerminationError{Cause: errors.New("boom")}
 
-		want := modelRun(transportWork, archiveWork, agentWork, cancelAt, terminateAt)
+		want := modelRun(
+			transportWork,
+			archiveWork,
+			agentWork,
+			cancelAt,
+			terminateAt,
+			memberEndAt,
+			memberEnd,
+		)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -108,6 +120,10 @@ func TestRunnerRunMatchesScheduleModel(t *testing.T) {
 		}
 		archive := &fakeArchive{work: archiveWork}
 		agent := &fakeAgent{work: agentWork}
+		if memberEndAt >= 0 {
+			agent.endAt = memberEndAt
+			agent.endErr = memberEnd
+		}
 		idle := &recordingIdle{}
 		runner := &Runner{
 			client:  transport,
@@ -119,7 +135,7 @@ func TestRunnerRunMatchesScheduleModel(t *testing.T) {
 
 		err := runner.Run(ctx)
 
-		require.ErrorIs(rt, err, want.err)
+		require.Same(rt, want.err, err, "Run returns the stop value unchanged")
 		require.Equal(rt, want.ticks, transport.ticks, "transport ticks")
 		require.Equal(rt, want.ticks, archive.ticks, "archive ticks")
 		require.Equal(rt, want.ticks, agent.ticks, "agent ticks")

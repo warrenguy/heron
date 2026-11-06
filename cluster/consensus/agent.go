@@ -57,28 +57,22 @@ const DefaultLeaderHeartbeatIntervalNs int64 = 200_000_000
 // DefaultAppendPositionNotReadyTimeoutNs bounds a not-ready append high-water
 // run (5s).
 //
-// The run may span inactive periods. Fail-closed marks only while a recording
-// is active at the crossing tick. Same order of magnitude as the archive
-// control response timeout that bounds the start which allocates the counter.
+// A run counts only time with an active recording. Same order of magnitude as
+// the archive control response timeout that bounds the start which allocates
+// the counter.
 const DefaultAppendPositionNotReadyTimeoutNs int64 = 5_000_000_000
 
 // ErrAppendPositionUnavailable reports that a cluster log recording is active and
-// its recording-position counter has been absent longer than
+// its recording-position counter has been absent for at least
 // [AgentConfig.AppendPositionNotReadyTimeoutNs].
 //
 // Causes:
 //   - the archive stopped the recording without the member observing the stop
 //   - the archive never allocated the counter for a start it acknowledged
-//   - the counters reader is reading a different media driver than the archive
+//   - the counters reader reads a different media driver than the archive
 //
 // [Agent.AppendRankFailure] returns this sentinel wrapped with the recording id
 // and the run length.
-//
-// A member that reports this error:
-//   - has stopped ranking
-//   - has stopped publishing its append position
-//
-// Callers must not treat that member as a live peer.
 var ErrAppendPositionUnavailable = errors.New(
 	"consensus: log recording is active and its recording position counter is absent",
 )
@@ -255,19 +249,15 @@ type Agent struct {
 	appendSource AppendPositionSource
 
 	// appendNotReadySinceNs is the first tick of the open not-ready run from
-	// appendSource, or nullValue when the last read was ready. A ready read
-	// clears the field. A run that spans a recording stop and a new start ends
-	// when the new counter appears.
+	// appendSource, or nullValue when no run is open. A ready read or an
+	// inactive recording clears the field.
 	appendNotReadySinceNs int64
 
 	// appendNotReadyTimeoutNs bounds a not-ready run while a cluster log
 	// recording is active. Past the bound the agent marks appendRankFailure.
 	appendNotReadyTimeoutNs int64
 
-	// appendRankFailure is the first marked append-rank failure, or nil until
-	// marked. Marked once. Later ticks do not replace the cause.
-	// [Agent.PrepareForNewLeadership] clears the field so ranking may start a
-	// fresh not-ready run in the next term.
+	// appendRankFailure is the value [Agent.AppendRankFailure] returns.
 	appendRankFailure error
 
 	// lastPublishedAppendPosition is the follower append high-water from the
@@ -523,6 +513,10 @@ type Agent struct {
 	// timerFailure is the first timer registry failure, or nil until marked.
 	// Marked once. Later refusals do not replace the cause.
 	timerFailure error
+
+	// termination is the reason the member ended, or nil while the member runs.
+	// Full contract on [Agent.TerminationError].
+	termination *TerminationError
 }
 
 // AgentConfig is the constructor config. Nil interface fields are allowed for
@@ -626,8 +620,10 @@ type AgentConfig struct {
 	// ErrorHandler receives each error the agent reports. Nil drops each
 	// report.
 	//
-	// Behaviour: the agent reports a snapshot recording log Force error after
-	// the take resolves. LastSnapshotTake already returns that result.
+	// Behaviour:
+	//   - the agent reports a snapshot recording log Force error after the
+	//     take resolves. LastSnapshotTake already returns that result.
+	//   - the agent reports the first fatal mark, then ends the member.
 	//
 	// Concurrency: invoker-only. ErrorHandler runs inside DoWork.
 	//
@@ -742,22 +738,12 @@ func (a *Agent) reportError(err error) {
 	}
 }
 
-// AppendRankFailure returns the marked append-rank failure, or nil.
+// AppendRankFailure returns the marked append-rank failure, or nil. The failure
+// wraps [ErrAppendPositionUnavailable].
 //
 // Behaviour:
-//   - non-nil once a cluster log recording has been active with no
-//     recording-position counter longer than the configured bound
-//   - marked once: first cause kept; later ticks do not replace it
-//   - a later ready source report does not clear the marked failure
-//   - [Agent.PrepareForNewLeadership] clears the marked failure
-//   - ranking and publish stay stopped after mark
-//
-// Callers must poll this value. Nothing in [cluster.Runner] reads it. The duty
-// cycle keeps running after the failure is set: transport is still serviced and
-// consensus ingress is still polled.
-//
-// A member with a non-nil failure contributes nothing to rank or append
-// publish. Callers must not treat that member as a live peer.
+//   - marked once, never cleared
+//   - a mark ends the member. Full contract on [Agent.TerminationError].
 //
 // Concurrency: invoker-only.
 func (a *Agent) AppendRankFailure() error { return a.appendRankFailure }
@@ -784,17 +770,21 @@ func (a *Agent) resolveAppendPosition(nowNs int64) (int64, bool) {
 		a.appendNotReadySinceNs = nullValue
 		return position, true
 	}
+	if !a.IsRecordingActive() {
+		a.appendNotReadySinceNs = nullValue
+		return 0, false
+	}
 	if a.appendNotReadySinceNs == nullValue {
 		a.appendNotReadySinceNs = nowNs
 	}
-	timedOut := nowNs-a.appendNotReadySinceNs >= a.appendNotReadyTimeoutNs
-	if a.IsRecordingActive() && timedOut {
+	if nowNs-a.appendNotReadySinceNs >= a.appendNotReadyTimeoutNs {
 		a.appendRankFailure = fmt.Errorf(
 			"%w: recording_id=%d not_ready_ns=%d",
 			ErrAppendPositionUnavailable,
 			a.LocalLogRecordingID(),
 			nowNs-a.appendNotReadySinceNs,
 		)
+		a.failMember(a.appendRankFailure)
 	}
 	return 0, false
 }
@@ -1788,7 +1778,6 @@ func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.lastPublishedAppendPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
 	a.timeOfLastAppendPositionUpdateNs = nowNs
-	a.appendRankFailure = nil
 	a.appendNotReadySinceNs = nullValue
 	a.pendingJoinLog = nil
 	a.replayJoinWaitsAhead = 0
@@ -2184,39 +2173,73 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick. Returns the work count.
 //
 // Every step that can install an election runs before the client ingress
-// poll. Service control and the module snapshot take run during an election
-// too. The pending JoinLog retry runs last, so PrepareForNewLeadership can
+// poll. The pending JoinLog retry runs last, so PrepareForNewLeadership can
 // drop a superseded pending JoinLog before any offer.
+//
+// DoWork returns 0 once the member has ended. See [Agent.TerminationError].
 //
 // Concurrency: invoker-only. See [Agent].
 func (a *Agent) DoWork(nowNs int64) int {
+	if a.termination != nil {
+		return 0
+	}
 	work := 0
 	noteDoWorkStep("slowTick")
 	work += a.slowTickIfDue(nowNs)
+	if a.termination != nil {
+		return work
+	}
 	noteDoWorkStep("pollIngress")
 	if !a.prepareInProgress {
 		work += a.pollConsensusIngress(nowNs)
+		if a.termination != nil {
+			return work
+		}
 	}
 	noteDoWorkStep("logStopTick")
 	work += a.logStopTick()
+	if a.termination != nil {
+		return work
+	}
 	noteDoWorkStep("pollClientIngress")
 	work += a.pollClientIngress(nowNs)
+	if a.termination != nil {
+		return work
+	}
 	noteDoWorkStep("pollServiceControl")
 	work += a.pollServiceControl()
+	if a.termination != nil {
+		return work
+	}
 	noteDoWorkStep("serviceControlWork")
 	work += a.serviceControlWork()
+	if a.termination != nil {
+		return work
+	}
 	noteDoWorkStep("snapshotTakeWork")
 	work += a.snapshotTakeWork(nowNs)
+	if a.termination != nil {
+		return work
+	}
 	if a.election != nil {
 		noteDoWorkStep("election.DoWork")
 		work += a.election.DoWork(nowNs)
 	} else {
 		noteDoWorkStep("sessionWork")
 		work += a.sessionWork(nowNs)
+		if a.termination != nil {
+			return work
+		}
 		noteDoWorkStep("timerWork")
 		work += a.timerWork(nowNs)
+		if a.termination != nil {
+			return work
+		}
 		noteDoWorkStep("consensusWork")
 		work += a.consensusWork(nowNs)
+	}
+	if a.termination != nil {
+		return work
 	}
 	noteDoWorkStep("retryPendingJoinLog")
 	work += a.retryPendingJoinLog()

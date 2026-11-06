@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -1647,7 +1648,7 @@ func TestLogReplay_replayJoin(t *testing.T) {
 				r, _, _ := startArchiveReplay(t, agent, writeTimer)
 				require.Equal(t, 1, r.DoWork(0))
 				require.True(t, agent.HasPendingJoinLog())
-				require.True(t, agent.IsReplayLogJoined())
+				require.False(t, agent.IsReplayLogJoined())
 
 				// Phase 1: no drain while the replay JoinLog is unpublished.
 				require.Equal(t, 0, r.DoWork(testImageAwaitNs-1))
@@ -1664,6 +1665,42 @@ func TestLogReplay_replayJoin(t *testing.T) {
 				// Phase 3: Close drops the unpublished replay JoinLog.
 				r.Close()
 				require.False(t, agent.HasPendingJoinLog())
+			},
+		},
+		{
+			name: "null value start ack holds to the deadline",
+			run: func(t *testing.T) {
+				agent, _ := joinedAgent(t)
+				require.NoError(t, agent.AwaitServiceStart(0, func() {}))
+				r, _, _ := startArchiveReplay(t, agent, writeTimer)
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, 2, agent.PendingServiceAckWaits())
+
+				// Phase 1: the NULL_VALUE start ack ends the member. The replay
+				// JoinLog wait stays.
+				ackReplayServiceRecording(t, agent, 0, 0, cnc.NullValue)
+				require.ErrorIs(t, agent.TerminationError(), consensus.ErrServiceStartFailed)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+				require.False(t, agent.IsReplayLogJoined())
+
+				// Phase 2: the drain does not run after the member ends.
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs-1))
+				require.False(t, r.IsDone())
+				require.Equal(t, int64(0), agent.CommitPosition())
+				require.Equal(t, int64(0), agent.LogAdapter().Position())
+
+				// Phase 3: the deadline ends the replay at its start.
+				require.Equal(t, 0, r.DoWork(testImageAwaitNs))
+				require.True(t, r.IsDone())
+				require.Equal(t, servicesNotJoinedReason, r.reason())
+				require.Equal(t, int64(0), r.Position())
+				require.Equal(t, int64(0), agent.CommitPosition())
+				require.Equal(t, int64(1), agent.ScheduledTimerCount())
+
+				// Phase 4: Close drops the join tracking. The marked failure
+				// keeps IsReplayLogJoined false.
+				r.Close()
+				require.False(t, agent.IsReplayLogJoined())
 			},
 		},
 		{
