@@ -85,7 +85,8 @@ var ErrAppendPositionUnavailable = errors.New(
 //   - Holds consensus-facing interfaces only. Must not hold election concrete
 //     types.
 //
-// Concurrency: invoker-only. Caller runs the media-driver/client duty cycle and
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines. Caller runs the media-driver/client duty cycle and
 // [Agent.DoWork] on one goroutine. Agent does not spawn threads and does not
 // own a Client field.
 //
@@ -359,6 +360,8 @@ type Agent struct {
 	// as the active-quorum timeout window (activeQuorumTick).
 	leaderHeartbeatTimeoutNs int64
 
+	archiveConnection ArchiveConnection
+
 	// slowTickDeadlineNs is the next nowNs at which slowTickIfDue evaluates.
 	// Zero means the first tick always evaluates.
 	slowTickDeadlineNs int64
@@ -621,11 +624,12 @@ type AgentConfig struct {
 	// report.
 	//
 	// Behaviour:
-	//   - the agent reports a snapshot recording log Force error after the
-	//     take resolves. LastSnapshotTake already returns that result.
-	//   - the agent reports the first fatal mark, then ends the member.
+	//   - the agent reports a failed take before SNAPSHOT ends, and a Force
+	//     error after the take resolves
+	//   - the agent reports the first fatal mark or
+	//     [ErrLocalArchiveDisconnected], then ends the member
 	//
-	// Concurrency: invoker-only. ErrorHandler runs inside DoWork.
+	// Concurrency: ErrorHandler runs inside [Agent.DoWork].
 	//
 	// [github.com/warrenguy/heron/cluster.Config.ErrorHandler] states the rules
 	// that every module error handler follows.

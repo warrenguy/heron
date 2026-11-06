@@ -6,6 +6,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
@@ -23,14 +24,17 @@ func addModuleErrorCounter(client *aeron.Client) (*aeron.Counter, error) {
 }
 
 // moduleErrorHandler counts each module error on the type 212 counter. It
-// then passes the error to Config.ErrorHandler.
+// then passes the error to Config.ErrorHandler. An archive STORAGE_SPACE error
+// then ends the member.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs consensus.Agent.DoWork. Not
+// safe from other goroutines.
 type moduleErrorHandler struct {
-	values  atomicbuffer.AtomicBuffer
-	offset  int
-	handler func(error)
-	closed  bool
+	values    atomicbuffer.AtomicBuffer
+	offset    int
+	handler   func(error)
+	terminate func(error)
+	closed    bool
 }
 
 // Returns an error when counterID is out of range for counters.
@@ -57,11 +61,36 @@ func (h *moduleErrorHandler) handleError(err error) {
 	if h.handler != nil {
 		h.handler(err)
 	}
+	if h.terminate != nil && isArchiveStorageSpace(err) {
+		h.terminate(err)
+	}
+}
+
+func isArchiveStorageSpace(err error) bool {
+	code, ok := archive.ExceptionCode(err)
+	return ok && code == archive.ErrorStorageSpace
 }
 
 // close stops later reports and leaves the counter open. Idempotent.
 func (h *moduleErrorHandler) close() {
 	h.closed = true
+}
+
+type archiveFailureSource interface {
+	consensus.ArchiveConnection
+	SetErrorResponseHandler(handler func(error))
+}
+
+// wireArchiveFailure makes one opened member end on an archive STORAGE_SPACE
+// error or a lost archive connection.
+func wireArchiveFailure(
+	errorHandler *moduleErrorHandler,
+	agent *consensus.Agent,
+	source archiveFailureSource,
+) {
+	errorHandler.terminate = agent.TerminateOnError
+	agent.SetArchiveConnection(source)
+	source.SetErrorResponseHandler(errorHandler.handleError)
 }
 
 // moduleAgentConfig builds the consensus agent config for one opened member.

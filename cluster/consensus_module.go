@@ -580,6 +580,10 @@ func OpenConsensusModule(
 		reader:    counters,
 	})
 
+	// Wire last. The steps above return errors and do not report them. Their
+	// archive calls drop each unsolicited ERROR.
+	wireArchiveFailure(module.errorHandler, module.agent, module.archiveClient)
+
 	succeeded = true
 	return module, nil
 }
@@ -646,12 +650,12 @@ func (m *ConsensusModule) trackLogReplication(r *logReplication) {
 // The log recording stop abandons a pending async stop. The blocking drain
 // runs only when a start channel is still kept.
 //
-// Idempotent. Safe on a nil receiver. Usable in a defer taken before the error
-// check.
+// Idempotent. Safe on a nil receiver.
 //
 // A transport client supplied through Config.Aeron stays open.
 //
-// Returns the joined close errors, or nil.
+// Returns the joined close errors, or nil. After a lost archive, Close returns
+// the errors of its failed archive stop requests.
 func (m *ConsensusModule) Close() error {
 	if m == nil {
 		return nil
@@ -679,6 +683,7 @@ func (m *ConsensusModule) Close() error {
 	if m.agent != nil {
 		m.agent.MarkClosed()
 		m.agent.CloseSnapshotTake()
+		m.agent.SetArchiveConnection(nil)
 		m.agent.SetModuleStateCounter(nil)
 		m.agent.SetClusterControlToggle(nil)
 		m.agent.SetNodeControlToggle(nil)
@@ -815,13 +820,13 @@ func (m *ConsensusModule) Client() *aeron.Client { return m.client }
 // ArchiveClient returns the archive control client, or nil after Close.
 //
 // Pass the client to RunnerDeps.Archive so the duty cycle demuxes control
-// responses and recording signals. A multi-member duty cycle must call Poll on
-// the client after that member's transport DoWork and before that member's
-// agent DoWork.
+// responses and recording signals.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork]. Not
+// safe from other goroutines.
 //
-// Ownership: the module owns the client. Callers must not close the client.
+// Ownership: the module owns the client. Callers must not close the client or
+// replace its error response handler.
 func (m *ConsensusModule) ArchiveClient() *archive.Client { return m.archiveClient }
 
 // Agent returns the consensus agent. It stays non-nil after Close, with every

@@ -400,6 +400,19 @@ func TestClusterControlToggle_lifecycle(t *testing.T) {
 			},
 		},
 		{
+			name: "failed take that ends the member keeps SNAPSHOT",
+			run: func(t *testing.T) {
+				a, _ := settledLeaderWithLog(t, 0)
+				a.errorHandler = a.TerminateOnError
+				control, _ := wireToggles(a, snapshot, neutral)
+				require.Equal(t, 1, a.slowTickWork(nowNs))
+				require.Equal(t, 1, a.serviceControlWork())
+				requireTakeNotConfigured(t, a)
+				require.Equal(t, snapshot, control.Load())
+				requireTerminated(t, a, errSnapshotNotConfigured, false)
+			},
+		},
+		{
 			name: "ack failure before the pop keeps SNAPSHOT",
 			run: func(t *testing.T) {
 				a, q, _ := settledLeaderWithControl(t, 1)

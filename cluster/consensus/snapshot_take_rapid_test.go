@@ -586,7 +586,7 @@ func requireSnapshotTakeResult(
 	possible, certain := script.outcome()
 	if result.Err != nil {
 		require.NoError(rt, result.ForceErr)
-		require.Empty(rt, reported)
+		require.Equal(rt, []error{result.Err}, reported)
 		require.Equal(rt, int64(nullValue), result.RecordingID)
 		matched := certain != nil && errors.Is(result.Err, certain)
 		for _, cause := range possible {
