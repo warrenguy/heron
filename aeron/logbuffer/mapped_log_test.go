@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
@@ -424,6 +425,30 @@ func TestMapLogFile_missingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.log")
 	_, err := logbuffer.MapLogFile(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestMapLogFile_refusesFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.log")
+	logbuffer.WriteTestLogFile(t, target)
+	link := filepath.Join(dir, "link.log")
+	require.NoError(t, os.Symlink(target, link))
+
+	_, err := logbuffer.MapLogFile(link)
+	require.ErrorIs(t, err, unix.ELOOP)
+}
+
+func TestMapLogFile_followsParentSymlink(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	require.NoError(t, os.Mkdir(realDir, 0o755))
+	logbuffer.WriteTestLogFile(t, filepath.Join(realDir, "test.log"))
+	linkDir := filepath.Join(base, "link")
+	require.NoError(t, os.Symlink(realDir, linkDir))
+
+	mapped, err := logbuffer.MapLogFile(filepath.Join(linkDir, "test.log"))
+	require.NoError(t, err)
+	require.NoError(t, mapped.Close())
 }
 
 func TestMapLogBufferFromBytes_roundtrip(t *testing.T) {

@@ -162,6 +162,18 @@ func TestLogBuffersRegistry_Acquire_errors(t *testing.T) {
 			},
 			wantErr: conductor.ErrLogBufferMapFailed,
 		},
+		{
+			name: "finalSymlink",
+			logPath: func(t *testing.T) string {
+				dir := t.TempDir()
+				target := filepath.Join(dir, "target.log")
+				writeMinimalLogFileForRegistryTest(t, target)
+				link := filepath.Join(dir, "link.log")
+				require.NoError(t, os.Symlink(target, link))
+				return link
+			},
+			wantErr: conductor.ErrLogBufferMapFailed,
+		},
 	}
 
 	for _, testCase := range tests {
