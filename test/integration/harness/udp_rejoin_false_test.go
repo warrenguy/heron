@@ -36,7 +36,7 @@ func runRejoinFalseSecondPub(t *testing.T, splitDrivers bool) {
 	subChannel := aeron.AppendChannelParam(channel, "rejoin=", "false")
 
 	sub, err := clients.sub.AddSubscription(rejoinFalseStreamID, subChannel)
-	require.NoError(t, err)
+	RequireNoUDPBindError(t, err, port)
 	CleanupClose(t, "close rejoin=false subscription", sub.Close)
 	require.Contains(t, sub.Channel(), "rejoin=false")
 

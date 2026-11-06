@@ -67,14 +67,15 @@ func TestClientMapsLogsWithLargeFilePageSize(t *testing.T) {
 
 	t.Run("udp publication", func(t *testing.T) {
 		client, hadClientError := harness.ConnectIPCClient(t, md)
-		channel := "aeron:udp?endpoint=" + harness.LoopbackUDPEndpoint(harness.FreeUDPPort(t)) +
+		port := harness.FreeUDPPort(t)
+		channel := "aeron:udp?endpoint=" + harness.LoopbackUDPEndpoint(port) +
 			"|term-length=" + strconv.Itoa(largePageUDPTermLength)
 
 		pub, err := client.AddPublication(largePageUDPStreamID, channel)
 		require.NoError(t, err)
 		harness.CleanupClose(t, "close publication", pub.Close)
 		sub, err := client.AddSubscription(largePageUDPStreamID, channel)
-		require.NoError(t, err)
+		harness.RequireNoUDPBindError(t, err, port)
 		harness.CleanupClose(t, "close subscription", sub.Close)
 		harness.WaitForIPCLinkConnected(t, client, pub, sub)
 
