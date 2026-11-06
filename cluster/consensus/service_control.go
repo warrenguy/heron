@@ -185,7 +185,8 @@ func (a *Agent) AwaitServiceStart(logPosition int64, startHandler func()) error 
 // A service start wait always runs the start handler. A NULL_VALUE RelevantID
 // then marks [ErrServiceStartFailed].
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Returns 1 when the call consumes a wait, else 0.
 func (a *Agent) serviceControlWork() int {
@@ -211,7 +212,9 @@ func (a *Agent) serviceControlWork() int {
 		a.buildSnapshotTake(head)
 	}
 	a.removeServiceAckHead()
-	a.serviceAckWaits = a.serviceAckWaits[1:]
+
+	// The pop keeps capacity, so the next append does not allocate.
+	a.serviceAckWaits = slices.Delete(a.serviceAckWaits, 0, 1)
 	if a.replayJoinWaitsAhead > 0 {
 		a.replayJoinWaitsAhead--
 	}

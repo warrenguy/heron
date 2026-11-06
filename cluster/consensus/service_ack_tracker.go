@@ -118,7 +118,9 @@ func (t *serviceAckTracker) removeHead() {
 		if len(q) == 0 {
 			continue
 		}
-		t.queues[i] = q[1:]
+
+		// The pop keeps capacity, so the next append does not allocate.
+		t.queues[i] = slices.Delete(q, 0, 1)
 		t.nextAckIDs[i]++
 		t.skipDroppedAckIDs(i)
 	}
