@@ -264,8 +264,8 @@ func awaitTransferReElection(
 	requireReElectedLeader(t, set, leaderIndex, preTerm)
 }
 
-// offerTransferSessionMessage offers payload on session until the offer
-// returns a positive position.
+// offerTransferSessionMessage holds pump.mu while offerSessionMessage offers
+// payload on the pump session.
 //
 // dump, when present, replaces set.State() on offer failure.
 func offerTransferSessionMessage(
@@ -277,20 +277,36 @@ func offerTransferSessionMessage(
 ) int64 {
 	t.Helper()
 
+	pump.mu.Lock()
+	defer pump.mu.Unlock()
+	return offerSessionMessage(t, set, pump.session, payload, func() string {
+		return transferTimeoutDump(set, dump)
+	})
+}
+
+// offerSessionMessage offers payload on session until the offer returns a
+// positive position. Each attempt ticks set.
+func offerSessionMessage(
+	t *testing.T,
+	set *harness.ClusterMemberSet,
+	session *client.AeronCluster,
+	payload []byte,
+	dump func() string,
+) int64 {
+	t.Helper()
+
 	offerCtx, cancelOffer := context.WithTimeout(t.Context(), durableWorkBound)
 	defer cancelOffer()
 	lastKeepalive := time.Now()
-	pump.mu.Lock()
-	defer pump.mu.Unlock()
-	pos, offerErr := pump.session.IngressOfferUntilPositive(
+	pos, offerErr := session.IngressOfferUntilPositive(
 		offerCtx,
 		client.IngressOfferConfig{
 			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
 		},
 		func() int64 {
 			set.Tick()
-			sendKeepAliveIfDue(pump.session, &lastKeepalive)
-			return pump.session.Offer(payload)
+			sendKeepAliveIfDue(session, &lastKeepalive)
+			return session.Offer(payload)
 		},
 	)
 	if offerErr != nil {
@@ -300,7 +316,7 @@ func offerTransferSessionMessage(
 			"err=%v payload=%q:\n%s",
 			offerErr,
 			payload,
-			transferTimeoutDump(set, dump),
+			dump(),
 		)
 	}
 	require.Positive(t, pos)

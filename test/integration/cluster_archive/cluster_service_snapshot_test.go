@@ -3,7 +3,6 @@
 package cluster_archive_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -25,7 +24,6 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/recordinglog"
 	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -102,42 +100,18 @@ func offerSnapshotPayload(publication *aeron.ExclusivePublication, payload []byt
 func openSnapshotServiceCluster(t *testing.T) (serviceCluster, *snapshotRecorder) {
 	t.Helper()
 
-	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
-		MemberCount:          1,
-		PortBase:             harness.ClusterServiceSnapshotPortBase,
-		LogMulticastEndpoint: harness.ClusterServiceSnapshotLogEndpoint,
-		AmendMemberConfig:    amendSnapshotMember,
-	})
-	require.Len(t, set.Modules(), 1)
-
-	rec := &snapshotRecorder{sessionRecorder: &sessionRecorder{}}
-	module := set.Module(0)
-	container, err := service.Open(service.Config{
-		Aeron:             module.Client(),
-		Service:           rec,
-		CommittedPosition: module.CommitPosition,
-		Archive:           &archive.Config{},
-		Recovery:          &service.RecoveryConfig{},
-	})
-	require.NoError(t, err)
-	harness.CleanupClose(t, "service container", container.Close)
-
-	agent := container.Agent()
-	checked := &boundCheckedService{agent: agent, module: module}
-	set.AttachService(t, 0, checked)
-
-	requireAwait(t, set, "log image fan-in", durableImageBound, set.AwaitLogImages)
-	requireAwait(t, set, "election", durableElectBound, set.AwaitElection)
-
-	sc := serviceCluster{
-		set: set,
-		members: []serviceMember{{
-			rec:       rec.sessionRecorder,
-			agent:     agent,
-			checked:   checked,
-			container: container,
-		}},
-	}
+	var rec *snapshotRecorder
+	sc := startWrappedServiceCluster(
+		t,
+		1,
+		harness.ClusterServiceSnapshotPortBase,
+		harness.ClusterServiceSnapshotLogEndpoint,
+		amendSnapshotMember,
+		func(base *sessionRecorder) service.ClusteredService {
+			rec = &snapshotRecorder{sessionRecorder: base}
+			return rec
+		},
+	)
 	return sc, rec
 }
 
@@ -615,24 +589,7 @@ func TestClusterService_recordsAndLoadsSnapshot(t *testing.T) {
 	require.GreaterOrEqual(t, wantSession, int64(0))
 
 	payload := []byte(snapshotSessionPayload)
-	offerCtx, cancelOffer := context.WithTimeout(t.Context(), durableWorkBound)
-	defer cancelOffer()
-	lastKeepalive := time.Now()
-	pos, offerErr := session.IngressOfferUntilPositive(
-		offerCtx,
-		client.IngressOfferConfig{
-			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
-		},
-		func() int64 {
-			set.Tick()
-			sendKeepAliveIfDue(session, &lastKeepalive)
-			return session.Offer(payload)
-		},
-	)
-	if offerErr != nil {
-		require.FailNow(t, "session offer failed", "err=%v:\n%s", offerErr, sc.dump())
-	}
-	require.Positive(t, pos)
+	offerSessionMessage(t, set, session, payload, sc.dump)
 	requireServiceAwaitTick(
 		t, sc,
 		"session message delivered",
