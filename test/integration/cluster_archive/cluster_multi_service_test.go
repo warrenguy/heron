@@ -114,12 +114,12 @@ func dumpMultiService(
 			}
 			recStart, recMsgs := 0, 0
 			var recOpens []int64
-			var recCloses []recordedClose
+			var recCloses []harness.RecordedClose
 			if seat.recorder != nil {
 				recStart = seat.recorder.startCount
 				recOpens = seat.recorder.opens
 				recMsgs = len(seat.recorder.messages)
-				recCloses = seat.recorder.closes
+				recCloses = seat.recorder.Closes
 			}
 			b = append(b, fmt.Sprintf(
 				"service member=%d service=%d bound=%v logPos=%d commit=%d nextAck=%d "+
@@ -695,14 +695,9 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 				ca.ClosingSessionCount() != 0 {
 				return false
 			}
-			for _, memberSeats := range seats {
-				for _, seat := range memberSeats {
-					if !seat.recorder.holdsClose(wantSession) {
-						return false
-					}
-				}
-			}
-			return true
+			return everyMultiServiceRecorder(seats, func(rec *sessionRecorder) bool {
+				return rec.HasClose(wantSession)
+			})
 		},
 	)
 

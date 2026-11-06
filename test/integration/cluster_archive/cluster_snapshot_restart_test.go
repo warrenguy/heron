@@ -83,17 +83,13 @@ func restartedRecorderStatus(
 	restoredID, freshID int64,
 	payloads ...[]byte,
 ) (complete, corrupt bool) {
-	timedOut := recordedClose{sessionID: restoredID, reason: clusterwire.CloseReason_TIMEOUT}
-	if len(rec.closes) > 1 {
-		return false, true
-	}
-	for _, closed := range rec.closes {
-		if closed != timedOut {
-			return false, true
-		}
-	}
-	if len(rec.closes) == 0 {
+	if len(rec.Closes) == 0 {
 		return false, false
+	}
+	timedOutOnce := len(rec.Closes) == 1 &&
+		rec.HasCloseWithReason(restoredID, clusterwire.CloseReason_TIMEOUT)
+	if !timedOutOnce {
+		return false, true
 	}
 	live := &sessionRecorder{
 		opens:    rec.opens,
