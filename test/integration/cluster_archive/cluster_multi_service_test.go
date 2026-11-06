@@ -3,7 +3,6 @@
 package cluster_archive_test
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"testing"
@@ -17,7 +16,6 @@ import (
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -564,20 +562,12 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 		"join settle",
 		durableWorkBound,
 		func() bool {
-			for i, m := range set.Modules() {
-				ca := m.Agent()
-				if ca.ExpectedServiceAckID() != 2 || ca.PendingServiceAckWaits() != 0 {
+			if !multiServiceJoinSettled(set, seats) {
+				return false
+			}
+			for _, m := range set.Modules() {
+				if m.Agent().ExpectedServiceAckID() != 2 {
 					return false
-				}
-				if ca.ServiceAckQueueDepth(0) != 0 || ca.ServiceAckQueueDepth(1) != 0 {
-					return false
-				}
-				for _, seat := range seats[i] {
-					if !seat.agent.IsLogBound() ||
-						seat.agent.HasPendingJoin() ||
-						seat.agent.NextAckID() != 2 {
-						return false
-					}
 				}
 			}
 			return true
@@ -624,34 +614,9 @@ func TestClusterMultiService_ackWaitsCompleteOnlyWhenEveryServiceAcks(t *testing
 	)
 
 	payload := []byte(multiServiceMessagePayload)
-	offerCtx, cancelOffer := context.WithTimeout(t.Context(), durableWorkBound)
-	defer cancelOffer()
-	lastKeepalive := time.Now()
-	pos, offerErr := session.IngressOfferUntilPositive(
-		offerCtx,
-		client.IngressOfferConfig{
-			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
-		},
-		func() int64 {
-			set.Tick()
-			now := time.Now()
-			if now.Sub(lastKeepalive) >= time.Second {
-				_ = session.SendKeepAlive()
-				lastKeepalive = now
-			}
-			return session.Offer(payload)
-		},
-	)
-	if offerErr != nil {
-		require.FailNow(
-			t,
-			"session offer failed",
-			"err=%v:\n%s",
-			offerErr,
-			dumpMultiService(set, seats),
-		)
-	}
-	require.Positive(t, pos)
+	offerSessionMessage(t, set, session, payload, func() string {
+		return dumpMultiService(set, seats)
+	})
 
 	requireMultiServiceAwaitTick(
 		t, set, seats,

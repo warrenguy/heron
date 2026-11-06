@@ -3,7 +3,6 @@
 package cluster_archive_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -18,7 +17,6 @@ import (
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
@@ -243,35 +241,7 @@ func TestClusterSession_opensSendsAndClosesOverDurableMembers(t *testing.T) {
 
 	payload := []byte("session-smoke-message")
 	preMsgLogPos := leader.LogPublisher().Position()
-	offerCtx, cancelOffer := context.WithTimeout(t.Context(), durableWorkBound)
-	defer cancelOffer()
-	lastKeepalive := time.Now()
-	pos, offerErr := session.IngressOfferUntilPositive(
-		offerCtx,
-		client.IngressOfferConfig{
-			IdleStrategy: idlestrategy.NewSleeping(aeron.DefaultIdleSleepDuration),
-		},
-		func() int64 {
-			set.Tick()
-			now := time.Now()
-			if now.Sub(lastKeepalive) >= time.Second {
-				_ = session.SendKeepAlive()
-				lastKeepalive = now
-			}
-			return session.Offer(payload)
-		},
-	)
-	if offerErr != nil {
-		require.FailNow(
-			t,
-			"session offer failed",
-			"err=%v payload=%q:\n%s",
-			offerErr,
-			payload,
-			set.State(),
-		)
-	}
-	require.Positive(t, pos)
+	offerSessionMessage(t, set, session, payload, set.State)
 
 	var postAppendLogPos int64
 	requireAwaitTick(t, set, "session message appended", durableWorkBound, sessionPump(

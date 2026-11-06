@@ -426,17 +426,18 @@ func startServiceCluster(
 	amend func(cluster.Config) cluster.Config,
 ) serviceCluster {
 	t.Helper()
-	return startWrappedServiceCluster(t, portBase, logEndpoint, amend, nil)
+	return startWrappedServiceCluster(t, 3, portBase, logEndpoint, amend, nil)
 }
 
 // wrapRecorder returns the clustered service a container runs around one
 // session recorder. Nil runs the recorder itself.
 type wrapRecorder func(rec *sessionRecorder) service.ClusteredService
 
-// startWrappedServiceCluster is startServiceCluster with each recorder
-// wrapped by wrap.
+// startWrappedServiceCluster is startServiceCluster with memberCount members
+// and wrap applied to each recorder.
 func startWrappedServiceCluster(
 	t *testing.T,
+	memberCount int,
 	portBase int,
 	logEndpoint string,
 	amend func(cluster.Config) cluster.Config,
@@ -445,15 +446,15 @@ func startWrappedServiceCluster(
 	t.Helper()
 
 	set := harness.StartClusterMemberSet(t, harness.ClusterMemberSetConfig{
-		MemberCount:          3,
+		MemberCount:          memberCount,
 		PortBase:             portBase,
 		LogMulticastEndpoint: logEndpoint,
 		AmendMemberConfig:    amend,
 	})
-	require.Len(t, set.Modules(), 3)
+	require.Len(t, set.Modules(), memberCount)
 
-	members := make([]serviceMember, 3)
-	for i := range 3 {
+	members := make([]serviceMember, memberCount)
+	for i := range memberCount {
 		members[i] = openServiceMember(t, set, i, wrap, fmt.Sprintf("service container %d", i))
 	}
 
@@ -1078,6 +1079,7 @@ func TestClusterService_restartRebuildsModuleState(t *testing.T) {
 	}
 	sc := startWrappedServiceCluster(
 		t,
+		3,
 		harness.ClusterServiceRebuildPortBase,
 		harness.ClusterServiceRebuildLogEndpoint,
 		amendServiceMember,
