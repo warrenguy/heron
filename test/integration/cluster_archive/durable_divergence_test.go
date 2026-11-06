@@ -20,19 +20,6 @@ import (
 	"github.com/warrenguy/heron/test/integration/harness"
 )
 
-// termBaseLogPosition returns the term-base log position for leadershipTermID
-// from m's recording.log, or recordinglog.NullPosition when no entry matches.
-func termBaseLogPosition(m *cluster.ConsensusModule, leadershipTermID int64) int64 {
-	if m == nil || m.RecordingLog() == nil {
-		return recordinglog.NullPosition
-	}
-	e := m.RecordingLog().FindTermEntry(leadershipTermID)
-	if e == nil {
-		return recordinglog.NullPosition
-	}
-	return e.TermBaseLogPosition
-}
-
 // lastTermLogPosition returns LogPosition of the highest valid TERM entry, or
 // recordinglog.NullPosition when the log holds none.
 //
@@ -327,7 +314,7 @@ func divergeAndReElect(
 		set.State(),
 	)
 
-	newTermBase := termBaseLogPosition(newLeader, newTerm)
+	newTermBase := harness.TermBaseLogPosition(newLeader, newTerm)
 	require.NotEqual(
 		t,
 		recordinglog.NullPosition,

@@ -1042,6 +1042,20 @@ func RecordingCounterPosition(m *cluster.ConsensusModule, recordingID int64) int
 	return slot.Get()
 }
 
+// TermBaseLogPosition returns the term base of leadershipTermID in the
+// recording log of m. It returns recordinglog.NullPosition when m does not hold
+// the entry.
+func TermBaseLogPosition(m *cluster.ConsensusModule, leadershipTermID int64) int64 {
+	if m == nil || m.RecordingLog() == nil {
+		return recordinglog.NullPosition
+	}
+	e := m.RecordingLog().FindTermEntry(leadershipTermID)
+	if e == nil {
+		return recordinglog.NullPosition
+	}
+	return e.TermBaseLogPosition
+}
+
 // Close closes every module in reverse open order. Idempotent via each
 // module's idempotent Close. Module Close clears each transport client,
 // archive control client, and LogStreams.

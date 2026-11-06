@@ -356,7 +356,7 @@ func TestDurableClusterSession_reElectsUnderTrafficAndExtendsRecordings(t *testi
 		"further election:\n%s",
 		sc.set.State(),
 	)
-	termBase := termBaseLogPosition(leader, stopTerm)
+	termBase := harness.TermBaseLogPosition(leader, stopTerm)
 	require.Positive(t, termBase, "term base:\n%s", sc.set.State())
 	require.GreaterOrEqual(
 		t,
@@ -378,7 +378,7 @@ func TestDurableClusterSession_reElectsUnderTrafficAndExtendsRecordings(t *testi
 	// term start.
 	require.GreaterOrEqual(
 		t,
-		termBaseLogPosition(returning, stopTerm),
+		harness.TermBaseLogPosition(returning, stopTerm),
 		termBase,
 		"ex-leader term base:\n%s",
 		sc.set.State(),
@@ -458,7 +458,7 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 	require.Equal(
 		t,
 		missedTermEnd,
-		termBaseLogPosition(leader, rejoinTerm),
+		harness.TermBaseLogPosition(leader, rejoinTerm),
 		"rejoin term base:\n%s",
 		sc.set.State(),
 	)
@@ -504,7 +504,7 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 		"further election:\n%s",
 		sc.set.State(),
 	)
-	rejoinBase := termBaseLogPosition(leader, rejoinTerm)
+	rejoinBase := harness.TermBaseLogPosition(leader, rejoinTerm)
 	require.Less(
 		t,
 		restartStop,
@@ -512,13 +512,13 @@ func TestDurableClusterSession_replicatesAnExLeaderStoppedUnderTraffic(t *testin
 		"recording stop at or above the term base:\n%s",
 		sc.set.State(),
 	)
-	missedTermBase := termBaseLogPosition(leader, missedTerm)
+	missedTermBase := harness.TermBaseLogPosition(leader, missedTerm)
 	returning := sc.set.Module(sc.exIndex)
 	require.Positive(t, missedTermBase, "missed-term base:\n%s", sc.set.State())
 	require.Equal(
 		t,
 		missedTermBase,
-		termBaseLogPosition(returning, missedTerm),
+		harness.TermBaseLogPosition(returning, missedTerm),
 		"ex-leader missed-term entry:\n%s",
 		sc.set.State(),
 	)
