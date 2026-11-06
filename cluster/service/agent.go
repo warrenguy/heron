@@ -433,6 +433,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 // Behaviour:
 //   - After a Start error, each tick drains only the start entry, until the
 //     agent marks the service failure.
+//   - A panic from Start propagates out of DoWork. The start ack does not
+//     send. The agent does not mark a failure. The invoker must not call
+//     DoWork again.
 //   - The agent can send the ack of a take in the tick that resolves the take.
 //   - The log poll bound is min(committed, lowest unready request entry
 //     position).
