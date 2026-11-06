@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,9 @@ import (
 )
 
 func TestUDPPortHolders_findsOwnSocket(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("holder lookup requires linux /proc")
+	}
 	port := listenLoopbackUDP(t)
 
 	holders, _, err := udpPortHolders(port)
@@ -120,6 +124,9 @@ func TestRequireNoUDPBindError_namesHolderOnAddressInUse(t *testing.T) {
 	})
 
 	t.Run("address in use", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("holder lookup requires linux /proc")
+		}
 		capture := NewCaptureFailTB(t)
 		RequireNoUDPBindError(capture, addressInUse, port)
 		require.True(t, capture.Failed())
