@@ -19,6 +19,7 @@ import (
 	"github.com/warrenguy/heron/aeron/internal/testutil"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testhook"
 	"github.com/warrenguy/heron/ringbuffer"
 )
 
@@ -925,18 +926,30 @@ func (client *Client) GuardClosedBeforeOfferForTest(
 	return client.guardClosedBeforeOffer(driverProxy, cncMappedAtOfferStart)
 }
 
-// SetAwaitPollSleepingHookForTest installs a hook invoked under clientLock
-// immediately before each await-poll sleep. Set from the test goroutine before
-// starting a blocking await; clear after the await goroutine has finished.
-func (client *Client) SetAwaitPollSleepingHookForTest(hook func()) {
-	setAwaitPollSleepingHook(client, hook)
+// SetAwaitPollSleepingHookForTest installs hook on client. The await poll runs
+// hook under clientLock before each sleep. Call from the test goroutine before
+// a blocking await starts.
+//
+// Lifetime: the hook stays set for the rest of tb, including subtests.
+func (client *Client) SetAwaitPollSleepingHookForTest(
+	tb testing.TB,
+	hook func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, awaitPollSleepingHooks, client, hook)
 }
 
-// SetDoWorkAfterHookForTest installs a hook invoked under clientLock after each
-// conductor DoWork tick and before DoWork returns. The hook must not call back
-// into Client APIs that take clientLock.
-func (client *Client) SetDoWorkAfterHookForTest(hook func()) {
-	setDoWorkAfterHook(client, hook)
+// SetDoWorkAfterHookForTest installs hook on client. DoWork runs hook under
+// clientLock after each conductor tick. hook must not call a Client API that
+// takes clientLock.
+//
+// Lifetime: the hook stays set for the rest of tb, including subtests.
+func (client *Client) SetDoWorkAfterHookForTest(
+	tb testing.TB,
+	hook func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, doWorkAfterHooks, client, hook)
 }
 
 // PublishClosedForTest sets closed without teardown; for guard tests only.

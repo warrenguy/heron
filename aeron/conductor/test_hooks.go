@@ -133,8 +133,16 @@ func LingerDeadlineNsForTest(registry *LogBuffersRegistry, logFileName string) i
 	return lingerDeadlineNsHook(registry, logFileName)
 }
 
-func (conductor *Conductor) SetLingerSweepBlockerForTest(blocker func()) {
-	setLingerSweepBlockerHook(conductor, blocker)
+// SetLingerSweepBlockerForTest installs blocker on conductor.
+// service runs blocker before the linger sweep, under the resource write lock.
+//
+// Lifetime: the blocker stays set for the rest of tb, including subtests.
+func (conductor *Conductor) SetLingerSweepBlockerForTest(
+	tb testing.TB,
+	blocker func(),
+) {
+	tb.Helper()
+	testhook.SetForTest(tb, lingerSweepBlockers, conductor, blocker)
 }
 
 // SetReceiveNextHookForTest installs hook on copyReceiver.

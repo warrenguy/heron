@@ -19,17 +19,40 @@ func TestClient_awaitPollSleepingHook_clearRemovesSideTableEntry(t *testing.T) {
 	)
 
 	var calls atomic.Int32
-	client.SetAwaitPollSleepingHookForTest(func() {
+	setAwaitPollSleepingHook(client, func() {
 		calls.Add(1)
 	})
-	t.Cleanup(func() { client.SetAwaitPollSleepingHookForTest(nil) })
+	t.Cleanup(func() { setAwaitPollSleepingHook(client, nil) })
 
 	invokeAwaitPollSleepingHook(client)
 	require.Equal(t, int32(1), calls.Load())
 
-	client.SetAwaitPollSleepingHookForTest(nil)
+	setAwaitPollSleepingHook(client, nil)
 	invokeAwaitPollSleepingHook(client)
 	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestClient_awaitPollSleepingHook_clearedWhenTestEnds(t *testing.T) {
+	var nanoNs int64
+	client, _ := newClientAwaitFixture(
+		t,
+		func() int64 { return nanoNs },
+		testutil.TestDriverTimeout,
+		testutil.TestIdleSleepDuration,
+	)
+
+	calls := 0
+	t.Run("install", func(t *testing.T) {
+		client.SetAwaitPollSleepingHookForTest(t, func() {
+			calls++
+		})
+		invokeAwaitPollSleepingHook(client)
+		require.Equal(t, 1, calls)
+	})
+
+	// Phase: the subtest cleanup removed the hook.
+	invokeAwaitPollSleepingHook(client)
+	require.Equal(t, 1, calls)
 }
 
 func TestClient_awaitPollSleepingHook_nilReceiver(t *testing.T) {
