@@ -428,7 +428,7 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 		const pollNs int64 = 3_000
 		q := &consensus.QueueConsensusIngress{}
 		agent.SetIngress(q)
-		q.Enqueue(encodeCommitPositionWireForTest(t, codecs.CommitPositionFields{
+		q.Enqueue(codecs.EncodeCommitPositionForTest(t, codecs.CommitPositionFields{
 			LeadershipTermID: fields.LeadershipTermID,
 			LogPosition:      commitPos,
 			LeaderMemberID:   leaderID,
@@ -506,16 +506,6 @@ func TestInstallLeadershipTerm_handoffAgentLeaderAndTerm(t *testing.T) {
 		require.Equal(t, fields.LeadershipTermID, agent.LeadershipTermID())
 		require.Equal(t, fields.LeadershipTermID, e.LeadershipTermID())
 	})
-}
-
-// encodeCommitPositionWireForTest builds a full CommitPosition SBE frame via
-// [election.SbePublisher] for steady Agent ingress inject.
-func encodeCommitPositionWireForTest(t *testing.T, fields codecs.CommitPositionFields) []byte {
-	t.Helper()
-	pub := &election.SbePublisher{}
-	pub.CommitPosition(election.PublicationTarget{MemberID: 0}, fields)
-	require.Len(t, pub.Sent, 1)
-	return pub.Sent[0].Wire
 }
 
 func TestHostAdapter_QuorumPositionBoundedByLeaderLog_min(t *testing.T) {
