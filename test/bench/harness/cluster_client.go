@@ -7,6 +7,8 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 const (
@@ -18,11 +20,53 @@ const (
 	BenchLeaderMemberID int32 = 1
 	// BenchChannelOnlyMemberID is the synthetic map key for IPC channel-only ingress.
 	BenchChannelOnlyMemberID int32 = 0
+
+	benchEgressTimestamp int64 = 1700000000123
 )
 
-// NewAeronClusterForBench builds a CONNECTED AeronCluster session backed by an
-// in-memory exclusive ingress publication and minimal connect-result stubs.
+// NewAeronClusterForBench builds a CONNECTED AeronCluster with an in-memory
+// exclusive ingress publication and connect-result stubs.
 func NewAeronClusterForBench() *client.AeronCluster {
+	return newAeronClusterForBench(&aeron.Subscription{}, nil, client.DefaultBenchConfigForBench())
+}
+
+// NewAeronClusterWithEgressForBench builds a CONNECTED AeronCluster. The
+// returned egress image holds one SessionMessageHeader frame that carries
+// payload for BenchClusterSessionID.
+func NewAeronClusterWithEgressForBench(
+	payload []byte,
+	handler client.EgressHandler,
+) (*client.AeronCluster, *aeron.Image) {
+	sub, image := aeron.NewInMemSubscriptionForBench(encodeSessionMessageForBench(payload))
+	cfg := client.DefaultBenchConfigForBench()
+	cfg.EgressHandler = handler
+	return newAeronClusterForBench(sub, image, cfg), image
+}
+
+func encodeSessionMessageForBench(payload []byte) []byte {
+	message := make([]byte, codecs.SessionMessageHeaderEncodedLen()+len(payload))
+	end, ok := codecs.EncodeSessionMessageHeader(
+		message,
+		0,
+		clusterwire.SessionMessageHeaderSbeSchemaVersion,
+		codecs.SessionMessageHeaderFields{
+			LeadershipTermID: BenchLeadershipTermID,
+			ClusterSessionID: BenchClusterSessionID,
+			Timestamp:        benchEgressTimestamp,
+		},
+	)
+	if !ok {
+		panic("harness: encode SessionMessageHeader: buffer too small")
+	}
+	copy(message[end:], payload)
+	return message
+}
+
+func newAeronClusterForBench(
+	egressSubscription *aeron.Subscription,
+	egressImage *aeron.Image,
+	cfg client.Config,
+) *client.AeronCluster {
 	ingressPub := aeron.NewInMemExclusivePublicationForBench(
 		aeron.DefaultBenchExclusivePublicationConfig(),
 		aeron.BenchPublicationLimitPosition,
@@ -32,8 +76,8 @@ func NewAeronClusterForBench() *client.AeronCluster {
 		LeadershipTermID:   BenchLeadershipTermID,
 		LeaderMemberID:     BenchLeaderMemberID,
 		IngressPublication: ingressPub,
-		EgressSubscription: &aeron.Subscription{},
-		EgressImage:        nil,
+		EgressSubscription: egressSubscription,
+		EgressImage:        egressImage,
 		MemberIngressMap: client.MemberIngressMap{
 			BenchChannelOnlyMemberID: &client.MemberIngress{
 				MemberID:    BenchChannelOnlyMemberID,
@@ -42,11 +86,11 @@ func NewAeronClusterForBench() *client.AeronCluster {
 		},
 		Aeron:           &aeron.Client{},
 		OwnsAeronClient: false,
-		Config:          client.DefaultBenchConfigForBench(),
+		Config:          cfg,
 	}
 	ac, err := client.NewAeronCluster(result)
 	if err != nil {
-		panic("harness: NewAeronClusterForBench: " + err.Error())
+		panic("harness: newAeronClusterForBench: " + err.Error())
 	}
 	return ac
 }

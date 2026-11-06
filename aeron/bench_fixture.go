@@ -109,6 +109,18 @@ func DefaultBenchPollImageForBench() *Image {
 	return newInMemZeroAllocPollImage()
 }
 
+// NewInMemSubscriptionForBench builds a subscription with one in-memory image.
+// The image holds one committed unfragmented frame at position 0. The frame
+// carries payload. Both handles borrow the mapped log for process lifetime.
+// Fixtures do not close the log.
+func NewInMemSubscriptionForBench(payload []byte) (*Subscription, *Image) {
+	image := newInMemPollImage(payload)
+	if !image.subscription.addImage(image) {
+		panic("aeron: bench subscription rejected the poll image")
+	}
+	return image.subscription, image
+}
+
 // BenchPollZeroAllocFrameBytes returns the aligned byte size of the default poll frame.
 func BenchPollZeroAllocFrameBytes() int64 {
 	return inMemPollZeroAllocFrameBytes
