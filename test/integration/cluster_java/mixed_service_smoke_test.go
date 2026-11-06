@@ -58,6 +58,7 @@ type recordingService struct {
 	closes      []recordedClose
 	order       []recordedEvent
 	echoResults []int64
+	roles       []codecs.Role
 
 	closePayload []byte
 	closeResults []bool
@@ -138,6 +139,10 @@ func (s *recordingService) SessionMessage(
 }
 
 func (s *recordingService) TimerEvent(_, _ int64) {}
+
+func (s *recordingService) RoleChange(role codecs.Role) {
+	s.roles = append(s.roles, role)
+}
 
 func (s *recordingService) holdsOpen(sessionID int64) bool {
 	return slices.Contains(s.opens, sessionID)
@@ -517,6 +522,8 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 		},
 		"start ack and join settle",
 	)
+	require.Equal(t, []codecs.Role{codecs.RoleLeader}, recorder.roles,
+		"role changes after join:\n%s", pump.dump())
 
 	var echoes []recordedMessage
 	egress := &client.EgressHandlers{

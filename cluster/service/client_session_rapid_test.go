@@ -450,6 +450,12 @@ type modelJoin struct {
 //     the session id and the payload.
 //   - PendingCoordinationAcks equals the delivered join count. Role matches
 //     the model. ServiceFailure stays nil at every step.
+//   - the RoleChange roles equal the model role changes. Each role differs
+//     from the role before it.
+//   - Role inside each RoleChange equals the role argument.
+//   - every Offer inside RoleChange and DoBackgroundWork returns
+//     LifecycleRefused. Each Offer reports one ErrLifecycleRefused error.
+//   - DoBackgroundWork runs once per DoWork call.
 //
 // Ops: deliver a join with a drawn role and isStartup, script each in-flight
 // poll then DoWork, close the bound image, open a free id, close or message
@@ -465,10 +471,31 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 		rt.Helper()
 
 		adder := newFakeResponseAdder()
+		svc := &lifecycleRecordingService{}
+		probeOffers := 0
+		refusals := 0
 		agent := NewAgent(AgentConfig{
+			Service:              svc,
 			CommittedPosition:    func() int64 { return math.MaxInt64 },
 			ResponsePublications: adder,
+			ErrorHandler: func(err error) {
+				if errors.Is(err, ErrLifecycleRefused) {
+					refusals++
+				}
+			},
 		})
+
+		offerFirstOpen := func(a *Agent) {
+			for session := range a.ClientSessions() {
+				require.Equal(rt, LifecycleRefused, session.Offer([]byte("probe")))
+				probeOffers++
+				return
+			}
+		}
+		svc.probes = map[string]func(*Agent){
+			"role":       offerFirstOpen,
+			"background": offerFirstOpen,
+		}
 
 		sessionPool := []int64{1, 2, 3, 4, 5, 6}
 		model := make(map[int64]*modelClientSession, len(sessionPool))
@@ -489,6 +516,15 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 		nextCorrelationID := int64(1)
 		position := int64(0)
 		agentClosed := false
+		var wantRoles []codecs.Role
+		doWorks := 0
+
+		changeRole := func(next codecs.Role) {
+			if next != role {
+				wantRoles = append(wantRoles, next)
+			}
+			role = next
+		}
 
 		nextPosition := func() int64 {
 			position += 64
@@ -583,6 +619,14 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 			require.Equal(rt, position, agent.LogPosition())
 			require.Equal(rt, len(openIDs()), agent.SessionCount())
 			require.NoError(rt, agent.ServiceFailure())
+
+			require.Len(rt, svc.roles, len(wantRoles))
+			for i, want := range wantRoles {
+				require.Equal(rt, want, svc.roles[i].role, "role change %d", i)
+				require.Equal(rt, want, svc.roles[i].seenRole, "role change %d", i)
+			}
+			require.Equal(rt, probeOffers, refusals)
+			require.Len(rt, svc.backgroundNows, doWorks)
 		}
 
 		handlersAllowed := func() bool {
@@ -620,6 +664,7 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 					publications[id] = publication
 				}
 				agent.DoWork(0)
+				doWorks++
 
 				for id, kind := range outcomes {
 					state := model[id]
@@ -635,7 +680,7 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 
 				if pending != nil && !bound {
 					bound = true
-					role = pending.role
+					changeRole(pending.role)
 					imageJoinPosition = pending.position
 					maxLogPosition = math.MaxInt64
 					imageClosed = false
@@ -652,7 +697,7 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 				if bound && (imageClosed || imageJoinPosition >= maxLogPosition) {
 					disconnectAll()
 					bound = false
-					role = codecs.RoleFollower
+					changeRole(codecs.RoleFollower)
 				}
 			case 2:
 				if !bound {

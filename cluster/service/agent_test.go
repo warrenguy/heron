@@ -4,13 +4,16 @@ package service
 
 import (
 	"errors"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestAgent_Start_once(t *testing.T) {
@@ -418,4 +421,822 @@ func TestAgent_DispatchFailure_sticky(t *testing.T) {
 	require.Equal(t, 0, agent.DoWork(0))
 	require.ErrorIs(t, agent.ServiceFailure(), ErrLogDispatchSchema)
 	require.Equal(t, 0, agent.DoWork(0))
+}
+
+// lifecycleRecordingService adds RoleChangeHandler and BackgroundWorkHandler
+// to snapshotRecordingService. Each call appends its name to order. probes
+// maps a call name ("start", "role", "background", "message") to a func that
+// runs inside that call.
+type lifecycleRecordingService struct {
+	snapshotRecordingService
+
+	agent *Agent
+
+	roles          []roleChangeRecord
+	backgroundNows []int64
+
+	backgroundResult int
+
+	probes map[string]func(*Agent)
+}
+
+// roleChangeRecord is one RoleChange call and the agent state inside it.
+type roleChangeRecord struct {
+	role         codecs.Role
+	seenRole     codecs.Role
+	logBound     bool
+	pendingJoin  bool
+	pendingAdds  int
+	publications int
+}
+
+func (s *lifecycleRecordingService) Start(cluster Cluster) error {
+	s.agent, _ = cluster.(*Agent)
+	s.order = append(s.order, "start")
+	s.runProbe("start")
+	return s.snapshotRecordingService.Start(cluster)
+}
+
+func (s *lifecycleRecordingService) SessionMessage(
+	session ClientSession,
+	timestamp int64,
+	payload []byte,
+) {
+	s.snapshotRecordingService.SessionMessage(session, timestamp, payload)
+	s.runProbe("message")
+}
+
+func (s *lifecycleRecordingService) RoleChange(role codecs.Role) {
+	agent := s.agent
+	s.roles = append(s.roles, roleChangeRecord{
+		role:         role,
+		seenRole:     agent.Role(),
+		logBound:     agent.IsLogBound(),
+		pendingJoin:  agent.HasPendingJoin(),
+		pendingAdds:  agent.PendingResponsePublicationAdds(),
+		publications: agent.ResponsePublicationCount(),
+	})
+	s.order = append(s.order, "role")
+	s.runProbe("role")
+}
+
+func (s *lifecycleRecordingService) DoBackgroundWork(nowNs int64) int {
+	s.backgroundNows = append(s.backgroundNows, nowNs)
+	s.order = append(s.order, "background")
+	s.runProbe("background")
+	return s.backgroundResult
+}
+
+func (s *lifecycleRecordingService) runProbe(call string) {
+	if probe := s.probes[call]; probe != nil {
+		probe(s.agent)
+	}
+}
+
+func (s *lifecycleRecordingService) events() []string {
+	return slices.DeleteFunc(slices.Clone(s.order), func(event string) bool {
+		return event == "background"
+	})
+}
+
+// lifecycleZeroAllocService adds a no-op RoleChangeHandler and a
+// BackgroundWorkHandler to recordingService. Unlike lifecycleRecordingService,
+// its handlers do not append to a slice.
+type lifecycleZeroAllocService struct {
+	recordingService
+
+	cluster Cluster
+	refuse  bool
+}
+
+func (s *lifecycleZeroAllocService) Start(cluster Cluster) error {
+	s.cluster = cluster
+	return s.recordingService.Start(cluster)
+}
+
+func (*lifecycleZeroAllocService) RoleChange(codecs.Role) {}
+
+func (s *lifecycleZeroAllocService) DoBackgroundWork(int64) int {
+	if s.refuse {
+		s.cluster.ScheduleTimer(1, 2)
+	}
+	return 0
+}
+
+// requestProbe calls ScheduleTimer, CancelTimer, CloseClientSession, and
+// ClientSession.Offer once per run, in that order.
+type requestProbe struct {
+	sessionID int64
+	runs      []requestProbeResult
+}
+
+// requestProbeResult holds one requestProbe run. offer stays 0 when sessionID
+// is not open.
+type requestProbeResult struct {
+	scheduled bool
+	cancelled bool
+	closed    bool
+	offer     int64
+}
+
+func (p *requestProbe) run(agent *Agent) {
+	result := requestProbeResult{
+		scheduled: agent.ScheduleTimer(1, 2),
+		cancelled: agent.CancelTimer(1),
+		closed:    agent.CloseClientSession(p.sessionID),
+	}
+	if session, ok := agent.ClientSession(p.sessionID); ok {
+		result.offer = session.Offer([]byte("probe"))
+	}
+	p.runs = append(p.runs, result)
+}
+
+func refusalTexts(call string) []string {
+	return []string{
+		"service: refused inside lifecycle call: ScheduleTimer in " + call,
+		"service: refused inside lifecycle call: CancelTimer in " + call,
+		"service: refused inside lifecycle call: CloseClientSession in " + call,
+		"service: refused inside lifecycle call: ClientSession.Offer in " + call,
+	}
+}
+
+func requireRefusals(tb testing.TB, got []error, texts []string) {
+	tb.Helper()
+	require.Len(tb, got, len(texts))
+	for i, err := range got {
+		require.ErrorIs(tb, err, ErrLifecycleRefused, "report %d", i)
+		require.NotErrorIs(tb, err, ErrFailed, "report %d", i)
+		require.EqualError(tb, err, texts[i], "report %d", i)
+	}
+}
+
+// bindJoinAgentWithProxy is bindJoinAgent plus a connected module proxy.
+func bindJoinAgentWithProxy(
+	tb testing.TB,
+	svc ClusteredService,
+	adder ResponsePublicationAdder,
+	role codecs.Role,
+) (*joinLog, *aeron.Publication) {
+	tb.Helper()
+	log := bindJoinAgent(tb, svc, adder, role)
+	proxy, pub := boundModuleProxy(tb)
+	log.agent.moduleProxy = proxy
+	return log, pub
+}
+
+// TestAgent_RoleChange asserts each RoleChange call, the role it carries,
+// and the agent state inside it.
+func TestAgent_RoleChange(t *testing.T) {
+	t.Run("join and unbind", func(t *testing.T) {
+		adder := newFakeResponseAdder()
+		svc := &lifecycleRecordingService{}
+		log := bindJoinAgent(t, svc, adder, codecs.RoleFollower)
+		agent := log.agent
+
+		// Phase "follower bind": the first bind keeps FOLLOWER.
+		require.Empty(t, svc.roles)
+		require.Equal(t, codecs.RoleFollower, agent.Role())
+
+		// Phase "promote": the bind calls RoleChange after the join egress rule
+		// starts both adds.
+		log.openEgress(1, 2)
+		log.join(codecs.RoleLeader, false)
+		agent.DoWork(0)
+		require.False(t, agent.IsLogBound())
+		require.Empty(t, svc.roles)
+		log.rebind()
+		require.Equal(t, []roleChangeRecord{{
+			role:        codecs.RoleLeader,
+			seenRole:    codecs.RoleLeader,
+			logBound:    true,
+			pendingAdds: 2,
+		}}, svc.roles)
+		log.deliver(encodeTrivialSessionMessage(t))
+		require.Equal(t, []string{"start", "open", "open", "role", "message"}, svc.events())
+
+		// Phase "leader rejoin": the unbind calls RoleChange after it closes both
+		// publications.
+		for id := int64(1); id <= 2; id++ {
+			adder.next(id, responsePoll{
+				publication: aeron.NewTestPublicationForHooksWithConnected(t, true),
+				done:        true,
+			})
+		}
+		agent.DoWork(0)
+		require.Equal(t, 2, agent.ResponsePublicationCount())
+		log.join(codecs.RoleLeader, false)
+		agent.DoWork(0)
+		require.False(t, agent.IsLogBound())
+		require.Len(t, svc.roles, 2)
+		require.Equal(t, roleChangeRecord{
+			role:        codecs.RoleFollower,
+			seenRole:    codecs.RoleFollower,
+			pendingJoin: true,
+		}, svc.roles[1])
+		log.rebind()
+		require.Equal(t, roleChangeRecord{
+			role:        codecs.RoleLeader,
+			seenRole:    codecs.RoleLeader,
+			logBound:    true,
+			pendingAdds: 2,
+		}, svc.roles[2])
+		want := []string{"start", "open", "open", "role", "message", "role", "role"}
+		require.Equal(t, want, svc.events())
+
+		// Phase "image close".
+		aeron.ImageInternalCloseForHooks(log.image)
+		agent.DoWork(0)
+		require.False(t, agent.IsLogBound())
+		require.Len(t, svc.roles, 4)
+		require.Equal(t, roleChangeRecord{
+			role:     codecs.RoleFollower,
+			seenRole: codecs.RoleFollower,
+		}, svc.roles[3])
+		want = append(want, "role")
+		require.Equal(t, want, svc.events())
+
+		// Phase "demote".
+		log.join(codecs.RoleLeader, true)
+		log.rebind()
+		require.Len(t, svc.roles, 5)
+		require.Equal(t, codecs.RoleLeader, svc.roles[4].role)
+		log.join(codecs.RoleFollower, false)
+		agent.DoWork(0)
+		require.False(t, agent.IsLogBound())
+		require.Len(t, svc.roles, 6)
+		require.Equal(t, roleChangeRecord{
+			role:        codecs.RoleFollower,
+			seenRole:    codecs.RoleFollower,
+			pendingJoin: true,
+		}, svc.roles[5])
+		log.rebind()
+		require.Len(t, svc.roles, 6)
+		require.Equal(t, codecs.RoleFollower, agent.Role())
+		want = append(want, "role", "role")
+		require.Equal(t, want, svc.events())
+
+		// Phase "close": Close on a bound leader keeps LEADER.
+		log.join(codecs.RoleLeader, true)
+		log.rebind()
+		require.Len(t, svc.roles, 7)
+		agent.Close()
+		require.Len(t, svc.roles, 7)
+		require.Equal(t, codecs.RoleLeader, agent.Role())
+		require.NoError(t, agent.ServiceFailure())
+		want = append(want, "role")
+		require.Equal(t, want, svc.events())
+	})
+
+	t.Run("add report role", func(t *testing.T) {
+		adder := newFakeResponseAdder()
+		svc := &lifecycleRecordingService{}
+		log := bindJoinAgent(t, svc, adder, codecs.RoleFollower)
+		agent := log.agent
+		var got []error
+		var seen []codecs.Role
+		agent.errorHandler = func(err error) {
+			got = append(got, err)
+			seen = append(seen, agent.Role())
+		}
+		log.openEgress(1)
+		adder.offerErrs = map[int32]error{responseAddOf(1).streamID: errors.New("offer add boom")}
+
+		log.join(codecs.RoleLeader, false)
+		log.rebind()
+		require.Len(t, got, 1)
+		require.ErrorIs(t, got[0], ErrResponsePublicationAdd)
+		require.Equal(t, []codecs.Role{codecs.RoleFollower}, seen)
+		require.Equal(t, []roleChangeRecord{{
+			role:     codecs.RoleLeader,
+			seenRole: codecs.RoleLeader,
+			logBound: true,
+		}}, svc.roles)
+		require.Equal(t, []string{"start", "open", "role"}, svc.events())
+	})
+
+	t.Run("seed recovery", func(t *testing.T) {
+		const position int64 = 128
+		svc := &lifecycleRecordingService{}
+		sub, _ := newLogImage(t, testLogSessionID, testLogStreamID, position)
+		agent := NewAgent(AgentConfig{
+			Service:           svc,
+			CommittedPosition: func() int64 { return position },
+			Subscriptions:     &stubAdder{sub: sub},
+		})
+		agent.seedRecovery(codecs.RecoveryStateKeyFields{
+			LeadershipTermID: 3,
+			LogPosition:      position,
+			Timestamp:        9,
+		})
+		event := defaultJoinEvent(position)
+		event.role = codecs.RoleFollower
+		agent.handleJoinLog(event)
+		agent.DoWork(0)
+		require.NoError(t, agent.ServiceFailure())
+		require.True(t, agent.IsLogBound())
+		require.Empty(t, svc.roles)
+		require.Equal(t, codecs.RoleFollower, agent.Role())
+	})
+
+	t.Run("take", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		log, pub := bindJoinAgentWithProxy(t, svc, nil, codecs.RoleLeader)
+		agent := log.agent
+		fake := InstallSnapshotTakeFakeForTest(t, agent)
+		const awaitStartTicks = 6
+		fake.startSignals = make([]snapshotTakeFakeStep, awaitStartTicks)
+		log.termEvent(t, clusterwire.ClusterTimeUnit_NANOS, 0)
+		end := log.snapshot(t, 1)
+		require.Len(t, svc.roles, 1)
+
+		// The first tick stores the take. The image then closes. A leader join
+		// arrives at the take position.
+		agent.DoWork(0)
+		require.NoError(t, agent.ServiceFailure())
+		require.NotNil(t, agent.take)
+		require.Equal(t, end, agent.LogPosition())
+		aeron.ImageInternalCloseForHooks(log.image)
+		log.join(codecs.RoleLeader, false)
+
+		// Phase "await START": the take delays the unbind and the bind.
+		for tick := range awaitStartTicks {
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure(), "tick %d", tick)
+			require.NotNil(t, agent.take, "tick %d", tick)
+			require.Equal(t, takeAwaitingStart, agent.take.state, "tick %d", tick)
+			require.True(t, agent.IsLogBound(), "tick %d", tick)
+			require.True(t, agent.HasPendingJoin(), "tick %d", tick)
+			require.Len(t, svc.roles, 1, "tick %d", tick)
+		}
+
+		// Phase "resolve": the take resolves, then the agent unbinds and binds.
+		for tick := 0; tick < 8 && len(decodeServiceAcksFromPub(t, pub)) < 3; tick++ {
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure(), "tick %d", tick)
+		}
+		require.Equal(t, []string{"start", "role", "snapshot", "role", "role"}, svc.events())
+		wantRoles := []codecs.Role{codecs.RoleLeader, codecs.RoleFollower, codecs.RoleLeader}
+		require.Equal(t, wantRoles, []codecs.Role{
+			svc.roles[0].role,
+			svc.roles[1].role,
+			svc.roles[2].role,
+		})
+		acks := decodeServiceAcksFromPub(t, pub)
+		require.Len(t, acks, 3)
+		require.Equal(t, end, acks[1].LogPosition)
+		require.Equal(t, fake.RecordingID(), acks[1].RelevantID)
+		require.Equal(t, end, acks[2].LogPosition)
+		require.Equal(t, nullValue, acks[2].RelevantID)
+		require.True(t, agent.IsLogBound())
+		require.False(t, agent.HasPendingJoin())
+		require.NoError(t, agent.ServiceFailure())
+	})
+}
+
+// TestAgent_BackgroundWork asserts one DoBackgroundWork call per DoWork call
+// after a successful Start. An early DoWork return skips DoBackgroundWork.
+func TestAgent_BackgroundWork(t *testing.T) {
+	t.Run("first tick", func(t *testing.T) {
+		svc := &lifecycleRecordingService{backgroundResult: 3}
+		agent := NewAgent(AgentConfig{Service: svc})
+		require.Equal(t, 4, agent.DoWork(5))
+		require.Equal(t, []string{"start", "background"}, svc.order)
+		require.Equal(t, []int64{5}, svc.backgroundNows)
+	})
+
+	t.Run("each tick", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		agent := NewAgent(AgentConfig{Service: svc})
+		for _, nowNs := range []int64{7, 8, 9} {
+			agent.DoWork(nowNs)
+		}
+		require.Equal(t, []int64{7, 8, 9}, svc.backgroundNows)
+	})
+
+	t.Run("negative count", func(t *testing.T) {
+		svc := &lifecycleRecordingService{backgroundResult: -2}
+		agent := NewAgent(AgentConfig{Service: svc})
+		require.Equal(t, 1, agent.DoWork(0))
+		require.Equal(t, 0, agent.DoWork(0))
+		require.Len(t, svc.backgroundNows, 2)
+	})
+
+	t.Run("join wait", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		sub := aeron.NewSubscriptionForHooks(9001, testLogStreamID, testLogChannel)
+		agent := NewAgent(AgentConfig{
+			Service:       svc,
+			Subscriptions: &stubAdder{sub: sub},
+		})
+		agent.handleJoinLog(defaultJoinEvent(0))
+		for tick := range 3 {
+			agent.DoWork(0)
+			require.True(t, agent.HasPendingJoin(), "tick %d", tick)
+			require.Len(t, svc.backgroundNows, tick+1)
+		}
+	})
+
+	t.Run("ack wait", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		proxy, _ := boundModuleProxy(t)
+		agent := NewAgent(AgentConfig{Service: svc, ModuleProxy: proxy})
+		agent.handleRequestServiceAck(128)
+		for tick := range 3 {
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure(), "tick %d", tick)
+			require.Equal(t, 1, agent.PendingCoordinationAcks(), "tick %d", tick)
+			require.Equal(t, 0, agent.ReadyCoordinationAcks(), "tick %d", tick)
+			require.Len(t, svc.backgroundNows, tick+1)
+		}
+	})
+
+	t.Run("take wait", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		proxy, _ := boundModuleProxy(t)
+		agent, image, committed := bindImage(t, AgentConfig{
+			ServiceID:   1,
+			Service:     svc,
+			ModuleProxy: proxy,
+		}, 0)
+		fake := InstallSnapshotTakeFakeForTest(t, agent)
+		fake.stopDelay = 3
+		writeTermEventAndSnapshot(t, image, committed, 1)
+
+		agent.DoWork(0)
+		require.NotNil(t, agent.take)
+		ticks := 0
+		for agent.take != nil {
+			require.Less(t, ticks, 10, "take did not resolve")
+			calls := len(svc.backgroundNows)
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure(), "tick %d", ticks)
+			require.Len(t, svc.backgroundNows, calls+1, "tick %d", ticks)
+			ticks++
+		}
+		require.GreaterOrEqual(t, ticks, 4)
+		require.Equal(t, []string{"start", "snapshot"}, svc.events())
+	})
+
+	t.Run("start error", func(t *testing.T) {
+		startErr := errors.New("start boom")
+		svc := &lifecycleRecordingService{}
+		svc.startErr = startErr
+		agent := NewAgent(AgentConfig{
+			Service:     svc,
+			ModuleProxy: boundModuleProxyWithLimit(t, 0, false),
+			StartAck: &StartAckConfig{
+				LogPosition: 0,
+				RelevantID:  1,
+				Timeout:     10 * time.Nanosecond,
+			},
+		})
+		agent.DoWork(0)
+		agent.DoWork(1)
+		require.NoError(t, agent.ServiceFailure())
+		agent.DoWork(11)
+		failure := agent.ServiceFailure()
+		require.ErrorIs(t, failure, ErrFailed)
+		require.ErrorIs(t, failure, ErrStart)
+		require.ErrorIs(t, failure, startErr)
+		require.Equal(t, 0, agent.DoWork(12))
+		require.Empty(t, svc.backgroundNows)
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		agent, image, committed := bindAgent(t, svc, 0)
+		calls := len(svc.backgroundNows)
+		payload := encodeMessageHeader(t, 0, 1, 112, 0)
+		*committed = int64(writeAgentFrame(t, image, 0, payload))
+		require.Equal(t, 0, agent.DoWork(0))
+		require.ErrorIs(t, agent.ServiceFailure(), ErrLogDispatchSchema)
+		require.Equal(t, 0, agent.DoWork(0))
+		require.Len(t, svc.backgroundNows, calls)
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		agent := NewAgent(AgentConfig{Service: svc})
+		agent.DoWork(0)
+		agent.Close()
+		require.Equal(t, 0, agent.DoWork(0))
+		require.Len(t, svc.backgroundNows, 1)
+	})
+}
+
+type refusalRun struct {
+	agent *Agent
+	svc   *lifecycleRecordingService
+
+	proxyPub *aeron.Publication
+
+	// responsePub is the response publication the session offers to after
+	// the call, or nil when the member is a follower.
+	responsePub *aeron.Publication
+
+	trigger func()
+
+	// settle resolves a pending response add, or is nil.
+	settle func()
+}
+
+const refusalSessionID int64 = 7
+
+func setupStartRefusal(t *testing.T, handler func(error)) refusalRun {
+	t.Helper()
+	svc := &lifecycleRecordingService{}
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{Service: svc, ModuleProxy: proxy, ErrorHandler: handler})
+	require.NoError(t, agent.restoreClientSession(
+		sampleClientSession(refusalSessionID, testResponseChannel),
+	))
+	return refusalRun{
+		agent:    agent,
+		svc:      svc,
+		proxyPub: pub,
+		trigger:  func() { agent.DoWork(0) },
+	}
+}
+
+func setupEgressRefusal(
+	t *testing.T,
+	handler func(error),
+	role codecs.Role,
+) (refusalRun, *joinLog) {
+	t.Helper()
+	adder := newFakeResponseAdder()
+	svc := &lifecycleRecordingService{}
+	log, pub := bindJoinAgentWithProxy(t, svc, adder, role)
+	agent := log.agent
+	agent.errorHandler = handler
+	log.openEgress(refusalSessionID)
+	responsePub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	return refusalRun{
+		agent:       agent,
+		svc:         svc,
+		proxyPub:    pub,
+		responsePub: responsePub,
+		trigger:     func() { agent.DoWork(0) },
+		settle: func() {
+			adder.next(1, responsePoll{publication: responsePub, done: true})
+			agent.DoWork(0)
+			require.Equal(t, 1, agent.ResponsePublicationCount())
+		},
+	}, log
+}
+
+func setupRoleChangeRefusal(t *testing.T, handler func(error)) refusalRun {
+	t.Helper()
+	run, log := setupEgressRefusal(t, handler, codecs.RoleFollower)
+	log.join(codecs.RoleLeader, false)
+	run.trigger = log.rebind
+	return run
+}
+
+func setupBackgroundRefusal(t *testing.T, handler func(error)) refusalRun {
+	t.Helper()
+	run, _ := setupEgressRefusal(t, handler, codecs.RoleLeader)
+	run.settle()
+	run.settle = nil
+	return run
+}
+
+func publicationPosition(publication *aeron.Publication) int64 {
+	if publication == nil {
+		return 0
+	}
+	return publication.Position()
+}
+
+// TestAgent_LifecycleCalls_refused asserts the module request and session
+// offer refusal inside Start, RoleChange, and DoBackgroundWork.
+func TestAgent_LifecycleCalls_refused(t *testing.T) {
+	refusedResult := requestProbeResult{offer: LifecycleRefused}
+	setups := []struct {
+		// name is the lifecycle call name a refusal report carries.
+		name string
+
+		// call is the probes key of the lifecycle call.
+		call  string
+		setup func(*testing.T, func(error)) refusalRun
+	}{
+		{name: "Start", call: "start", setup: setupStartRefusal},
+		{name: "RoleChange", call: "role", setup: setupRoleChangeRefusal},
+		{name: "DoBackgroundWork", call: "background", setup: setupBackgroundRefusal},
+	}
+	for _, tc := range setups {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []error
+			run := tc.setup(t, collectErrors(&got))
+			agent := run.agent
+			probe := &requestProbe{sessionID: refusalSessionID}
+			run.svc.probes = map[string]func(*Agent){tc.call: probe.run}
+			proxySent := run.proxyPub.Position()
+			responseSent := publicationPosition(run.responsePub)
+
+			// Phase "refuse": the agent refuses every request inside the call.
+			run.trigger()
+			require.Equal(t, []requestProbeResult{refusedResult}, probe.runs)
+			require.Equal(t, proxySent, run.proxyPub.Position())
+			require.Equal(t, responseSent, publicationPosition(run.responsePub))
+			session, ok := agent.ClientSession(refusalSessionID)
+			require.True(t, ok)
+			require.False(t, session.IsClosing())
+			require.NoError(t, agent.ServiceFailure())
+			requireRefusals(t, got, refusalTexts(tc.name))
+
+			// Phase "after": a SessionMessage runs the same probe. The agent
+			// accepts each request. The leader rows send egress. The follower
+			// row mocks it.
+			run.svc.probes = map[string]func(*Agent){"message": probe.run}
+			if run.settle != nil {
+				run.settle()
+			}
+			agent.handleSessionMessage(agent.LogPosition(), refusalSessionID, 1, []byte("m"))
+			require.Len(t, probe.runs, 2)
+			after := probe.runs[1]
+			require.True(t, after.scheduled)
+			require.True(t, after.cancelled)
+			require.True(t, after.closed)
+			if run.responsePub == nil {
+				require.Equal(t, MockedOffer, after.offer)
+			} else {
+				require.Greater(t, after.offer, responseSent)
+				require.Equal(t, run.responsePub.Position(), after.offer)
+			}
+			require.Greater(t, run.proxyPub.Position(), proxySent)
+			require.Len(t, got, 4)
+			require.NoError(t, agent.ServiceFailure())
+		})
+	}
+
+	t.Run("unknown id", func(t *testing.T) {
+		var got []error
+		run := setupStartRefusal(t, collectErrors(&got))
+		probe := &requestProbe{sessionID: 99}
+		run.svc.probes = map[string]func(*Agent){"start": probe.run}
+		run.trigger()
+		require.Equal(t, []requestProbeResult{{}}, probe.runs)
+		requireRefusals(t, got, refusalTexts("Start")[:3])
+		require.NotErrorIs(t, got[2], ErrCloseUnknownSession)
+	})
+
+	t.Run("closing", func(t *testing.T) {
+		var got []error
+		run := setupBackgroundRefusal(t, collectErrors(&got))
+		agent := run.agent
+		require.True(t, agent.CloseClientSession(refusalSessionID))
+		session, ok := agent.ClientSession(refusalSessionID)
+		require.True(t, ok)
+		require.True(t, session.IsClosing())
+		proxySent := run.proxyPub.Position()
+
+		var closed []bool
+		run.svc.probes = map[string]func(*Agent){"background": func(a *Agent) {
+			closed = append(closed, a.CloseClientSession(refusalSessionID), session.Close())
+		}}
+		run.trigger()
+		require.Equal(t, []bool{false, false}, closed)
+		require.Equal(t, proxySent, run.proxyPub.Position())
+		text := refusalTexts("DoBackgroundWork")[2]
+		requireRefusals(t, got, []string{text, text})
+		require.True(t, session.IsClosing())
+	})
+
+	t.Run("repeat", func(t *testing.T) {
+		var got []error
+		run := setupBackgroundRefusal(t, collectErrors(&got))
+		probe := &requestProbe{sessionID: refusalSessionID}
+		run.svc.probes = map[string]func(*Agent){"background": probe.run}
+		run.trigger()
+		run.trigger()
+		require.Equal(t, []requestProbeResult{refusedResult, refusedResult}, probe.runs)
+		requireRefusals(t, got, slices.Repeat(refusalTexts("DoBackgroundWork"), 2))
+		for i := range 4 {
+			require.Same(t, got[i], got[i+4], "report %d", i)
+		}
+	})
+
+	t.Run("nil handler", func(t *testing.T) {
+		run := setupBackgroundRefusal(t, nil)
+		probe := &requestProbe{sessionID: refusalSessionID}
+		run.svc.probes = map[string]func(*Agent){"background": probe.run}
+		proxySent := run.proxyPub.Position()
+		responseSent := run.responsePub.Position()
+		run.trigger()
+		require.Equal(t, []requestProbeResult{refusedResult}, probe.runs)
+		require.Equal(t, proxySent, run.proxyPub.Position())
+		require.Equal(t, responseSent, run.responsePub.Position())
+		require.NoError(t, run.agent.ServiceFailure())
+	})
+
+	t.Run("start error", func(t *testing.T) {
+		startErr := errors.New("start boom")
+		var got []error
+		run := setupStartRefusal(t, collectErrors(&got))
+		run.svc.startErr = startErr
+		probe := &requestProbe{sessionID: refusalSessionID}
+		run.svc.probes = map[string]func(*Agent){"start": probe.run}
+		run.trigger()
+		require.Equal(t, []requestProbeResult{refusedResult}, probe.runs)
+		require.Len(t, got, 5)
+		requireRefusals(t, got[:4], refusalTexts("Start"))
+		requireFailureReported(t, run.agent, got[4:], ErrStart, startErr)
+	})
+
+	t.Run("role change panic", func(t *testing.T) {
+		svc := &lifecycleRecordingService{
+			probes: map[string]func(*Agent){"role": func(*Agent) { panic("role boom") }},
+		}
+		log, pub := bindJoinAgentWithProxy(t, svc, nil, codecs.RoleFollower)
+		agent := log.agent
+		log.join(codecs.RoleLeader, true)
+		agent.DoWork(0)
+		require.PanicsWithValue(t, "role boom", func() { agent.DoWork(0) })
+		require.Equal(t, codecs.RoleLeader, agent.Role())
+		require.True(t, agent.IsLogBound())
+		require.False(t, agent.HasPendingJoin())
+		require.Len(t, svc.roles, 1)
+
+		requireMessageSchedules(t, log, svc, pub)
+		require.Len(t, svc.roles, 1)
+		require.NoError(t, agent.ServiceFailure())
+	})
+
+	t.Run("background work panic", func(t *testing.T) {
+		svc := &lifecycleRecordingService{}
+		log, pub := bindJoinAgentWithProxy(t, svc, nil, codecs.RoleLeader)
+		agent := log.agent
+		svc.probes = map[string]func(*Agent){"background": func(*Agent) { panic("background boom") }}
+		require.PanicsWithValue(t, "background boom", func() { agent.DoWork(0) })
+
+		requireMessageSchedules(t, log, svc, pub)
+		require.Equal(t, codecs.RoleLeader, agent.Role())
+		require.NoError(t, agent.ServiceFailure())
+	})
+}
+
+func requireMessageSchedules(
+	t *testing.T,
+	log *joinLog,
+	svc *lifecycleRecordingService,
+	pub *aeron.Publication,
+) {
+	t.Helper()
+	var sent bool
+	svc.probes = map[string]func(*Agent){"message": func(a *Agent) { sent = a.ScheduleTimer(1, 2) }}
+	sentBefore := pub.Position()
+	log.deliver(encodeTrivialSessionMessage(t))
+	require.True(t, sent)
+	require.Greater(t, pub.Position(), sentBefore)
+}
+
+// TestAgent_DoWork_zeroAllocs asserts an idle DoWork does not allocate, with
+// and without the lifecycle extensions. A refusal inside DoBackgroundWork
+// does not allocate either.
+func TestAgent_DoWork_zeroAllocs(t *testing.T) {
+	services := []struct {
+		name  string
+		build func() ClusteredService
+	}{
+		{name: "recordingService", build: func() ClusteredService { return &recordingService{} }},
+		{
+			name:  "lifecycleZeroAllocService",
+			build: func() ClusteredService { return &lifecycleZeroAllocService{} },
+		},
+	}
+	for _, tc := range services {
+		t.Run(tc.name, func(t *testing.T) {
+			unbound := NewAgent(AgentConfig{Service: tc.build()})
+			unbound.DoWork(0)
+			testutil.AssertZeroAllocs(t, "unbound DoWork", 100, func() {
+				unbound.DoWork(0)
+			})
+
+			bound, _, _ := bindAgent(t, tc.build(), 0)
+			bound.DoWork(0)
+			testutil.AssertZeroAllocs(t, "bound DoWork", 100, func() {
+				bound.DoWork(0)
+			})
+			require.NoError(t, bound.ServiceFailure())
+		})
+	}
+
+	t.Run("refusal", func(t *testing.T) {
+		reports := 0
+		svc := &lifecycleZeroAllocService{refuse: true}
+		agent := NewAgent(AgentConfig{
+			Service:      svc,
+			ErrorHandler: func(error) { reports++ },
+		})
+		agent.DoWork(0)
+		require.Equal(t, 1, reports)
+		calls := 0
+		testutil.AssertZeroAllocs(t, "refusing DoWork", 100, func() {
+			agent.DoWork(0)
+			calls++
+		})
+		require.Equal(t, 1+calls, reports)
+		require.NoError(t, agent.ServiceFailure())
+	})
 }

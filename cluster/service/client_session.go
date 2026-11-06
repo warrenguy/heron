@@ -14,6 +14,11 @@ import (
 // Matches upstream ClientSession.MOCKED_OFFER.
 const MockedOffer int64 = 1
 
+// LifecycleRefused is the [ClientSession.Offer] result inside Start,
+// RoleChange, or DoBackgroundWork. aeron.IsOfferRetriable reports false for
+// this code.
+const LifecycleRefused int64 = -7
+
 // ClientSession is one open client session in the service registry.
 //
 // Concurrency: invoker-only.
@@ -41,6 +46,8 @@ type ClientSession interface {
 	// Offer sends payload to the client behind one SessionMessageHeader.
 	//
 	// Returns:
+	//   - LifecycleRefused inside Start, RoleChange, or DoBackgroundWork.
+	//     The call reports [ErrLifecycleRefused].
 	//   - MockedOffer when this member is not the leader
 	//   - aeron.NotConnected while the session holds no response
 	//     publication, including while its add is in flight
@@ -144,6 +151,9 @@ func (s *containerClientSession) IsClosing() bool {
 
 // CloseClientSession implements [Cluster.CloseClientSession].
 func (a *Agent) CloseClientSession(id int64) bool {
+	if a.refuseInsideLifecycleCall(refusedCloseClientSession) {
+		return false
+	}
 	session, ok := a.sessions[id]
 	if !ok {
 		a.reportError(fmt.Errorf("%w: session %d", ErrCloseUnknownSession, id))
@@ -403,8 +413,12 @@ func closeResponsePublication(session *containerClientSession) {
 // The header carries the session id, the cluster time, and
 // egressLeadershipTermID.
 //
-// Returns the [ClientSession.Offer] codes. Marks no failure on any result.
+// Returns the [ClientSession.Offer] codes. Does not mark a failure on any
+// result.
 func (a *Agent) offerEgress(session *containerClientSession, payload []byte) int64 {
+	if a.refuseInsideLifecycleCall(refusedOffer) {
+		return LifecycleRefused
+	}
 	if a.role != codecs.RoleLeader {
 		return MockedOffer
 	}
