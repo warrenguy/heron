@@ -47,7 +47,7 @@ linters:
         linters:
           - exhaustive
       # Tests and test helpers handle no untrusted input.
-      - path: '(_test\.go$|^test/|(^|/)internal/(testhook|testutil)/|/cnctest/|(^|/)test_hooks\.go$|_fixtures?(_bench)?\.go$)'
+      - path: '(_test\.go$|^test/|(^|/)internal/(linearizability|testhook|testutil)/|/cnctest/|(^|/)test_hooks\.go$|_fixtures?(_bench)?\.go$)'
         linters:
           - gosec
       # Examples demonstrate the API and are not library code.
