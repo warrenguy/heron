@@ -134,6 +134,9 @@ type pendingStop struct {
 	// offered is true once the archive accepts the current step's TryOffer.
 	// Later polls skip TryOffer and poll the reply.
 	offered bool
+	// replied is true once pollStopReply reports the OK. PollResponse keeps
+	// returning true after that, so later polls apply deadlineNs.
+	replied bool
 	// deadlineNs bounds offer retries, then the reply, in each step. Expiry
 	// fail-closes.
 	deadlineNs int64
@@ -566,7 +569,7 @@ func (r *logRecording) pollIdentityStop(recordingID, nowNs int64) (bool, error) 
 // polls the reply once per call. The caller maps the reply.
 //
 // Returns:
-//   - true, nil: OK reply
+//   - true, nil: OK reply, on the first call that sees it
 //   - true, err: the archive replied with err
 //   - false, nil: poll again
 //   - false, err: the offer failed, or a bound expired
@@ -579,8 +582,12 @@ func (r *logRecording) pollStopReply(p *pendingStop, nowNs int64) (bool, error) 
 		return false, nil
 	}
 	responded, err := p.request.PollResponse()
-	if responded || err != nil {
+	if err != nil {
 		return responded, err
+	}
+	if responded && !p.replied {
+		p.replied = true
+		return true, nil
 	}
 	if nowNs >= p.deadlineNs {
 		return false, errStopResponseTimeout

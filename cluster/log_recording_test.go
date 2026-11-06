@@ -1235,6 +1235,9 @@ func (s *scriptedStopRequest) PollResponse() (bool, error) {
 	responded := s.h.responded
 	s.h.responseErr = nil
 	s.h.responded = false
+	if s.latchedOK {
+		return true, nil
+	}
 	if err != nil {
 		return true, err
 	}
@@ -1535,6 +1538,34 @@ func TestLogRecording_PollStopLogRecording(t *testing.T) {
 			require.NotSame(t, first, second)
 			require.False(t, second.closed)
 			require.Equal(t, 1, second.tryOfferCalls)
+		})
+	}
+
+	okWithoutStopCases := []struct {
+		name     string
+		okNs     int64
+		expiryNs int64
+	}{
+		{name: "known id ok without stop hits response bound", okNs: 5, expiryNs: 10},
+		{name: "known id ok on deadline tick counts", okNs: 10, expiryNs: 11},
+	}
+	for _, tt := range okWithoutStopCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &stopRequestHarness{offerOK: true}
+			r := newPollStopRecording(pollStopRecordingID, 0, h)
+			r.responseTimeoutNs = 10
+
+			requirePollStopPending(t, r, 0)
+			req := h.last()
+
+			h.responded = true
+			requirePollStopPending(t, r, tt.okNs)
+			require.True(t, req.latchedOK)
+
+			done, err := r.PollStopLogRecording(tt.expiryNs)
+			requireFailClosedPoll(t, r, req, done, err, errStopResponseTimeout)
 		})
 	}
 

@@ -17,6 +17,11 @@ type asyncHandle interface {
 	Close()
 }
 
+type asyncResponseHandle interface {
+	asyncHandle
+	PollResponse() (bool, error)
+}
+
 type asyncHandleKind[H asyncHandle] struct {
 	build           func(client *Client) H
 	correlationID   func(handle H) int64
@@ -24,6 +29,7 @@ type asyncHandleKind[H asyncHandle] struct {
 	descriptorArmed bool
 	slotTracker     func(handle H) RecordingSignalHandler
 	requireOffered  func(t *testing.T, client *Client, handle H, wire []byte)
+	isStopped       func(handle H) bool
 }
 
 type asyncHandleFixture[H asyncHandle] struct {
@@ -152,6 +158,14 @@ func (f *asyncHandleFixture[H]) requireOffered(t *testing.T) {
 	f.kind.requireOffered(t, f.client, f.handle, f.pub.lastOffer())
 }
 
+func (f *asyncHandleFixture[H]) requireStopped(t *testing.T, handle H, want bool, message string) {
+	t.Helper()
+
+	if f.kind.isStopped != nil {
+		require.Equal(t, want, f.kind.isStopped(handle), message)
+	}
+}
+
 func TestAsyncHandle_TryOffer(t *testing.T) {
 	t.Run("stop_recording", func(t *testing.T) {
 		testAsyncHandleTryOffer(t, asyncStopRecordingKind)
@@ -167,6 +181,12 @@ func TestAsyncHandle_TryOffer(t *testing.T) {
 	})
 	t.Run("extend_recording", func(t *testing.T) {
 		testAsyncHandleTryOffer(t, asyncExtendRecordingKind)
+	})
+	t.Run("stop_replication", func(t *testing.T) {
+		testAsyncHandleTryOffer(t, asyncStopReplicationKind)
+	})
+	t.Run("replicate", func(t *testing.T) {
+		testAsyncHandleTryOffer(t, asyncReplicateKind)
 	})
 }
 
@@ -185,6 +205,207 @@ func TestAsyncHandle_Close(t *testing.T) {
 	})
 	t.Run("extend_recording", func(t *testing.T) {
 		testAsyncHandleClose(t, asyncExtendRecordingKind)
+	})
+	t.Run("stop_replication", func(t *testing.T) {
+		testAsyncHandleClose(t, asyncStopReplicationKind)
+	})
+	t.Run("replicate", func(t *testing.T) {
+		testAsyncHandleClose(t, asyncReplicateKind)
+	})
+}
+
+func TestAsyncHandle_PollResponse_responded(t *testing.T) {
+	t.Run("stop_recording", func(t *testing.T) {
+		testAsyncHandleResponded(t, asyncStopRecordingKind)
+	})
+	t.Run("stop_recording_by_identity", func(t *testing.T) {
+		testAsyncHandleResponded(t, asyncStopRecordingByIdentityKind)
+	})
+	t.Run("stop_replication", func(t *testing.T) {
+		testAsyncHandleResponded(t, asyncStopReplicationKind)
+	})
+	t.Run("replicate", func(t *testing.T) {
+		testAsyncHandleResponded(t, asyncReplicateKind)
+	})
+}
+
+func TestAsyncHandle_PollResponse(t *testing.T) {
+	t.Run("stop_recording", func(t *testing.T) {
+		testAsyncHandlePollResponse(t, asyncStopRecordingKind)
+	})
+	t.Run("stop_recording_by_identity", func(t *testing.T) {
+		testAsyncHandlePollResponse(t, asyncStopRecordingByIdentityKind)
+	})
+	t.Run("stop_replication", func(t *testing.T) {
+		testAsyncHandlePollResponse(t, asyncStopReplicationKind)
+	})
+}
+
+// testAsyncHandlePollResponse asserts the error, stale, closed, and nil rules
+// that the stop handles share.
+func testAsyncHandlePollResponse[H asyncResponseHandle](t *testing.T, kind asyncHandleKind[H]) {
+	t.Helper()
+
+	errorResponses := []struct {
+		name      string
+		errorCode int32
+	}{
+		{name: "unknown_recording", errorCode: ErrorUnknownRecording},
+		{name: "generic", errorCode: ErrorGeneric},
+	}
+	for _, tc := range errorResponses {
+		t.Run("error_response/"+tc.name, func(t *testing.T) {
+			f := newAsyncHandleFixture(t, kind)
+			fields := f.responseFor(
+				f.handle,
+				archivewire.ControlResponseCode_ERROR,
+				int64(tc.errorCode),
+				[]byte("boom"),
+			)
+			f.latchResponse(t, fields)
+
+			want := MapControlResponse(fields)
+			responded, err := f.handle.PollResponse()
+			require.True(t, responded, "matching error must complete")
+			require.Equal(t, want, err)
+			code, ok := ExceptionCode(err)
+			require.True(t, ok)
+			require.Equal(t, tc.errorCode, code)
+			f.requireStopped(t, f.handle, false, "error must not report stopped")
+			require.True(t, f.controlPoller.IsPollComplete(), "error capture stays latched")
+
+			responded, err = f.handle.PollResponse()
+			require.True(t, responded, "latched error remains visible")
+			require.Equal(t, want, err)
+			require.True(t, f.controlPoller.IsPollComplete(), "error capture stays latched")
+		})
+	}
+
+	staleResponses := []struct {
+		name         string
+		code         archivewire.ControlResponseCode
+		errorMessage []byte
+	}{
+		{name: "ok", code: archivewire.ControlResponseCode_OK},
+		{name: "error", code: archivewire.ControlResponseCode_ERROR, errorMessage: []byte("stale")},
+	}
+	for _, tc := range staleResponses {
+		t.Run("discards_stale_terminal/"+tc.name, func(t *testing.T) {
+			f := newAsyncHandleFixture(t, kind)
+			stale := f.responseFor(f.handle, tc.code, kind.relevantID, tc.errorMessage)
+			stale.ControlSessionID++
+			f.latchResponse(t, stale)
+
+			responded, err := f.handle.PollResponse()
+			require.NoError(t, err)
+			require.False(t, responded, "stale terminal is not a match")
+			f.requireStopped(t, f.handle, false, "stale terminal must not report stopped")
+			require.False(t, f.controlPoller.IsPollComplete(), "stale terminal must be discarded")
+
+			f.latchResponse(t, f.okFor(f.handle))
+			responded, err = f.handle.PollResponse()
+			require.NoError(t, err)
+			require.True(t, responded, "matching response after stale discard")
+			f.requireStopped(t, f.handle, true, "matching OK must report stopped")
+			require.False(t, f.controlPoller.IsPollComplete())
+		})
+	}
+
+	t.Run("closed_does_not_touch_successor", func(t *testing.T) {
+		f := newAsyncHandleFixture(t, kind)
+		first := f.handle
+		first.Close()
+
+		second := f.newHandle(t)
+		f.latchResponse(t, f.okFor(second))
+
+		responded, err := first.PollResponse()
+		require.NoError(t, err)
+		require.False(t, responded, "closed handle must not match")
+		f.requireStopped(t, first, false, "closed handle must not report stopped")
+		require.True(
+			t,
+			f.controlPoller.IsPollComplete(),
+			"closed PollResponse must leave successor latch",
+		)
+	})
+
+	t.Run("closed_does_not_offer_or_match", func(t *testing.T) {
+		f := newAsyncHandleFixture(t, kind)
+		f.handle.Close()
+
+		offered, err := f.handle.TryOffer()
+		require.NoError(t, err)
+		require.False(t, offered, "closed TryOffer must not accept")
+		require.Empty(t, f.pub.offered, "closed TryOffer must not offer")
+
+		f.latchResponse(t, f.okFor(f.handle))
+
+		responded, err := f.handle.PollResponse()
+		require.NoError(t, err)
+		require.False(t, responded, "closed PollResponse must not match")
+		f.requireStopped(t, f.handle, false, "closed handle must not report stopped")
+		require.True(t, f.controlPoller.IsPollComplete(), "closed PollResponse must not consume")
+	})
+
+	t.Run("nil_handle", func(t *testing.T) {
+		f := newAsyncHandleFixture(t, kind)
+		var nilHandle H
+
+		offered, err := nilHandle.TryOffer()
+		require.NoError(t, err)
+		require.False(t, offered, "nil TryOffer must not accept")
+		responded, err := nilHandle.PollResponse()
+		require.NoError(t, err)
+		require.False(t, responded, "nil PollResponse must not match")
+		f.requireStopped(t, nilHandle, false, "nil IsStopped must be false")
+		nilHandle.Close()
+	})
+}
+
+func testAsyncHandleResponded[H asyncResponseHandle](t *testing.T, kind asyncHandleKind[H]) {
+	t.Helper()
+
+	t.Run("try_offer_does_not_offer", func(t *testing.T) {
+		f := newAsyncHandleFixture(t, kind)
+		offered, err := f.handle.TryOffer()
+		require.NoError(t, err)
+		require.True(t, offered)
+
+		f.latchResponse(t, f.okFor(f.handle))
+		responded, err := f.handle.PollResponse()
+		require.NoError(t, err)
+		require.True(t, responded, "matching OK must complete")
+
+		offered, err = f.handle.TryOffer()
+		require.NoError(t, err)
+		require.False(t, offered, "responded TryOffer must not accept")
+		require.Len(t, f.pub.offered, 1, "responded TryOffer must not offer")
+	})
+
+	t.Run("poll_response_keeps_successor_latch", func(t *testing.T) {
+		f := newAsyncHandleFixture(t, kind)
+		first := f.handle
+		f.latchResponse(t, f.okFor(first))
+		responded, err := first.PollResponse()
+		require.NoError(t, err)
+		require.True(t, responded, "matching OK must complete")
+
+		// Phase: a successor OK latches while the responded handle stays open.
+		second := f.newHandle(t)
+		f.latchResponse(t, f.okFor(second))
+
+		responded, err = first.PollResponse()
+		require.NoError(t, err)
+		require.True(t, responded, "responded handle stays complete")
+		resp, ok := f.controlPoller.Response()
+		require.True(t, ok, "responded PollResponse must not clear the successor latch")
+		require.Equal(t, kind.correlationID(second), resp.CorrelationID)
+
+		// Phase: the successor still reads its own OK.
+		responded, err = second.PollResponse()
+		require.NoError(t, err)
+		require.True(t, responded, "successor OK must complete")
 	})
 }
 

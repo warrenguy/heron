@@ -17,70 +17,62 @@ package archive
 //
 // Ownership: does not own the Client, publication, or poller.
 type AsyncStopReplication struct {
-	client        *Client
+	request       asyncRequest
 	replicationID int64
-	correlationID int64
 	stopped       bool
-	closed        bool
 }
 
-// NewAsyncStopReplication builds one handle for replicationID.
-// ResetAwait on the session poller clears a prior latch, then arms the filter
-// for the new correlation id.
+// NewAsyncStopReplication builds one handle for replicationID. The build clears
+// a prior latch on the session poller.
 func (client *Client) NewAsyncStopReplication(replicationID int64) *AsyncStopReplication {
-	correlationID := client.aeronClient.NextCorrelationID()
-	client.controlPoller.ResetAwait(correlationID)
 	return &AsyncStopReplication{
-		client:        client,
+		request:       newAsyncRequest(client),
 		replicationID: replicationID,
-		correlationID: correlationID,
 	}
 }
 
-// TryOffer offers the StopReplicationRequest once with the stored
-// correlation id.
+// TryOffer offers the StopReplicationRequest once.
 //
 // Returns:
 //   - true, nil: the publication accepted the offer
 //   - false, nil: retriable (IsIngressRetriable). Offer again on a later
-//     call. A nil or closed handle also returns false, nil
+//     call. A nil, closed, or responded handle also returns false, nil
+//     without an offer
 //   - false, err: any !IsIngressRetriable result as ControlTerminalError,
 //     including NotConnected and encode failure (Status == 0)
 func (a *AsyncStopReplication) TryOffer() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil || !a.request.canOffer() {
 		return false, nil
 	}
-	return controlOfferResult(a.client.proxy.TryStopReplication(
-		a.client.controlSessionID,
-		a.correlationID,
+	client := a.request.client
+	return controlOfferResult(client.proxy.TryStopReplication(
+		client.controlSessionID,
+		a.request.correlationID,
 		a.replicationID,
 	))
 }
 
 // PollResponse reports the ControlResponse outcome for the stored
 // correlation id from the session poller capture. A matching OK sets
-// IsStopped. The stop OK carries RelevantID 0, so the code alone counts. A
-// matching ErrorUnknownReplication is an outcome, not an error. PollResponse
-// consumes both. PollResponse discards a latched non-matching terminal as
-// stale. Any other matching error stays latched until Close or the next
-// ResetAwait.
+// IsStopped. The stop OK carries RelevantID 0, so the code alone counts.
+// PollResponse discards a latched non-matching terminal as stale. After it
+// consumes a response, PollResponse leaves a later handle's latch in place.
 //
 // Returns:
-//   - true, nil: matching OK or ErrorUnknownReplication consumed. IsStopped
-//     reports the result
+//   - true, nil: matching OK or ErrorUnknownReplication consumed, now or on
+//     an earlier call
 //   - true, err: any other matching error response, mapped through
-//     MapControlResponse. Capture stays latched
+//     MapControlResponse. Capture stays latched until Close or the next
+//     ResetAwait
 //   - false, nil: no matching response yet, or the handle is nil or closed
 func (a *AsyncStopReplication) PollResponse() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil {
 		return false, nil
 	}
-	poller := a.client.controlPoller
-	matched, err := consumeMatchedControlResponse(
-		poller,
-		a.client.controlSessionID,
-		a.correlationID,
-	)
+	if done, settled := a.request.settled(); settled {
+		return done, nil
+	}
+	matched, err := a.request.consumeResponse()
 	if !matched {
 		return false, nil
 	}
@@ -89,7 +81,7 @@ func (a *AsyncStopReplication) PollResponse() (bool, error) {
 		return true, nil
 	}
 	if isUnknownReplication(err) {
-		poller.ResetCapture()
+		a.request.latchResponded()
 		return true, nil
 	}
 	return true, err
@@ -103,21 +95,14 @@ func (a *AsyncStopReplication) IsStopped() bool {
 	return a != nil && a.stopped
 }
 
-// Close clears a latched matching terminal. Disarms the response filter
-// only when the poller is still armed for this handle's correlation id. A
-// later ControlResponse may latch on a disarmed poller.
+// Close clears a latched matching terminal. Close disarms this handle's response
+// filter, not a later handle's filter. A later ControlResponse may latch on a
+// disarmed poller.
 //
 // Close is idempotent.
 func (a *AsyncStopReplication) Close() {
-	if a == nil || a.closed {
+	if a == nil {
 		return
 	}
-	a.closed = true
-	poller := a.client.controlPoller
-	clearMatchingControlResponse(
-		poller,
-		a.client.controlSessionID,
-		a.correlationID,
-	)
-	poller.DisarmAwait(a.correlationID)
+	a.request.close()
 }

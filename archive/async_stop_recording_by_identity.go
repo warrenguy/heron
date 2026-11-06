@@ -18,70 +18,69 @@ package archive
 //
 // Ownership: does not own the Client, publication, or poller.
 type AsyncStopRecordingByIdentity struct {
-	client        *Client
-	recordingID   int64
-	correlationID int64
-	stopped       bool
-	closed        bool
+	request     asyncRequest
+	recordingID int64
+	stopped     bool
 }
 
-// NewAsyncStopRecordingByIdentity builds one handle for recordingID.
-// ResetAwait on the session poller clears a prior latch, then arms the filter
-// for the new correlation id.
+// NewAsyncStopRecordingByIdentity builds one handle for recordingID. The build
+// clears a prior latch on the session poller.
 func (client *Client) NewAsyncStopRecordingByIdentity(
 	recordingID int64,
 ) *AsyncStopRecordingByIdentity {
-	correlationID := client.aeronClient.NextCorrelationID()
-	client.controlPoller.ResetAwait(correlationID)
 	return &AsyncStopRecordingByIdentity{
-		client:        client,
-		recordingID:   recordingID,
-		correlationID: correlationID,
+		request:     newAsyncRequest(client),
+		recordingID: recordingID,
 	}
 }
 
-// TryOffer offers the StopRecordingByIdentityRequest once with the stored
-// correlation id.
+// TryOffer offers the StopRecordingByIdentityRequest once.
 //
 // Returns:
 //   - true, nil: the publication accepted the offer
 //   - false, nil: retriable (IsIngressRetriable). Offer again on a later
-//     call. A nil or closed handle also returns false, nil
+//     call. A nil, closed, or responded handle also returns false, nil
+//     without an offer
 //   - false, err: any !IsIngressRetriable result as ControlTerminalError,
 //     including NotConnected and encode failure (Status == 0)
 func (a *AsyncStopRecordingByIdentity) TryOffer() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil || !a.request.canOffer() {
 		return false, nil
 	}
-	return controlOfferResult(a.client.proxy.TryStopRecordingByIdentity(
-		a.client.controlSessionID,
-		a.correlationID,
+	client := a.request.client
+	return controlOfferResult(client.proxy.TryStopRecordingByIdentity(
+		client.controlSessionID,
+		a.request.correlationID,
 		a.recordingID,
 	))
 }
 
 // PollResponse reports the ControlResponse outcome for the stored
-// correlation id from the session poller capture. A matching OK with a
-// non-zero relevantId latches the IsStopped result, then PollResponse
-// consumes the OK so the demux can accept later responses. A later OK never
-// clears a latched result. PollResponse discards a latched non-matching terminal as
-// stale. A matching error stays latched until Close or the next ResetAwait.
+// correlation id from the session poller capture. PollResponse consumes a
+// matching OK so the demux can accept later responses. A non-zero relevantId
+// in that OK sets the IsStopped result. After it consumes the OK, PollResponse
+// leaves a later handle's latch in place. PollResponse discards a latched
+// non-matching terminal as stale. A matching error stays latched until Close
+// or the next ResetAwait.
 //
 // Returns:
-//   - true, nil: matching OK consumed. IsStopped reports its result
+//   - true, nil: matching OK consumed, now or on an earlier call
 //   - true, err: matching error response, mapped through
 //     MapControlResponse. An unknown recordingID yields an Exception with
-//     ErrorCode ErrorUnknownRecording. Capture stays latched
+//     ErrorCode ErrorUnknownRecording
 //   - false, nil: no matching response yet, or the handle is nil or closed
 func (a *AsyncStopRecordingByIdentity) PollResponse() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil {
 		return false, nil
 	}
-	poller := a.client.controlPoller
+	if done, settled := a.request.settled(); settled {
+		return done, nil
+	}
+	request := &a.request
 	fields, mapped, ok := tryMatchControlResponseDiscardStale(
-		poller,
-		a.client.controlSessionID,
-		a.correlationID,
+		request.client.controlPoller,
+		request.client.controlSessionID,
+		request.correlationID,
 	)
 	if !ok {
 		return false, nil
@@ -89,8 +88,8 @@ func (a *AsyncStopRecordingByIdentity) PollResponse() (bool, error) {
 	if mapped != nil {
 		return true, mapped
 	}
-	a.stopped = a.stopped || fields.RelevantID != 0
-	poller.ResetCapture()
+	a.stopped = fields.RelevantID != 0
+	request.latchResponded()
 	return true, nil
 }
 
@@ -102,21 +101,14 @@ func (a *AsyncStopRecordingByIdentity) IsStopped() bool {
 	return a != nil && a.stopped
 }
 
-// Close clears a latched matching terminal. Disarms the response filter
-// only when the poller is still armed for this handle's correlation id. A
-// later ControlResponse may latch on a disarmed poller.
+// Close clears a latched matching terminal. Close disarms this handle's response
+// filter, not a later handle's filter. A later ControlResponse may latch on a
+// disarmed poller.
 //
 // Close is idempotent.
 func (a *AsyncStopRecordingByIdentity) Close() {
-	if a == nil || a.closed {
+	if a == nil {
 		return
 	}
-	a.closed = true
-	poller := a.client.controlPoller
-	clearMatchingControlResponse(
-		poller,
-		a.client.controlSessionID,
-		a.correlationID,
-	)
-	poller.DisarmAwait(a.correlationID)
+	a.request.close()
 }

@@ -16,8 +16,7 @@ import (
 // The handle never calls DoWork or polls the subscription.
 //
 // Signals: the handle implements RecordingSignalHandler. Route session
-// signals to it, for example through SetRecordingSignalHandler. The handle
-// folds a signal only when its correlation id equals the replication id. One
+// signals to it, for example through SetRecordingSignalHandler. One
 // Client.Poll can carry the OK and the first signals. The handle reads the
 // replication id from the latched OK before PollResponse consumes it.
 //
@@ -27,6 +26,8 @@ import (
 //     run.
 //   - After PollResponse returns an error, Close the handle before the next
 //     build. An open handle can discard the response of a later request.
+//   - After a true TryOffer, do not call TryOffer again. A second offer
+//     starts a second replication.
 //   - After a true TryOffer, call PollResponse after each Client.Poll until
 //     it returns true. Until then the latched OK holds back later responses.
 //   - Keep the handle open from a true TryOffer to a true PollResponse. A
@@ -38,7 +39,7 @@ import (
 //   - Do not run an *AwaitSignal call while the handle is open. Those calls
 //     route signals to their own tracker. The handle misses them.
 //   - An AsyncStartRecording or AsyncExtendRecording may share the Client
-//     once PollResponse returned true. Their signal tracker does not affect
+//     once PollResponse returns true. Their signal tracker does not affect
 //     this handle.
 //
 // Replication failure: the archive reports a failed replication as an ERROR
@@ -55,23 +56,20 @@ import (
 // Ownership: does not own the Client, the publication, the poller, or the
 // replication. Close does not stop the replication.
 type AsyncReplicate struct {
-	client                *Client
+	request               asyncRequest
 	sourceRecordingID     int64
 	sourceControlStreamID int32
 	sourceControlChannel  []byte
 	params                ReplicationParams
-	correlationID         int64
 	replicationID         int64
 	recordingID           int64
 	position              int64
-	responded             bool
 	extended              bool
 	synced                bool
 	merged                bool
 	stopped               bool
 	replicationEnded      bool
 	recordingDeleted      bool
-	closed                bool
 }
 
 var _ RecordingSignalHandler = (*AsyncReplicate)(nil)
@@ -80,51 +78,49 @@ var _ RecordingSignalHandler = (*AsyncReplicate)(nil)
 // sourceRecordingID from the archive at sourceControlChannel and
 // sourceControlStreamID. Build params with NewReplicationParams.
 //
-// ResetAwait on the session poller clears a prior latch, then arms the filter
-// for the new correlation id. NewAsyncReplicate does not touch the pending
-// signal tracker of an open AsyncStartRecording or AsyncExtendRecording.
+// The build clears a prior latch on the session poller. NewAsyncReplicate does
+// not touch the pending signal tracker of an open AsyncStartRecording or
+// AsyncExtendRecording.
 func (client *Client) NewAsyncReplicate(
 	sourceRecordingID int64,
 	sourceControlStreamID int32,
 	sourceControlChannel []byte,
 	params ReplicationParams,
 ) *AsyncReplicate {
-	correlationID := client.aeronClient.NextCorrelationID()
-	client.controlPoller.ResetAwait(correlationID)
 	return &AsyncReplicate{
-		client:                client,
+		request:               newAsyncRequest(client),
 		sourceRecordingID:     sourceRecordingID,
 		sourceControlStreamID: sourceControlStreamID,
 		sourceControlChannel:  sourceControlChannel,
 		params:                params,
-		correlationID:         correlationID,
 		replicationID:         cnc.NullValue,
 		recordingID:           cnc.NullValue,
 		position:              NullPosition,
 	}
 }
 
-// TryOffer validates params, then offers the ReplicateRequest2 once with the
-// stored correlation id.
+// TryOffer validates params, then offers the ReplicateRequest2 once.
 //
 // Returns:
 //   - true, nil: the publication accepted the offer
 //   - false, nil: retriable (IsIngressRetriable). Offer again on a later
-//     call. A nil or closed handle also returns false, nil
+//     call. A nil, closed, or responded handle also returns false, nil
+//     without an offer
 //   - false, err: params fail validation. err wraps
 //     ErrInvalidReplicationParams. The handle does not offer
 //   - false, err: any !IsIngressRetriable result as ControlTerminalError,
 //     including NotConnected and encode failure (Status == 0)
 func (a *AsyncReplicate) TryOffer() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil || !a.request.canOffer() {
 		return false, nil
 	}
 	if err := a.params.validate(); err != nil {
 		return false, err
 	}
-	return controlOfferResult(a.client.proxy.TryReplicate(
-		a.client.controlSessionID,
-		a.correlationID,
+	client := a.request.client
+	return controlOfferResult(client.proxy.TryReplicate(
+		client.controlSessionID,
+		a.request.correlationID,
 		a.sourceRecordingID,
 		a.sourceControlStreamID,
 		a.sourceControlChannel,
@@ -136,34 +132,29 @@ func (a *AsyncReplicate) TryOffer() (bool, error) {
 // correlation id from the session poller capture. PollResponse discards a
 // latched non-matching terminal as stale.
 //
-// A matching OK stores its RelevantID as ReplicationID. PollResponse then
-// consumes the OK. It disarms the filter for its own correlation id only.
-// Every later call returns true, nil without reading the capture.
+// On a matching OK, PollResponse disarms the filter for its own correlation id
+// only. After it consumes the OK, PollResponse leaves a later handle's latch in
+// place.
 //
 // Returns:
-//   - true, nil: matching OK consumed. ReplicationID holds the replication id
+//   - true, nil: matching OK consumed, now or on an earlier call.
+//     ReplicationID holds the replication id
 //   - true, err: matching error response, mapped through MapControlResponse.
 //     The capture stays latched until Close or the next ResetAwait
 //   - false, nil: no matching response yet, or the handle is nil or closed
 func (a *AsyncReplicate) PollResponse() (bool, error) {
-	if a == nil || a.closed {
+	if a == nil {
 		return false, nil
 	}
-	if a.responded {
-		return true, nil
+	if done, settled := a.request.settled(); settled {
+		return done, nil
 	}
 	a.resolveReplicationID()
-	poller := a.client.controlPoller
-	matched, err := consumeMatchedControlResponse(
-		poller,
-		a.client.controlSessionID,
-		a.correlationID,
-	)
+	matched, err := a.request.consumeResponse()
 	if !matched || err != nil {
 		return matched, err
 	}
-	a.responded = true
-	poller.DisarmAwait(a.correlationID)
+	a.request.client.controlPoller.DisarmAwait(a.request.correlationID)
 	return true, nil
 }
 
@@ -183,7 +174,7 @@ func (a *AsyncReplicate) PollResponse() (bool, error) {
 // Position other than NullPosition replace the stored values. RecordingSignal
 // does not allocate.
 func (a *AsyncReplicate) RecordingSignal(event codecs.RecordingSignalEventFields) {
-	if a == nil || a.closed {
+	if a == nil || a.request.closed {
 		return
 	}
 	a.resolveReplicationID()
@@ -219,20 +210,19 @@ func (a *AsyncReplicate) RecordingSignal(event codecs.RecordingSignalEventFields
 
 // resolveReplicationID reads an unknown replication id from this handle's
 // latched OK. The demux latches the OK before it dispatches the signals
-// behind it in the same poll. A matching ERROR leaves the id unknown. A
-// closed handle does not read. The check compares the code without
+// behind it in the same poll. The check compares the code without
 // MapControlResponse, so it does not allocate.
 func (a *AsyncReplicate) resolveReplicationID() {
-	if a.closed || a.replicationID != cnc.NullValue {
+	if a.request.closed || a.replicationID != cnc.NullValue {
 		return
 	}
-	client := a.client
+	client := a.request.client
 	fields, ok := client.controlPoller.Response()
 	if !ok {
 		return
 	}
 	ownOK := fields.ControlSessionID == client.controlSessionID &&
-		fields.CorrelationID == a.correlationID &&
+		fields.CorrelationID == a.request.correlationID &&
 		fields.Code == archivewire.ControlResponseCode_OK
 	if ownOK {
 		a.replicationID = fields.RelevantID
@@ -304,18 +294,15 @@ func (a *AsyncReplicate) IsRecordingDeleted() bool {
 }
 
 // Close first reads a latched matching OK into ReplicationID. Close then
-// clears a latched matching terminal. Close disarms the response filter only
-// when the poller is still armed for this handle's correlation id.
+// clears a latched matching terminal. Close disarms this handle's response
+// filter, not a later handle's filter.
 //
 // Close does not stop the replication. The accessors keep their last
 // values. Close is idempotent.
 func (a *AsyncReplicate) Close() {
-	if a == nil || a.closed {
+	if a == nil {
 		return
 	}
 	a.resolveReplicationID()
-	a.closed = true
-	poller := a.client.controlPoller
-	clearMatchingControlResponse(poller, a.client.controlSessionID, a.correlationID)
-	poller.DisarmAwait(a.correlationID)
+	a.request.close()
 }
