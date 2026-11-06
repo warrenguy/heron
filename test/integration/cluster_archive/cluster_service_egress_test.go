@@ -338,7 +338,7 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 	// fails on a close, so this wait omits it.
 	closePayload := []byte(serviceClosePayload)
 	for _, i := range survivors {
-		sc.members[i].rec.closePayload = closePayload
+		sc.members[i].rec.ClosePayload = closePayload
 	}
 	offerTransferSessionMessage(t, set, pump, closePayload, sc.dump)
 	wantClosed := []string{"SERVICE_ACTION"}
@@ -355,7 +355,7 @@ func TestClusterServiceEgress_repliesAcrossLeaderStop(t *testing.T) {
 	)
 	for _, i := range survivors {
 		mem := sc.members[i]
-		require.Equal(t, []bool{true}, mem.rec.closeResults,
+		require.Equal(t, []bool{true}, mem.rec.CloseResults,
 			"close results index %d:\n%s", i, sc.dump())
 		require.Len(t, mem.rec.echoResults, 2,
 			"echo results after close index %d:\n%s", i, sc.dump())
@@ -487,7 +487,7 @@ func TestClusterServiceEgress_restoredSessionsReplyAcrossLeaderStop(t *testing.T
 			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
 			for _, index := range []int{newIndex, otherIndex} {
 				rec := sc.members[index].rec
-				corrupt := len(rec.opens) != 0 || len(rec.closes) != 0 ||
+				corrupt := len(rec.opens) != 0 || len(rec.Closes) != 0 ||
 					len(rec.messages) > 1 ||
 					len(rec.messages) == 1 && !rec.messagesAre(sessionID, [][]byte{second})
 				if corrupt {
@@ -497,7 +497,7 @@ func TestClusterServiceEgress_restoredSessionsReplyAcrossLeaderStop(t *testing.T
 						"member=%d opens=%v closes=%v messages=%v:\n%s\n%s",
 						set.Module(index).ThisMemberID(),
 						rec.opens,
-						rec.closes,
+						rec.Closes,
 						rec.messages,
 						egressDetail(),
 						sc.dump(),

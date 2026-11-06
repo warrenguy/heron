@@ -652,10 +652,10 @@ func recorderSessionStatus(
 	if closeReason != clusterwire.CloseReason_NULL_VALUE {
 		wantCloses = 1
 	}
-	if len(rec.closes) > wantCloses {
+	if len(rec.Closes) > wantCloses {
 		return false, true
 	}
-	if len(rec.closes) == 1 && !rec.holdsCloseWithReason(sessionID, closeReason) {
+	if len(rec.Closes) == 1 && !rec.HasCloseWithReason(sessionID, closeReason) {
 		return false, true
 	}
 	if len(rec.opens) > 1 {
@@ -667,7 +667,7 @@ func recorderSessionStatus(
 	if len(rec.messages) > len(payloads) {
 		return false, true
 	}
-	if len(rec.opens) == 0 && (len(rec.messages) != 0 || len(rec.closes) != 0) {
+	if len(rec.opens) == 0 && (len(rec.messages) != 0 || len(rec.Closes) != 0) {
 		return false, true
 	}
 	for i, msg := range rec.messages {
@@ -676,7 +676,7 @@ func recorderSessionStatus(
 		}
 	}
 	// A close ends the session. Every payload must precede it.
-	if len(rec.closes) == 1 && len(rec.messages) != len(payloads) {
+	if len(rec.Closes) == 1 && len(rec.messages) != len(payloads) {
 		return false, true
 	}
 
@@ -684,7 +684,7 @@ func recorderSessionStatus(
 	if len(rec.opens) == 1 {
 		want = append([]string{"open"}, want...)
 	}
-	if len(rec.closes) == 1 {
+	if len(rec.Closes) == 1 {
 		want = append(want, "close")
 	}
 	if !slices.Equal(rec.order, want) {
@@ -692,7 +692,7 @@ func recorderSessionStatus(
 	}
 	done := len(rec.opens) == 1 &&
 		len(rec.messages) == len(payloads) &&
-		len(rec.closes) == wantCloses
+		len(rec.Closes) == wantCloses
 	return done, false
 }
 

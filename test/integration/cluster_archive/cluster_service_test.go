@@ -66,26 +66,20 @@ type recordedMessage struct {
 	payload   []byte
 }
 
-// recordedClose is one SessionClose callback.
-type recordedClose struct {
-	sessionID int64
-	reason    clusterwire.CloseReason
-}
-
-// sessionRecorder records ClusteredService callbacks. Invoker-only. No
-// locking. Copies payload bytes. Callback slices are transient.
+// sessionRecorder records ClusteredService callbacks. It copies payload bytes.
+// Callback slices are transient.
 //
 // With echo set, SessionMessage offers the payload back to its session and
 // records the Offer result in echoResults. A close message does not echo.
 //
-// With closePayload set, a message with that payload and a non-nil session
-// is a close message. It calls session.Close and records the result in
-// closeResults.
+// Concurrency: the goroutine that ticks the service owns the recorder. Not safe
+// from other goroutines.
 type sessionRecorder struct {
+	harness.CloseRecorder
+
 	startCount int
 	opens      []int64
 	messages   []recordedMessage
-	closes     []recordedClose
 	order      []string
 
 	roles           []codecs.Role
@@ -93,9 +87,6 @@ type sessionRecorder struct {
 
 	echo        bool
 	echoResults []int64
-
-	closePayload []byte
-	closeResults []bool
 }
 
 func (s *sessionRecorder) Start(service.Cluster) error {
@@ -113,7 +104,7 @@ func (s *sessionRecorder) SessionClose(
 	_ int64,
 	reason clusterwire.CloseReason,
 ) {
-	s.closes = append(s.closes, recordedClose{sessionID: session.ID(), reason: reason})
+	s.RecordClose(session.ID(), reason)
 	s.order = append(s.order, "close")
 }
 
@@ -133,8 +124,7 @@ func (s *sessionRecorder) SessionMessage(
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, "message")
-	if s.closePayload != nil && session != nil && bytes.Equal(payload, s.closePayload) {
-		s.closeResults = append(s.closeResults, session.Close())
+	if s.CloseOnPayload(session, payload) {
 		return
 	}
 	if !s.echo {
@@ -160,20 +150,6 @@ func (s *sessionRecorder) DoBackgroundWork(int64) int {
 
 func (s *sessionRecorder) holdsOpen(sessionID int64) bool {
 	return slices.Contains(s.opens, sessionID)
-}
-
-func (s *sessionRecorder) holdsClose(sessionID int64) bool {
-	return slices.ContainsFunc(s.closes, func(c recordedClose) bool {
-		return c.sessionID == sessionID
-	})
-}
-
-// holdsCloseWithReason reports a SessionClose for sessionID with reason.
-func (s *sessionRecorder) holdsCloseWithReason(
-	sessionID int64,
-	reason clusterwire.CloseReason,
-) bool {
-	return slices.Contains(s.closes, recordedClose{sessionID: sessionID, reason: reason})
 }
 
 // holdsMessagesAfterOpen reports the session open, then exactly one message
@@ -268,7 +244,7 @@ func serviceState(
 		mem.rec.startCount,
 		mem.rec.opens,
 		len(mem.rec.messages),
-		mem.rec.closes,
+		mem.rec.Closes,
 		mem.agent.PendingResponsePublicationAdds(),
 		mem.agent.ResponsePublicationCount(),
 		mem.rec.echoResults,
@@ -638,7 +614,7 @@ func TestClusterService_deliversCommittedLogAndAcksOnRequest(t *testing.T) {
 				return false
 			}
 			for _, mem := range sc.members {
-				if !mem.rec.holdsClose(wantSession) {
+				if !mem.rec.HasClose(wantSession) {
 					return false
 				}
 			}
@@ -693,7 +669,7 @@ func requireServiceCloseSession(
 
 	closePayload := []byte(serviceClosePayload)
 	for _, mem := range sc.members {
-		mem.rec.closePayload = closePayload
+		mem.rec.ClosePayload = closePayload
 	}
 	var closedDetails []string
 	egress := &client.EgressHandlers{SessionEventFunc: closedDetailHandler(&closedDetails)}
@@ -714,7 +690,7 @@ func requireServiceCloseSession(
 	)
 
 	for i, m := range sc.set.Modules() {
-		require.Equal(t, []bool{true}, sc.members[i].rec.closeResults,
+		require.Equal(t, []bool{true}, sc.members[i].rec.CloseResults,
 			"close results member %d:\n%s", m.ThisMemberID(), sc.dump())
 	}
 	requireNoServiceFailures(t, sc, " after service close")
@@ -752,7 +728,7 @@ func servicesClosedSession(sc serviceCluster, skipIndex int, sessionID int64) bo
 			return false
 		}
 		rec := sc.members[i].rec
-		if !rec.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) {
+		if !rec.HasCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) {
 			return false
 		}
 	}

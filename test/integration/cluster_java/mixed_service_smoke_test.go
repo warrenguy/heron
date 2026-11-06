@@ -42,26 +42,23 @@ func javaCommitPosition(counters *harness.DriverCounters) func() int64 {
 	}
 }
 
-// recordingService records ClusteredService callbacks. Invoker-only. Copies
-// payload bytes. Callback slices are transient.
+// recordingService records ClusteredService callbacks. It copies payload bytes.
+// Callback slices are transient.
 //
 // SessionMessage offers each payload back to its session and records the
 // Offer result in echoResults. A close message does not echo.
 //
-// With closePayload set, a message with that payload and a non-nil session
-// is a close message. It calls session.Close and records the result in
-// closeResults.
+// Concurrency: the goroutine that ticks the service owns the recorder. Not safe
+// from other goroutines.
 type recordingService struct {
+	harness.CloseRecorder
+
 	startCount  int
 	opens       []int64
 	messages    []recordedMessage
-	closes      []recordedClose
 	order       []recordedEvent
 	echoResults []int64
 	roles       []codecs.Role
-
-	closePayload []byte
-	closeResults []bool
 }
 
 // nilSessionID marks a recordedMessage whose SessionMessage session was nil.
@@ -70,12 +67,6 @@ const nilSessionID int64 = -1
 type recordedMessage struct {
 	sessionID int64
 	payload   []byte
-}
-
-// recordedClose is one SessionClose callback.
-type recordedClose struct {
-	sessionID int64
-	reason    clusterwire.CloseReason
 }
 
 type recordedEvent struct {
@@ -106,7 +97,7 @@ func (s *recordingService) SessionClose(
 	reason clusterwire.CloseReason,
 ) {
 	sessionID := session.ID()
-	s.closes = append(s.closes, recordedClose{sessionID: sessionID, reason: reason})
+	s.RecordClose(sessionID, reason)
 	s.order = append(s.order, recordedEvent{kind: eventClose, sessionID: sessionID})
 }
 
@@ -127,8 +118,7 @@ func (s *recordingService) SessionMessage(
 		payload:   bytes.Clone(payload),
 	})
 	s.order = append(s.order, recordedEvent{kind: eventMessage, sessionID: sessionID})
-	if s.closePayload != nil && session != nil && bytes.Equal(payload, s.closePayload) {
-		s.closeResults = append(s.closeResults, session.Close())
+	if s.CloseOnPayload(session, payload) {
 		return
 	}
 	var result int64
@@ -146,20 +136,6 @@ func (s *recordingService) RoleChange(role codecs.Role) {
 
 func (s *recordingService) holdsOpen(sessionID int64) bool {
 	return slices.Contains(s.opens, sessionID)
-}
-
-func (s *recordingService) holdsClose(sessionID int64) bool {
-	return slices.ContainsFunc(s.closes, func(c recordedClose) bool {
-		return c.sessionID == sessionID
-	})
-}
-
-// holdsCloseWithReason reports a SessionClose for sessionID with reason.
-func (s *recordingService) holdsCloseWithReason(
-	sessionID int64,
-	reason clusterwire.CloseReason,
-) bool {
-	return slices.Contains(s.closes, recordedClose{sessionID: sessionID, reason: reason})
 }
 
 func (s *recordingService) openCount(sessionID int64) int {
@@ -270,16 +246,16 @@ func (p mixedServiceAwait) dump() string {
 		return line
 	}
 	agent := p.checked.agent
-	start, opens, msgs, closes := 0, []int64(nil), 0, []recordedClose(nil)
+	start, opens, msgs, closes := 0, []int64(nil), 0, []harness.RecordedClose(nil)
 	var echoResults []int64
 	var closeResults []bool
 	if p.recorder != nil {
 		start = p.recorder.startCount
 		opens = p.recorder.opens
 		msgs = len(p.recorder.messages)
-		closes = p.recorder.closes
+		closes = p.recorder.Closes
 		echoResults = p.recorder.echoResults
-		closeResults = p.recorder.closeResults
+		closeResults = p.recorder.CloseResults
 	}
 	return line + fmt.Sprintf(
 		" bound=%v logPos=%d nextAck=%d pendingJoin=%v"+
@@ -598,7 +574,7 @@ func TestClusterMixedServiceSmoke(t *testing.T) {
 	require.NoError(t, session.Close())
 	awaitMixedService(
 		t, pump, clusterjava.MixedServiceDeliverBudget,
-		func() bool { return recorder.holdsClose(sessionID) },
+		func() bool { return recorder.HasClose(sessionID) },
 		"session close delivered",
 	)
 	requireMixedServiceEchoes(t, pump, recorder, sessionID, echoes)
@@ -644,7 +620,7 @@ func requireMixedServiceClose(
 
 	recorder := p.recorder
 	agent := p.checked.agent
-	recorder.closePayload = mixedServiceClosePayload
+	recorder.ClosePayload = mixedServiceClosePayload
 	var closedDetails []string
 	egress := &client.EgressHandlers{
 		SessionEventFunc: func(
@@ -676,14 +652,14 @@ func requireMixedServiceClose(
 	awaitMixedService(
 		t, p, clusterjava.MixedServiceDeliverBudget,
 		func() bool {
-			return recorder.holdsCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) &&
+			return recorder.HasCloseWithReason(sessionID, clusterwire.CloseReason_SERVICE_ACTION) &&
 				slices.Contains(closedDetails, "SERVICE_ACTION") &&
 				session.IsClosed()
 		},
 		"service close delivered",
 	)
 
-	results := recorder.closeResults
+	results := recorder.CloseResults
 	require.NotEmpty(t, results, "close results:\n%s", p.dump())
 	require.LessOrEqual(t, len(results), 2, "close results:\n%s", p.dump())
 	require.True(t, results[0], "first close result:\n%s", p.dump())
