@@ -47,6 +47,9 @@ type Config struct {
 	// The duty cycle is invoker-driven, so leave AeronConfig.UseConductorInvoker
 	// nil or true. Share AeronConfig.NanoClock and AeronConfig.EpochClock with
 	// the election deps when a single clock source is wanted.
+	//
+	// AeronConfig.NanoClock must return nanoseconds since the Unix epoch. The
+	// module stamps durable TERM rows and NewLeadershipTerm from it.
 	AeronConfig aeron.Config
 
 	// ConsensusChannel is the member-to-member control channel template. Must be

@@ -12,7 +12,9 @@ type SkewSpec struct {
 	All     bool
 }
 
-// ClockSkewNemesis applies AdvanceEpoch on target nodes.
+// ClockSkewNemesis applies AdvanceEpoch on target nodes. Skew moves the
+// node-state candidate term timestamp. It does not move TERM row or
+// NewLeadershipTerm timestamps.
 type ClockSkewNemesis struct{}
 
 // OnBuild is a no-op.

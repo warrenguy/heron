@@ -17,7 +17,6 @@ type replayTermModel struct {
 	rows    []recordinglog.Entry
 	logTerm int64
 	logPos  int64
-	epochMs int64
 }
 
 func (m *replayTermModel) contains(id int64) bool {
@@ -29,9 +28,9 @@ func (m *replayTermModel) contains(id int64) bool {
 	return false
 }
 
-// appendNew commits leadershipTermID-1 to the new base. Callers append ids
-// in order, so leadershipTermID-1 is the last row.
-func (m *replayTermModel) appendNew(id, base int64) {
+// appendNew commits term id-1 to base. Callers append ids in order, so term
+// id-1 is the last row.
+func (m *replayTermModel) appendNew(id, base, timestamp int64) {
 	if n := len(m.rows); n > 0 && m.rows[n-1].LeadershipTermID == id-1 {
 		m.rows[n-1].LogPosition = base
 	}
@@ -40,17 +39,20 @@ func (m *replayTermModel) appendNew(id, base int64) {
 		LeadershipTermID:    id,
 		TermBaseLogPosition: base,
 		LogPosition:         recordinglog.NullPosition,
-		Timestamp:           m.epochMs,
+		Timestamp:           timestamp,
 		Type:                recordinglog.EntryTypeTerm,
 		Valid:               true,
 	})
 }
 
-func (m *replayTermModel) appendThrough(from, to, gapBase, targetBase int64) {
-	for id := from; id < to; id++ {
-		m.appendNew(id, gapBase)
+func (m *replayTermModel) appendThrough(
+	from, gapBase, targetBase int64,
+	event codecs.NewLeadershipTermEventFields,
+) {
+	for id := from; id < event.LeadershipTermID; id++ {
+		m.appendNew(id, gapBase, event.Timestamp)
 	}
-	m.appendNew(to, targetBase)
+	m.appendNew(event.LeadershipTermID, targetBase, event.Timestamp)
 }
 
 func (m *replayTermModel) apply(
@@ -67,7 +69,7 @@ func (m *replayTermModel) apply(
 		return
 	}
 	if len(m.rows) == 0 {
-		m.appendThrough(0, event.LeadershipTermID, 0, event.TermBaseLogPosition)
+		m.appendThrough(0, 0, event.TermBaseLogPosition, event)
 		return
 	}
 	last := len(m.rows) - 1
@@ -75,7 +77,7 @@ func (m *replayTermModel) apply(
 		m.rows[last].LogPosition = event.TermBaseLogPosition
 	}
 	fillBase := m.rows[last].LogPosition
-	m.appendThrough(m.rows[last].LeadershipTermID+1, event.LeadershipTermID, fillBase, fillBase)
+	m.appendThrough(m.rows[last].LeadershipTermID+1, fillBase, fillBase, event)
 }
 
 func requireReplayTermModel(
@@ -102,7 +104,7 @@ func TestElection_replayNewLeadershipTermEvent_rapid(t *testing.T) {
 			floor = base
 		}
 
-		cfg, deps, clock, epoch, _ := testElectionDeps(t)
+		cfg, deps, clock, _, _ := testElectionDeps(t)
 		cfg.LeadershipTermID = election.NullValue
 		cfg.TermBaseLogPosition = 0
 		cfg.LogPosition = 0
@@ -116,7 +118,6 @@ func TestElection_replayNewLeadershipTermEvent_rapid(t *testing.T) {
 			rows:    termIdentities(log.Entries()),
 			logTerm: election.LogLeadershipTermIDForTest(e),
 			logPos:  e.LogPosition(),
-			epochMs: epoch.nowMs,
 		}
 
 		steps := rapid.IntRange(1, 6).Draw(rt, "steps")
@@ -159,7 +160,7 @@ func TestElection_replayNewLeadershipTermEvent_rapid(t *testing.T) {
 				LeadershipTermID:    termID,
 				TermBaseLogPosition: base,
 				LogPosition:         logPos,
-				Timestamp:           9,
+				Timestamp:           rapid.Int64Range(0, 1<<62).Draw(rt, "timestamp"),
 			}
 
 			election.SetStateForTest(e, state)

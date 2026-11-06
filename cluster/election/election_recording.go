@@ -50,11 +50,11 @@ func EnsureRecordingLogCoherent(
 }
 
 // commitRecordingLogTerm commits the term to the recording log, then advances
-// the tracked log leadership term. Log join passes a NullValue logPosition for
-// the still-open term; replication passes the replication stop position for
-// the committed one.
+// the tracked log leadership term. A still-open term takes a NullValue
+// logPosition. A replicated term takes the replication stop position. timestamp
+// is in the cluster time unit.
 func (e *Election) commitRecordingLogTerm(
-	leadershipTermID, termBaseLogPosition, logPosition int64,
+	leadershipTermID, termBaseLogPosition, logPosition, timestamp int64,
 ) error {
 	err := EnsureRecordingLogCoherent(e.deps.RecordingLog, recordinglog.EnsureCoherentParams{
 		RecordingID:                e.deps.Host.LocalLogRecordingID(),
@@ -63,7 +63,7 @@ func (e *Election) commitRecordingLogTerm(
 		LeadershipTermID:           leadershipTermID,
 		TermBaseLogPosition:        termBaseLogPosition,
 		LogPosition:                logPosition,
-		Timestamp:                  e.deps.EpochClock(),
+		Timestamp:                  timestamp,
 		FileSyncLevel:              e.deps.RecordingLogFileSyncLevel,
 	})
 	if err != nil {
@@ -88,6 +88,7 @@ func (e *Election) HandleReplayNewLeadershipTermEvent(
 		fields.LeadershipTermID,
 		fields.TermBaseLogPosition,
 		NullValue,
+		fields.Timestamp,
 	)
 	if err != nil {
 		e.replayTermErr = fmt.Errorf(

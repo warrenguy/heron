@@ -62,7 +62,6 @@ func TestFollowerCatchup_snapshotAfterTermEventWritesGroup(t *testing.T) {
 		LeaderHeartbeatTimeoutNs: catchupSnapshotTimeoutNs,
 		NanoClock:                clock,
 		LeaderMemberID:           election.NullMemberID,
-		EpochClock:               clock,
 		RecordingLogLookup:       log,
 	})
 

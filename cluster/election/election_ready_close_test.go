@@ -156,13 +156,13 @@ func TestElection_shouldSendCommitPositionAndNewLeadershipTermEventsWithTheSameL
 	fx.publisher.Reset()
 
 	fx.advance(1)
-	replicationEpochMs := fx.epochClock.nowMs
+	replicationTimestamp := fx.clock.nowNs
 	require.Equal(t, 3, fx.doWork())
 	require.Equal(t, election.ElectionStateLeaderReplay, fx.election.State())
 
 	requireNewLeadershipTermBatch(
 		t, fx.publisher, leadershipTermID, logPosition, quorumPosition1,
-		logRecordingID, logSessionID, javaDefaultAppVersion, replicationEpochMs,
+		logRecordingID, logSessionID, javaDefaultAppVersion, replicationTimestamp,
 		clusterwire.BooleanType_FALSE,
 	)
 	require.Equal(t, []publishCommitPositionCall{
@@ -170,7 +170,7 @@ func TestElection_shouldSendCommitPositionAndNewLeadershipTermEventsWithTheSameL
 	}, fx.host.publishCommitPositionCalls)
 
 	fx.advance(1)
-	replayEpochMs := fx.epochClock.nowMs
+	replayTimestamp := fx.clock.nowNs
 	fx.publisher.Reset()
 	fx.host.publishCommitPositionCalls = nil
 
@@ -179,7 +179,7 @@ func TestElection_shouldSendCommitPositionAndNewLeadershipTermEventsWithTheSameL
 
 	requireNewLeadershipTermBatch(
 		t, fx.publisher, leadershipTermID, logPosition, quorumPosition2,
-		logRecordingID, logSessionID, javaDefaultAppVersion, replayEpochMs,
+		logRecordingID, logSessionID, javaDefaultAppVersion, replayTimestamp,
 		clusterwire.BooleanType_TRUE,
 	)
 	require.Equal(t, []publishCommitPositionCall{

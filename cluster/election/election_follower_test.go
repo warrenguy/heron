@@ -258,12 +258,7 @@ func TestHandleFollowerLogInit_waitsForLogSession(t *testing.T) {
 }
 
 // TestHandleFollowerLogInit_rejoinsBoundSession asserts LOG_INIT re-joins a
-// bound leader session after prepare stopped the recording. Cases cover ready,
-// await on missing image, await on refuse, coherency error, and init on join
-// error.
-//
-// The ready path asserts commitRecordingLogTerm runs. Catchup join starts the
-// recording without that commit. Bound LOG_INIT must write the term index.
+// bound leader session after prepare stopped the recording.
 func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 	t.Parallel()
 
@@ -320,7 +315,7 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+			cfg, deps, clock, _, _ := testElectionDeps(t)
 			host := &recordingElectionHost{
 				clock:               clock,
 				logJoined:           true,
@@ -361,7 +356,7 @@ func TestHandleFollowerLogInit_rejoinsBoundSession(t *testing.T) {
 					LeadershipTermID:           cfg.LeadershipTermID,
 					TermBaseLogPosition:        cfg.LogPosition,
 					LogPosition:                election.NullValue,
-					Timestamp:                  epochClock.nowMs,
+					Timestamp:                  clock.nowNs,
 				}}, spy.calls)
 			} else {
 				require.Empty(t, spy.calls)

@@ -102,7 +102,7 @@ func TestPublishNewLeadershipTerm_commitPositionField(t *testing.T) {
 	fx := leaderLogReplicationFixture(t, quorumPosition, withAppVersion(appVersion))
 	fx.host.localLogRecordingID = recordingID
 
-	wantTimestamp := fx.epochClock.nowMs
+	wantTimestamp := fx.clock.nowNs
 	fx.doWork()
 
 	require.Len(t, fx.publisher.Sent, 2)
@@ -148,6 +148,7 @@ func TestOnAppendPosition_leaderRepublishesToLaggingFollower(t *testing.T) {
 	fields := sent.Fields.(codecs.NewLeadershipTermFields)
 	require.Equal(t, laggingTerm, fields.LogLeadershipTermID)
 	require.Equal(t, fx.election.LeadershipTermID(), fields.LeadershipTermID)
+	require.Equal(t, fx.clock.nowNs, fields.Timestamp)
 }
 
 func TestOnCanvassPosition_leaderRepublishesToOlderLogTerm(t *testing.T) {
@@ -178,6 +179,7 @@ func TestOnCanvassPosition_leaderRepublishesToOlderLogTerm(t *testing.T) {
 			fields := sent.Fields.(codecs.NewLeadershipTermFields)
 			require.Equal(t, tc.logTerm, fields.LogLeadershipTermID)
 			require.Equal(t, fx.election.LeadershipTermID(), fields.LeadershipTermID)
+			require.Equal(t, fx.clock.nowNs, fields.Timestamp)
 			require.Equal(t, election.ElectionStateLeaderLogReplication, fx.election.State())
 		})
 	}
@@ -341,7 +343,7 @@ func TestHandleLeaderInit_joinLeaderErrorFailsClosed(t *testing.T) {
 func TestHandleLeaderInit_joinLeaderSuccessWritesTerm(t *testing.T) {
 	t.Parallel()
 
-	cfg, deps, clock, epochClock, _ := testElectionDeps(t)
+	cfg, deps, clock, _, _ := testElectionDeps(t)
 	host := &recordingElectionHost{clock: clock, localLogRecordingID: 42}
 	deps.Host = host
 	spy := &recordingLogCoherencySpy{}
@@ -361,6 +363,6 @@ func TestHandleLeaderInit_joinLeaderSuccessWritesTerm(t *testing.T) {
 		LeadershipTermID:           cfg.LeadershipTermID,
 		TermBaseLogPosition:        cfg.LogPosition,
 		LogPosition:                election.NullValue,
-		Timestamp:                  epochClock.nowMs,
+		Timestamp:                  clock.nowNs,
 	}}, spy.calls)
 }
