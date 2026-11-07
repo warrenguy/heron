@@ -25,6 +25,13 @@ Measured against the Java stack at the Aeron release pinned in
 
 Detail per component: [STATUS.md](STATUS.md).
 
+## Supported platforms
+
+Heron supports Linux with kernel 5.14 or later. Other Unix systems may work,
+but CI tests only Linux.
+
+Heron builds only on amd64 and arm64.
+
 ## Getting started
 
 ```bash
