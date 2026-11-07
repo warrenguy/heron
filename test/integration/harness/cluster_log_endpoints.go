@@ -339,8 +339,8 @@ const (
 // cluster_archive bases must end below linuxEphemeralPortFloor.
 //
 // Member counts for reserved unicast ranges:
-//   - consensus, runner, service snapshot and module snapshot: one member
-//     (base+1..+5)
+//   - consensus, runner, runner archive loss, service snapshot, and module
+//     snapshot: one member (base+1..+5)
 //   - member-set smoke and restart affordance: two members (base+1..+105)
 //   - truncate: three members (base+1..+205)
 //
@@ -352,6 +352,9 @@ const (
 
 	RunnerPortBase    = 24800
 	RunnerLogEndpoint = "239.255.12.13:24804"
+
+	RunnerArchiveLossPortBase    = 24900
+	RunnerArchiveLossLogEndpoint = "239.255.12.99:24904"
 
 	ClusterMemberSmokePortBase    = 25300
 	ClusterMemberSmokeLogEndpoint = "239.255.12.9:25304"
@@ -593,6 +596,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    RunnerPortBase,
 			memberCount: 1,
 			logEndpoint: RunnerLogEndpoint,
+		},
+		{
+			name:        "runner-archive-loss",
+			portBase:    RunnerArchiveLossPortBase,
+			memberCount: 1,
+			logEndpoint: RunnerArchiveLossLogEndpoint,
 		},
 		{
 			name:        "module-elect",

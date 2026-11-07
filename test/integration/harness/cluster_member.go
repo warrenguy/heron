@@ -926,6 +926,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 	localLogRecordingID := int64(-1)
 	recordingActive := false
 	appendRankFailure := ""
+	termination := ""
 	electionCount := int64(-1)
 	lastElectionTrigger := ""
 	openSessions := -1
@@ -948,6 +949,9 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		if rankErr := agent.AppendRankFailure(); rankErr != nil {
 			appendRankFailure = rankErr.Error()
 		}
+		if terminationErr := agent.TerminationError(); terminationErr != nil {
+			termination = terminationErr.Error()
+		}
 		electionCount = agent.ElectionCount()
 		lastElectionTrigger = agent.LastElectionTrigger().String()
 		openSessions = agent.OpenSessionCount()
@@ -964,7 +968,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 	archiveConnected := false
 	if archiveClient := m.ArchiveClient(); archiveClient != nil && !archiveClient.IsClosed() {
 		archiveSession = archiveClient.ControlSessionID()
-		archiveConnected = true
+		archiveConnected = archiveClient.IsConnected()
 	}
 
 	// An active recording reports no stop position. Skip the lookup so a State
@@ -987,7 +991,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 			"joinPos=%d imageSession=%d appendSrc=%d commit=%d notified=%d "+
 			"recLogEntries=%d coldStart=%v localLogRecordingID=%d recordingPos=%d "+
 			"archiveConnected=%v archiveSession=%d replayReason=%q "+
-			"recordingActive=%v appendRankFailure=%q electionCount=%d "+
+			"recordingActive=%v appendRankFailure=%q termination=%q electionCount=%d "+
 			"lastElectionTrigger=%s logRecordingStopPosition=%d "+
 			"openSessions=%d pendingSessions=%d closingSessions=%d\n",
 		memberID,
@@ -1015,6 +1019,7 @@ func ClusterMemberState(m *cluster.ConsensusModule) string {
 		m.LogReplayReason(),
 		recordingActive,
 		appendRankFailure,
+		termination,
 		electionCount,
 		lastElectionTrigger,
 		stopPosition,

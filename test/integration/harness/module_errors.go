@@ -11,7 +11,9 @@ import (
 // ModuleErrors keeps each error that a member's cluster.Config.ErrorHandler
 // receives, keyed by member id.
 //
-// Concurrency: invoker-only. The duty cycle and the test share one goroutine.
+// Concurrency: call from the goroutine that ticks the members. A test that
+// runs Runner.Run on another goroutine must receive the Run result before it
+// reads the store.
 type ModuleErrors struct{ byMember map[int32][]error }
 
 // NewModuleErrors returns an empty store.

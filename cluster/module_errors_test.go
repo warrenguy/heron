@@ -2,12 +2,14 @@ package cluster
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
@@ -15,6 +17,8 @@ import (
 )
 
 const testModuleErrorCounterID int32 = 2
+
+var errStorageSpace = &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
 
 // newTestCounters returns a reader over four fresh counters and its values
 // buffer.
@@ -148,6 +152,82 @@ func TestModuleErrorHandler_handleError(t *testing.T) {
 				require.Equal(t, int64(1), moduleErrorCount(buffer))
 			},
 		},
+		{
+			name: "bare storage space ends the member after the report",
+			run: func(t *testing.T) {
+				requireStorageSpaceEndsMember(t, errStorageSpace)
+			},
+		},
+		{
+			name: "wrapped storage space ends the member after the report",
+			run: func(t *testing.T) {
+				requireStorageSpaceEndsMember(t, fmt.Errorf("take: %w", errStorageSpace))
+			},
+		},
+		{
+			name: "storage space with a nil handler ends the member",
+			run: func(t *testing.T) {
+				var ended errorRecorder
+				h, buffer := newTestModuleErrorHandler(t, nil)
+				h.terminate = ended.record
+
+				h.handleError(errStorageSpace)
+				require.Equal(t, []error{errStorageSpace}, ended.reported)
+				require.Equal(t, int64(1), moduleErrorCount(buffer))
+			},
+		},
+		{
+			name: "another archive code does not end the member",
+			run: func(t *testing.T) {
+				var recorder, ended errorRecorder
+				h, buffer := newTestModuleErrorHandler(t, recorder.record)
+				h.terminate = ended.record
+				errUnknownReplay := &archive.Exception{ErrorCode: archive.ErrorUnknownReplay}
+
+				h.handleError(errUnknownReplay)
+				require.Equal(t, []error{errUnknownReplay}, recorder.reported)
+				require.NotErrorIs(t, recorder.reported[0], election.ErrEvent)
+				require.Empty(t, ended.reported)
+				require.Equal(t, int64(1), moduleErrorCount(buffer))
+			},
+		},
+		{
+			name: "a non archive error does not end the member",
+			run: func(t *testing.T) {
+				var ended errorRecorder
+				h, buffer := newTestModuleErrorHandler(t, nil)
+				h.terminate = ended.record
+
+				h.handleError(errBoom)
+				require.Empty(t, ended.reported)
+				require.Equal(t, int64(1), moduleErrorCount(buffer))
+			},
+		},
+		{
+			name: "nil terminate still counts and calls the handler",
+			run: func(t *testing.T) {
+				var recorder errorRecorder
+				h, buffer := newTestModuleErrorHandler(t, recorder.record)
+
+				h.handleError(errStorageSpace)
+				require.Equal(t, []error{errStorageSpace}, recorder.reported)
+				require.Equal(t, int64(1), moduleErrorCount(buffer))
+			},
+		},
+		{
+			name: "closed handler does not count or call the handler or terminate",
+			run: func(t *testing.T) {
+				var recorder, ended errorRecorder
+				h, buffer := newTestModuleErrorHandler(t, recorder.record)
+				h.terminate = ended.record
+
+				h.close()
+				h.handleError(errStorageSpace)
+				require.Empty(t, recorder.reported)
+				require.Empty(t, ended.reported)
+				require.Zero(t, moduleErrorCount(buffer))
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -155,6 +235,23 @@ func TestModuleErrorHandler_handleError(t *testing.T) {
 			tt.run(t)
 		})
 	}
+}
+
+func requireStorageSpaceEndsMember(t *testing.T, err error) {
+	t.Helper()
+	var order []string
+	h, buffer := newTestModuleErrorHandler(t, func(got error) {
+		require.Same(t, err, got)
+		order = append(order, "handler")
+	})
+	h.terminate = func(got error) {
+		require.Same(t, err, got)
+		order = append(order, "terminate")
+	}
+
+	h.handleError(err)
+	require.Equal(t, []string{"handler", "terminate"}, order)
+	require.Equal(t, int64(1), moduleErrorCount(buffer))
 }
 
 func TestModuleErrorHandler_handleError_zeroAllocs(t *testing.T) {
@@ -168,6 +265,68 @@ func TestModuleErrorHandler_handleError_zeroAllocs(t *testing.T) {
 	withHandler, _ := newTestModuleErrorHandler(t, func(error) {})
 	testutil.AssertZeroAllocs(t, "no-op handler", 100, func() {
 		withHandler.handleError(errBoom)
+	})
+}
+
+func newTestModuleAgent(h *moduleErrorHandler) *consensus.Agent {
+	return consensus.NewAgent(moduleAgentConfig(
+		Config{},
+		election.ElectionConfig{},
+		new(atomic.Int64),
+		h.handleError,
+	))
+}
+
+type fakeArchiveFailureSource struct {
+	connected bool
+	handler   func(error)
+}
+
+func (s *fakeArchiveFailureSource) IsConnected() bool { return s.connected }
+
+func (s *fakeArchiveFailureSource) SetErrorResponseHandler(handler func(error)) {
+	s.handler = handler
+}
+
+func TestWireArchiveFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("storage space report ends the member", func(t *testing.T) {
+		t.Parallel()
+
+		var recorder errorRecorder
+		h, buffer := newTestModuleErrorHandler(t, recorder.record)
+		agent := newTestModuleAgent(h)
+		source := &fakeArchiveFailureSource{connected: true}
+
+		wireArchiveFailure(h, agent, source)
+		require.NotNil(t, source.handler)
+		require.NoError(t, agent.TerminationError())
+
+		source.handler(errStorageSpace)
+		require.Equal(t, int64(1), moduleErrorCount(buffer))
+		require.Equal(t, []error{errStorageSpace}, recorder.reported)
+		require.ErrorIs(t, agent.TerminationError(), consensus.ErrTerminated)
+		require.ErrorIs(t, agent.TerminationError(), errStorageSpace)
+		require.Equal(t, consensus.ModuleStateClosed, agent.ModuleState())
+	})
+
+	t.Run("lost connection ends the member on the slow tick", func(t *testing.T) {
+		t.Parallel()
+
+		var recorder errorRecorder
+		h, buffer := newTestModuleErrorHandler(t, recorder.record)
+		agent := newTestModuleAgent(h)
+
+		wireArchiveFailure(h, agent, &fakeArchiveFailureSource{connected: false})
+		require.NoError(t, agent.TerminationError())
+
+		require.Equal(t, 1, agent.DoWork(1))
+		require.Equal(t, int64(1), moduleErrorCount(buffer))
+		require.Equal(t, []error{consensus.ErrLocalArchiveDisconnected}, recorder.reported)
+		require.ErrorIs(t, agent.TerminationError(), consensus.ErrTerminated)
+		require.ErrorIs(t, agent.TerminationError(), consensus.ErrLocalArchiveDisconnected)
+		require.Equal(t, consensus.ModuleStateClosed, agent.ModuleState())
 	})
 }
 
@@ -218,12 +377,7 @@ func TestConsensusModule_Close_stopsErrorReports(t *testing.T) {
 
 		var recorder errorRecorder
 		h, buffer := newTestModuleErrorHandler(t, recorder.record)
-		agent := consensus.NewAgent(moduleAgentConfig(
-			Config{},
-			election.ElectionConfig{},
-			new(atomic.Int64),
-			h.handleError,
-		))
+		agent := newTestModuleAgent(h)
 		module := &ConsensusModule{agent: agent, errorHandler: h}
 		errBoom := errors.New("boom")
 
@@ -237,6 +391,19 @@ func TestConsensusModule_Close_stopsErrorReports(t *testing.T) {
 		h.handleError(errBoom)
 		require.Equal(t, []error{errBoom}, recorder.reported)
 		require.Equal(t, int64(1), moduleErrorCount(buffer))
+	})
+
+	t.Run("Close clears the archive connection", func(t *testing.T) {
+		t.Parallel()
+
+		h, _ := newTestModuleErrorHandler(t, nil)
+		agent := newTestModuleAgent(h)
+		wireArchiveFailure(h, agent, &fakeArchiveFailureSource{connected: false})
+		module := &ConsensusModule{agent: agent, errorHandler: h}
+
+		require.NoError(t, module.Close())
+		require.Zero(t, agent.DoWork(1))
+		require.NoError(t, agent.TerminationError())
 	})
 
 	t.Run("Close without an error handler", func(t *testing.T) {

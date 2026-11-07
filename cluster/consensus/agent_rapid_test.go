@@ -773,14 +773,18 @@ const (
 	terminationOpTerminalJoinLog
 	terminationOpRefusedTimer
 	terminationOpPlannedTerminate
+	terminationOpLostArchive
+	terminationOpTerminateOnError
 	terminationOpDoWork
 )
 
-// TestAgent_terminationKeepsFirstCause_rapid draws fatal marks, planned ends,
-// and DoWork calls. The agent reports only a fatal first cause, at most once.
+// TestAgent_terminationKeepsFirstCause_rapid draws termination causes and
+// DoWork calls. The agent reports a fatal mark or a lost archive first cause,
+// at most once. The agent does not report a planned or TerminateOnError cause.
 func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 	t.Parallel()
 	errPlanned := errors.New("planned")
+	errTerminateOnError := errors.New("terminate on error")
 	closed, closedPub := boundServiceProxy(t)
 	require.NoError(t, closedPub.Close())
 	rapid.Check(t, func(rt *rapid.T) {
@@ -788,6 +792,8 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 		a.SetServiceProxy(closed)
 		a.SetLocalLogStream("aeron:ipc", 100)
 		a.timers = newSmallTimerService(testWheelCapacity)
+		connection := &fakeArchiveConnection{connected: true}
+		a.SetArchiveConnection(connection)
 
 		const startPosition int64 = 64
 		var want *TerminationError
@@ -800,7 +806,8 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 				return
 			}
 			want = &TerminationError{Cause: cause, Expected: expected}
-			if !expected {
+			reports := !expected && !errors.Is(cause, errTerminateOnError)
+			if reports {
 				wantReports = 1
 			}
 		}
@@ -811,6 +818,8 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 			terminationOpTerminalJoinLog,
 			terminationOpRefusedTimer,
 			terminationOpPlannedTerminate,
+			terminationOpLostArchive,
+			terminationOpTerminateOnError,
 			terminationOpDoWork,
 		})
 		n := rapid.IntRange(1, 30).Draw(rt, "n")
@@ -844,6 +853,17 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 			case terminationOpPlannedTerminate:
 				a.terminate(errPlanned, true, "planned")
 				end(errPlanned, true)
+			case terminationOpLostArchive:
+				connection.connected = false
+				nowNs += slowTickIntervalNs
+				work := a.DoWork(nowNs)
+				if want != nil {
+					require.Equal(rt, 0, work, "DoWork after the end")
+				}
+				end(ErrLocalArchiveDisconnected, false)
+			case terminationOpTerminateOnError:
+				a.TerminateOnError(errTerminateOnError)
+				end(errTerminateOnError, false)
 			case terminationOpDoWork:
 				nowNs++
 				work := a.DoWork(nowNs)
@@ -860,7 +880,7 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 			}
 			require.ErrorIs(rt, a.TerminationError(), want.Cause)
 			cause := want.Cause
-			if !want.Expected {
+			if wantReports > 0 {
 				cause = (*reported)[0]
 			}
 			requireTerminated(rt, a, cause, want.Expected)

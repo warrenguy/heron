@@ -215,31 +215,30 @@ type Config struct {
 	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
 	SessionTimeoutNs int64
 
-	// ErrorHandler receives each error the consensus module reports: every error
-	// passed to [election.ElectionDeps.ErrorHandler] or
-	// [consensus.AgentConfig.ErrorHandler]. Nil drops each report.
+	// ErrorHandler receives each error the consensus module reports, including
+	// each unsolicited archive ERROR. Nil drops each report.
 	//
 	// Behaviour:
-	//   - The module counts each report on the Cluster Errors counter (type 212)
-	//     before the call. A dropped report still counts.
+	//   - The Cluster Errors counter (type 212) counts each report, even a
+	//     dropped one.
 	//   - After ConsensusModule.Close the module does not count or report.
-	//   - The first fatal cause ends the member after its report. Runner.Run
-	//     then returns the [consensus.TerminationError].
+	//   - A fatal cause or an archive STORAGE_SPACE code ends the member after
+	//     its report.
 	//
 	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
 	// other error is a fault.
 	//
-	// Concurrency: invoker-only. ErrorHandler runs inside consensus.Agent.DoWork.
-	// ErrorHandler must not:
-	//   - panic
-	//   - block the duty cycle
-	//   - call Runner.DoWork, Runner.Run, consensus.Agent.DoWork, or
-	//     ConsensusModule.Close
-	//   - call a ConsensusModule or consensus.Agent method that sends or changes
-	//     state
+	// Concurrency: ErrorHandler runs inside a duty cycle tick or a blocking
+	// archive.Client method. ErrorHandler must not:
+	//   - panic or block the duty cycle
+	//   - call a Runner, ConsensusModule or consensus.Agent method that ticks,
+	//     sends or changes state, except [consensus.Agent.TerminateOnError]
+	//   - call archive.Client.Poll, a blocking archive.Client method, or a New*
+	//     request builder
 	//
-	// ErrorHandler may call the ConsensusModule read accessors. The module
-	// stores the failed step result before each call.
+	// ErrorHandler may call the ConsensusModule read accessors, except
+	// LogRecordingStopPosition, which can block. For a failed step, the module
+	// stores the result before it calls ErrorHandler.
 	//
 	// The error text may hold archive remote text and channel URIs. Sanitize it
 	// before an untrusted sink.

@@ -48,6 +48,7 @@ type SnapshotTakeResult struct {
 
 	// Err is nil when the module recorded its snapshot and wrote its
 	// recording log rows. Otherwise Err names why the take skipped or failed.
+	// The Agent error handler receives a non-nil Err once.
 	Err error
 
 	// ForceErr is the recording log Force error after the module row is in
@@ -555,18 +556,24 @@ func (t *snapshotTake) appendRecordingLogRows() error {
 	return nil
 }
 
-// failSnapshotTake runs the cleanup, then resolves the take with cause.
+// failSnapshotTake reports cause before it ends SNAPSHOT. A report that ends
+// the member then does not pass through ACTIVE.
 func (a *Agent) failSnapshotTake(cause error) {
 	take := a.snapshotTake
 	cleanupSnapshotTake(take)
-	a.resolveSnapshotTake(take.result(nullValue, cause))
+	a.storeSnapshotTakeResult(take.result(nullValue, cause))
+	a.reportError(cause)
+	a.endSnapshotState(moduleStateReasonSnapshotComplete)
 }
 
-// resolveSnapshotTake stores result and drops the take.
-func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
+func (a *Agent) storeSnapshotTakeResult(result SnapshotTakeResult) {
 	a.snapshotTake = nil
 	a.lastSnapshotTake = result
 	a.hasLastSnapshotTake = true
+}
+
+func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
+	a.storeSnapshotTakeResult(result)
 	a.endSnapshotState(moduleStateReasonSnapshotComplete)
 	if result.ForceErr != nil {
 		a.reportError(result.ForceErr)

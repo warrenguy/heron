@@ -328,6 +328,20 @@ func TestAgent_moduleStateTransitions(t *testing.T) {
 		require.False(t, resolved)
 	})
 
+	t.Run("take failure that ends the member", func(t *testing.T) {
+		f, p, _ := probeAckedSnapshot(t, 1)
+		f.agent.errorHandler = f.agent.TerminateOnError
+		f.archive.startScript = func(s *fakeSnapshotStart) { s.offerErr = errTerminationFirst }
+
+		f.agent.DoWork(101)
+		p.requireTransition(
+			t, f.agent, ModuleStateSnapshot, ModuleStateClosed, "unexpected termination",
+		)
+		wantStates := []ModuleState{ModuleStateActive, ModuleStateSnapshot, ModuleStateClosed}
+		require.Equal(t, wantStates, p.counter.states)
+		require.Len(t, p.changes, 2)
+	})
+
 	t.Run("terminate stores the caller reason", func(t *testing.T) {
 		a := NewAgent(AgentConfig{})
 		p := newModuleStateProbe(t, a)

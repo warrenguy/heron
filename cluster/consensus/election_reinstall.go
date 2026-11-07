@@ -253,14 +253,15 @@ func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) in
 }
 
 // slowTickIfDue paces settled-state timeout checks and runs slowTickWork when
-// due.
-//
-// Behaviour: returns 0 when nowNs is before the deadline. After slowTickWork,
-// advances the deadline by 1ns when work was done, else by slowTickIntervalNs.
-// Does not call noteDoWorkStep.
+// due. A disconnected archive connection ends the member instead.
 func (a *Agent) slowTickIfDue(nowNs int64) int {
 	if nowNs < a.slowTickDeadlineNs {
 		return 0
+	}
+	connection := a.archiveConnection
+	if connection != nil && !connection.IsConnected() {
+		a.failMember(ErrLocalArchiveDisconnected)
+		return 1
 	}
 	work := a.slowTickWork(nowNs)
 	if work > 0 {

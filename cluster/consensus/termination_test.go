@@ -304,11 +304,198 @@ func TestAgent_doWorkStopsAtTermination(t *testing.T) {
 				require.True(t, a.HasPendingJoinLog())
 			},
 		},
+		{
+			name: "take failure ends the member",
+			run: func(t *testing.T) {
+				f := newTakeLeader(t, 1)
+				record := f.agent.errorHandler
+				f.agent.errorHandler = func(err error) {
+					record(err)
+					f.agent.TerminateOnError(err)
+				}
+				f.archive.startScript = func(s *fakeSnapshotStart) { s.offerErr = errTerminationFirst }
+				position := f.request(t, 100)
+				f.ack(t, position, 0, 77, 0)
+				election := &orderRunner{n: 5}
+				f.agent.SetElection(election)
+
+				// Phase 1: the take step ends the member.
+				f.agent.DoWork(101)
+				require.Zero(t, election.calls)
+				require.Len(t, f.reported, 1)
+				report := f.reported[0]
+				require.ErrorIs(t, report.err, errSnapshotRecordingStart)
+				require.Equal(t, ModuleStateSnapshot, report.moduleState)
+				requireTerminated(t, f.agent, report.err, false)
+
+				// Phase 2: DoWork returns 0 after the end.
+				require.Equal(t, 0, f.agent.DoWork(102))
+				require.Zero(t, election.calls)
+				require.Len(t, f.reported, 1)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			tt.run(t)
+		})
+	}
+}
+
+type fakeArchiveConnection struct {
+	connected bool
+	reads     int
+}
+
+func (c *fakeArchiveConnection) IsConnected() bool {
+	c.reads++
+	return c.connected
+}
+
+// armLeaderQuietElection makes the next slowTickWork install an election.
+func armLeaderQuietElection(a *Agent) {
+	a.leaderHeartbeatTimeoutNs = 1
+	a.SetElectionFactory(func(ElectionSeed) ElectionRunner { return &orderRunner{} })
+}
+
+func TestAgent_lostArchive(t *testing.T) {
+	t.Parallel()
+
+	const deadlineNs int64 = 100
+	tests := []struct {
+		name string
+		run  func(t *testing.T, a *Agent, reported *[]error)
+	}{
+		{
+			name: "false at a due slow tick ends the member",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				armLeaderQuietElection(a)
+				a.SetArchiveConnection(&fakeArchiveConnection{})
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				require.Equal(t, []error{ErrLocalArchiveDisconnected}, *reported)
+				requireTerminated(t, a, ErrLocalArchiveDisconnected, false)
+				require.Equal(t, deadlineNs, a.slowTickDeadlineNs)
+				require.Zero(t, a.ElectionCount(), "the tick skips slowTickWork")
+				require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+			},
+		},
+		{
+			name: "true at a due slow tick runs slowTickWork",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				armLeaderQuietElection(a)
+				connection := &fakeArchiveConnection{connected: true}
+				a.SetArchiveConnection(connection)
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				require.Equal(t, 1, connection.reads)
+				require.Equal(t, int64(1), a.ElectionCount())
+				require.Equal(t, ElectionTriggerLeaderHeartbeatTimeout, a.LastElectionTrigger())
+				require.Empty(t, *reported)
+				require.NoError(t, a.TerminationError())
+			},
+		},
+		{
+			name: "false before the deadline does nothing",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				connection := &fakeArchiveConnection{}
+				a.SetArchiveConnection(connection)
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs-1))
+				require.Zero(t, connection.reads)
+				require.Empty(t, *reported)
+				require.NoError(t, a.TerminationError())
+			},
+		},
+		{
+			name: "nil connection does nothing",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				a.SetArchiveConnection(&fakeArchiveConnection{})
+				a.SetArchiveConnection(nil)
+				a.slowTickIfDue(deadlineNs)
+				require.Empty(t, *reported)
+				require.NoError(t, a.TerminationError())
+			},
+		},
+		{
+			name: "false during a live election ends the member through DoWork",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				election := &orderRunner{n: 5}
+				a.SetElection(election)
+				ingress := &countingConsensusIngress{}
+				a.SetIngress(ingress)
+				connection := &fakeArchiveConnection{connected: true}
+				a.SetArchiveConnection(connection)
+
+				// Phase 1: a connected tick runs the ingress poll and the election.
+				require.Equal(t, 5, a.DoWork(deadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+
+				// Phase 2: the lost archive skips every later step.
+				connection.connected = false
+				require.Equal(t, 1, a.DoWork(a.slowTickDeadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+				require.Equal(t, []error{ErrLocalArchiveDisconnected}, *reported)
+				requireTerminated(t, a, ErrLocalArchiveDisconnected, false)
+
+				// Phase 3: DoWork returns 0 after the end.
+				require.Equal(t, 0, a.DoWork(a.slowTickDeadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+				require.Len(t, *reported, 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a, reported := agentWithReports(AgentConfig{})
+			a.slowTickDeadlineNs = deadlineNs
+			tt.run(t, a, reported)
+		})
+	}
+}
+
+func TestAgent_TerminateOnError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, a *Agent, reported *[]error)
+	}{
+		{
+			name: "the call does not report",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				a.TerminateOnError(errTerminationFirst)
+				require.Empty(t, *reported)
+				requireTerminated(t, a, errTerminationFirst, false)
+			},
+		},
+		{
+			name: "the first cause wins over a later mark",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				a.TerminateOnError(errTerminationFirst)
+				a.TerminateOnError(errTerminationSecond)
+				a.failMember(errTerminationSecond)
+				require.Empty(t, *reported)
+				requireTerminated(t, a, errTerminationFirst, false)
+			},
+		},
+		{
+			name: "a nil cause is a silent no-op",
+			run: func(t *testing.T, a *Agent, reported *[]error) {
+				a.TerminateOnError(nil)
+				require.Empty(t, *reported)
+				require.NoError(t, a.TerminationError())
+				require.Equal(t, ModuleStateActive, a.ModuleState())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a, reported := agentWithReports(AgentConfig{})
+			tt.run(t, a, reported)
 		})
 	}
 }

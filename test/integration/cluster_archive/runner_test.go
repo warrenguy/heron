@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -34,18 +35,21 @@ func (s *firstIdleSignal) Idle(workCount int) {
 	s.IdleStrategy.Idle(workCount)
 }
 
-// TestConsensusModuleRunnerDrivesOneMember elects one member through
-// Runner.DoWork. Then stops an active Runner.Run with a cancel.
-func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
-	t.Parallel()
+// startRunnerArchive starts a media driver and an Archive node. The Archive
+// binds UDP control at portBase+ArchiveControlPortOffset. The Go client connects
+// over local IPC.
+func startRunnerArchive(
+	t *testing.T,
+	portBase int,
+	logEndpoint string,
+) (*harness.ArchiveNode, cluster.Config) {
+	t.Helper()
 
 	md := harness.Start(t)
-	// Archive binds UDP control at PortBase+ArchiveControlPortOffset. The Go
-	// client connects over local IPC.
-	_ = harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+	node := harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
 		AeronDir: md.Dir,
 		ControlChannel: harness.ArchiveControlChannel(
-			cluster.CalculatePort(0, harness.RunnerPortBase, cluster.ArchiveControlPortOffset),
+			cluster.CalculatePort(0, portBase, cluster.ArchiveControlPortOffset),
 		),
 	})
 
@@ -53,12 +57,20 @@ func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
 		StartingMemberID:  0,
 		IngressHostnames:  []string{"127.0.0.1"},
 		ClusterHostnames:  []string{"127.0.0.1"},
-		PortBase:          harness.RunnerPortBase,
-		SharedLogEndpoint: harness.RunnerLogEndpoint,
+		PortBase:          portBase,
+		SharedLogEndpoint: logEndpoint,
 	})
 	require.NoError(t, err)
 
-	cfg := harness.MemberClusterConfig(0, members, t.TempDir(), md.Dir)
+	return node, harness.MemberClusterConfig(0, members, t.TempDir(), md.Dir)
+}
+
+// TestConsensusModuleRunnerDrivesOneMember elects one member through
+// Runner.DoWork. Then stops an active Runner.Run with a cancel.
+func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
+	t.Parallel()
+
+	_, cfg := startRunnerArchive(t, harness.RunnerPortBase, harness.RunnerLogEndpoint)
 
 	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
 		Config: cfg,
@@ -135,6 +147,85 @@ func TestConsensusModuleRunnerDrivesOneMember(t *testing.T) {
 		Clock:   module.NanoClock(),
 	})
 	require.ErrorContains(t, err, "requires a Client")
+}
+
+// TestConsensusModuleRunnerEndsOnLostArchive stops the Archive under Run.
+func TestConsensusModuleRunnerEndsOnLostArchive(t *testing.T) {
+	t.Parallel()
+
+	node, cfg := startRunnerArchive(
+		t,
+		harness.RunnerArchiveLossPortBase,
+		harness.RunnerArchiveLossLogEndpoint,
+	)
+	moduleErrors := harness.NewModuleErrors()
+
+	module, err := cluster.OpenConsensusModule(context.Background(), cluster.ConsensusModuleDeps{
+		Config: moduleErrors.AmendConfig(cfg),
+	})
+	require.NoError(t, err)
+
+	// After a lost archive, Close returns the stop request errors, so the test
+	// ignores them. The cleanup must not overlap a running Close.
+	closeStarted := false
+	t.Cleanup(func() {
+		if !closeStarted {
+			_ = module.Close()
+		}
+	})
+
+	runner, err := cluster.NewRunner(cluster.RunnerDeps{
+		Client:  module.Client(),
+		Agent:   module.Agent(),
+		Archive: module.ArchiveClient(),
+		Idle:    module.IdleStrategy(),
+		Clock:   module.NanoClock(),
+	})
+	require.NoError(t, err)
+
+	require.True(t, pollUntil(60*time.Second, func() bool {
+		runner.DoWork()
+		return module.ElectionComplete()
+	}), "election did not complete: state=%v role=%v", module.ElectionState(), module.Role())
+	require.True(t, module.IsLeader())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+
+	node.Stop()
+
+	// The bound covers the driver's 10s client liveness timeout. The receive
+	// orders every duty cycle write before the reads below.
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, consensus.ErrTerminated)
+		require.ErrorIs(t, err, consensus.ErrLocalArchiveDisconnected)
+	case <-time.After(30 * time.Second):
+		cancel()
+		<-done
+		t.Fatalf("Run did not return after the archive stopped:\n%s", harness.ClusterMemberState(module))
+	}
+	require.Equal(t, 1, moduleErrors.Count(0, consensus.ErrLocalArchiveDisconnected))
+	require.Equal(t, consensus.ModuleStateClosed, module.ModuleState())
+	require.Contains(
+		t,
+		harness.ClusterMemberState(module),
+		consensus.ErrLocalArchiveDisconnected.Error(),
+	)
+
+	closed := make(chan struct{})
+	closeStarted = true
+	go func() {
+		_ = module.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return after the lost archive")
+	}
 }
 
 func pollUntil(bound time.Duration, ready func() bool) bool {
