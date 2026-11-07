@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -552,19 +553,36 @@ func serviceTransferEgressPort() int {
 	return harness.ClientEgressPort(harness.ClusterServiceTransferPortBase)
 }
 
-// openServiceTransferCluster starts the transfer port block with one session
-// recorder container per member. Containers open and attach before the first
-// tick. The helper then awaits log images and election.
-func openServiceTransferCluster(t *testing.T, wrap wrapRecorder) serviceCluster {
-	t.Helper()
-	return startWrappedServiceCluster(
-		t,
-		3,
-		harness.ClusterServiceTransferPortBase,
-		harness.ClusterServiceTransferLogEndpoint,
-		amendServiceTransferMember,
-		wrap,
-	)
+// heldClock is a module NanoClock that a test can hold and step. After release
+// it runs at real-time speed from the held value.
+//
+// While held, module timeouts do not advance and the module client does not
+// send keepalives. Hold it across short waits only.
+//
+// Concurrency: safe from any goroutine.
+type heldClock struct {
+	held   atomic.Int64
+	offset atomic.Int64
+}
+
+func (c *heldClock) now() int64 {
+	if held := c.held.Load(); held != 0 {
+		return held
+	}
+	return time.Now().UnixNano() + c.offset.Load()
+}
+
+func (c *heldClock) hold() {
+	c.held.Store(c.now())
+}
+
+func (c *heldClock) step(delta int64) {
+	c.held.Add(delta)
+}
+
+func (c *heldClock) release() {
+	c.offset.Store(c.held.Load() - time.Now().UnixNano())
+	c.held.Store(0)
 }
 
 const (
@@ -577,6 +595,10 @@ const (
 	leaderStopCancelledDelay = int64(time.Second)
 	leaderStopFireDelay      = int64(2 * time.Second)
 	leaderStopFarDelay       = int64(time.Hour)
+
+	// leaderStopNearStep passes the near deadline and one timer wheel tick. It
+	// stays short of the cancelled deadline.
+	leaderStopNearStep = leaderStopNearDelay + int64(20*time.Millisecond)
 )
 
 type recordedTimerEvent struct {
@@ -1173,7 +1195,20 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 		timers[rec] = s
 		return s
 	}
-	sc := openServiceTransferCluster(t, wrap)
+	clock := &heldClock{}
+	amend := func(cfg cluster.Config) cluster.Config {
+		cfg = amendServiceTransferMember(cfg)
+		cfg.AeronConfig.NanoClock = clock.now
+		return cfg
+	}
+	sc := startWrappedServiceCluster(
+		t,
+		3,
+		harness.ClusterServiceTransferPortBase,
+		harness.ClusterServiceTransferLogEndpoint,
+		amend,
+		wrap,
+	)
 	set := sc.set
 	leader := requireSingleLeader(t, set, "")
 
@@ -1203,6 +1238,10 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 			return true
 		}),
 	)
+
+	// Hold the clock until the stop. A host stall then cannot carry the old
+	// leader past the cancelled or fire deadline.
+	clock.hold()
 
 	preMsgLogPos := leader.LogPublisher().Position()
 	offerTransferSessionMessage(t, set, pump, sessionTransferPayload, sc.dump)
@@ -1244,6 +1283,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	// each service at commit show the old leader did not append a second
 	// TimerEvent.
 	timersDump := func() string { return formatLeaderStopTimers(sc, timers) }
+	clock.step(leaderStopNearStep)
 	requireServiceAwaitTick(
 		t, sc,
 		"timers settled before stop",
@@ -1259,8 +1299,9 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	)
 	requireLastTimerEventAgrees(t, sc, timers, "before stop", leaderStopNearDelay)
 
-	// A tick does not run between the wait above and the stop. The old leader
-	// holds the fire and far timers when it stops.
+	// A tick does not run between the release and the stop. The old leader holds
+	// the fire and far timers when it stops.
+	clock.release()
 	preTerm := leader.LeadershipTermID()
 	preCommit := leader.CommitPosition()
 	leaderIndex := int(leader.ThisMemberID())
