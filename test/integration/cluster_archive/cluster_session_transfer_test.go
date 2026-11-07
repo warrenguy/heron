@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/cluster/service"
 	"github.com/warrenguy/heron/idlestrategy"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -551,17 +553,269 @@ func serviceTransferEgressPort() int {
 	return harness.ClientEgressPort(harness.ClusterServiceTransferPortBase)
 }
 
-// openServiceTransferCluster starts the transfer port block with one session
-// recorder container per member. Containers open and attach before the first
-// tick. The helper then awaits log images and election.
-func openServiceTransferCluster(t *testing.T) serviceCluster {
+// heldClock is a module NanoClock that a test can hold and step. After release
+// it runs at real-time speed from the held value.
+//
+// While held, module timeouts do not advance and the module client does not
+// send keepalives. Hold it across short waits only.
+//
+// Concurrency: safe from any goroutine.
+type heldClock struct {
+	held   atomic.Int64
+	offset atomic.Int64
+}
+
+func (c *heldClock) now() int64 {
+	if held := c.held.Load(); held != 0 {
+		return held
+	}
+	return time.Now().UnixNano() + c.offset.Load()
+}
+
+func (c *heldClock) hold() {
+	c.held.Store(c.now())
+}
+
+func (c *heldClock) step(delta int64) {
+	c.held.Add(delta)
+}
+
+func (c *heldClock) release() {
+	c.offset.Store(c.held.Load() - time.Now().UnixNano())
+	c.held.Store(0)
+}
+
+const (
+	leaderStopNearTimerID      int64 = 1
+	leaderStopCancelledTimerID int64 = 2
+	leaderStopFireTimerID      int64 = 3
+	leaderStopFarTimerID       int64 = 4
+
+	leaderStopNearDelay      = int64(100 * time.Millisecond)
+	leaderStopCancelledDelay = int64(time.Second)
+	leaderStopFireDelay      = int64(2 * time.Second)
+	leaderStopFarDelay       = int64(time.Hour)
+
+	// leaderStopNearStep passes the near deadline and one timer wheel tick. It
+	// stays short of the cancelled deadline.
+	leaderStopNearStep = leaderStopNearDelay + int64(20*time.Millisecond)
+)
+
+type recordedTimerEvent struct {
+	correlationID int64
+	timestamp     int64
+}
+
+// leaderStopTimers schedules the near, cancelled, fire, and far timers on its
+// first session message. TimerEvent for the near timer cancels the cancelled
+// timer. TimerEvent for the fire timer cancels the far timer.
+//
+// Concurrency: the goroutine that ticks the service owns the wrapper. Not safe
+// from other goroutines.
+type leaderStopTimers struct {
+	*sessionRecorder
+
+	cluster         service.Cluster
+	scheduled       bool
+	scheduledAt     int64
+	requestFailures int
+	timerEvents     []recordedTimerEvent
+}
+
+func (s *leaderStopTimers) Start(c service.Cluster) error {
+	s.cluster = c
+	return s.sessionRecorder.Start(c)
+}
+
+func (s *leaderStopTimers) SessionMessage(
+	session service.ClientSession,
+	timestamp int64,
+	payload []byte,
+) {
+	s.sessionRecorder.SessionMessage(session, timestamp, payload)
+	if s.scheduled {
+		return
+	}
+	s.scheduled = true
+	s.scheduledAt = timestamp
+	s.countRefusal(s.cluster.ScheduleTimer(leaderStopNearTimerID, timestamp+leaderStopNearDelay))
+	s.countRefusal(s.cluster.ScheduleTimer(
+		leaderStopCancelledTimerID,
+		timestamp+leaderStopCancelledDelay,
+	))
+	s.countRefusal(s.cluster.ScheduleTimer(leaderStopFireTimerID, timestamp+leaderStopFireDelay))
+	s.countRefusal(s.cluster.ScheduleTimer(leaderStopFarTimerID, timestamp+leaderStopFarDelay))
+}
+
+func (s *leaderStopTimers) TimerEvent(correlationID, timestamp int64) {
+	s.timerEvents = append(s.timerEvents, recordedTimerEvent{
+		correlationID: correlationID,
+		timestamp:     timestamp,
+	})
+	switch correlationID {
+	case leaderStopNearTimerID:
+		s.countRefusal(s.cluster.CancelTimer(leaderStopCancelledTimerID))
+	case leaderStopFireTimerID:
+		s.countRefusal(s.cluster.CancelTimer(leaderStopFarTimerID))
+	}
+}
+
+func (s *leaderStopTimers) countRefusal(sent bool) {
+	if !sent {
+		s.requestFailures++
+	}
+}
+
+func (s *leaderStopTimers) timerIDs() []int64 {
+	ids := make([]int64, len(s.timerEvents))
+	for i, event := range s.timerEvents {
+		ids[i] = event.correlationID
+	}
+	return ids
+}
+
+func formatLeaderStopTimers(
+	sc serviceCluster,
+	timers map[*sessionRecorder]*leaderStopTimers,
+) string {
+	var b strings.Builder
+	for i, mem := range sc.members {
+		s := timers[mem.rec]
+		fmt.Fprintf(
+			&b,
+			"timers index=%d member=%d events=%+v requestFailures=%d",
+			i,
+			mem.agent.MemberID(),
+			s.timerEvents,
+			s.requestFailures,
+		)
+		if m := sc.set.Module(i); m != nil {
+			fmt.Fprintf(
+				&b,
+				" scheduled=%d expired=%d",
+				m.Agent().ScheduledTimerCount(),
+				m.Agent().ExpiredTimerCount(),
+			)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// failIfTimerEventsUnexpected fails when a live service holds an id list that
+// is not a prefix of want. It also fails on any request failure.
+func failIfTimerEventsUnexpected(
+	t *testing.T,
+	sc serviceCluster,
+	timers map[*sessionRecorder]*leaderStopTimers,
+	want ...int64,
+) {
 	t.Helper()
-	return startServiceCluster(
-		t,
-		harness.ClusterServiceTransferPortBase,
-		harness.ClusterServiceTransferLogEndpoint,
-		amendServiceTransferMember,
-	)
+
+	for i, mem := range sc.members {
+		if sc.set.Module(i) == nil {
+			continue
+		}
+		s := timers[mem.rec]
+		ids := s.timerIDs()
+		if len(ids) > len(want) || !slices.Equal(ids, want[:len(ids)]) {
+			require.FailNow(
+				t,
+				"unexpected TimerEvent",
+				"member=%d ids=%v want=%v:\n%s\n%s",
+				mem.agent.MemberID(),
+				ids,
+				want,
+				formatLeaderStopTimers(sc, timers),
+				sc.dump(),
+			)
+		}
+		if s.requestFailures != 0 {
+			require.FailNow(
+				t,
+				"timer request refused",
+				"member=%d requestFailures=%d ids=%v:\n%s\n%s",
+				mem.agent.MemberID(),
+				s.requestFailures,
+				ids,
+				formatLeaderStopTimers(sc, timers),
+				sc.dump(),
+			)
+		}
+	}
+}
+
+// hasLeaderStopTimersSettled reports whether every live service holds exactly
+// want. Each live module must also report ScheduledTimerCount equal to
+// scheduled and ExpiredTimerCount zero.
+func hasLeaderStopTimersSettled(
+	sc serviceCluster,
+	timers map[*sessionRecorder]*leaderStopTimers,
+	scheduled int64,
+	want ...int64,
+) bool {
+	for i, mem := range sc.members {
+		m := sc.set.Module(i)
+		if m == nil {
+			continue
+		}
+		if !slices.Equal(timers[mem.rec].timerIDs(), want) {
+			return false
+		}
+		agent := m.Agent()
+		if agent.ScheduledTimerCount() != scheduled || agent.ExpiredTimerCount() != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// requireLastTimerEventAgrees asserts every live service stores the same last
+// TimerEvent timestamp. That timestamp must sit at or after scheduledAt plus
+// delay. Call it after hasLeaderStopTimersSettled reports true, so each live
+// service holds a TimerEvent.
+func requireLastTimerEventAgrees(
+	t *testing.T,
+	sc serviceCluster,
+	timers map[*sessionRecorder]*leaderStopTimers,
+	label string,
+	delay int64,
+) {
+	t.Helper()
+
+	detail := formatLeaderStopTimers(sc, timers)
+	var firstTimestamp int64
+	for i, mem := range sc.members {
+		if sc.set.Module(i) == nil {
+			continue
+		}
+		s := timers[mem.rec]
+		memberID := mem.agent.MemberID()
+		event := s.timerEvents[len(s.timerEvents)-1]
+		require.GreaterOrEqual(
+			t,
+			event.timestamp,
+			s.scheduledAt+delay,
+			"%s: TimerEvent %d before its deadline member %d:\n%s",
+			label,
+			event.correlationID,
+			memberID,
+			detail,
+		)
+		if firstTimestamp == 0 {
+			firstTimestamp = event.timestamp
+		}
+		require.Equal(
+			t,
+			firstTimestamp,
+			event.timestamp,
+			"%s: TimerEvent %d timestamp member %d:\n%s",
+			label,
+			event.correlationID,
+			memberID,
+			detail,
+		)
+	}
 }
 
 // failIfServiceTransferStall fails when a live member other than skipIndex
@@ -732,6 +986,18 @@ func failIfSurvivorStalled(t *testing.T, sc serviceCluster, stoppedIndex int, fl
 	failIfServiceLogRegressed(t, sc, stoppedIndex, floors)
 }
 
+func hasServicesAtCommit(sc serviceCluster) bool {
+	for i, m := range sc.set.Modules() {
+		if m == nil {
+			continue
+		}
+		if sc.members[i].agent.LogPosition() < m.CommitPosition() {
+			return false
+		}
+	}
+	return true
+}
+
 // requireServicesAtCommit awaits every service log position reaching its
 // module commit position. Each tick fails on a service stall.
 func requireServicesAtCommit(t *testing.T, sc serviceCluster, pump *transferPump) {
@@ -743,15 +1009,7 @@ func requireServicesAtCommit(t *testing.T, sc serviceCluster, pump *transferPump
 		durableWorkBound,
 		pump.sessionPump(func() bool {
 			failIfServiceTransferStall(t, sc, -1)
-			for i, m := range sc.set.Modules() {
-				if m == nil {
-					continue
-				}
-				if sc.members[i].agent.LogPosition() < m.CommitPosition() {
-					return false
-				}
-			}
-			return true
+			return hasServicesAtCommit(sc)
 		}),
 	)
 }
@@ -926,11 +1184,31 @@ func formatServiceTransferContinuation(
 }
 
 // TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop asserts attached
-// services keep consuming the committed log across a leader stop.
+// services keep consuming the committed log and get TimerEvent only for
+// uncancelled timers across a leader stop.
 func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	t.Parallel()
 
-	sc := openServiceTransferCluster(t)
+	timers := make(map[*sessionRecorder]*leaderStopTimers)
+	wrap := func(rec *sessionRecorder) service.ClusteredService {
+		s := &leaderStopTimers{sessionRecorder: rec}
+		timers[rec] = s
+		return s
+	}
+	clock := &heldClock{}
+	amend := func(cfg cluster.Config) cluster.Config {
+		cfg = amendServiceTransferMember(cfg)
+		cfg.AeronConfig.NanoClock = clock.now
+		return cfg
+	}
+	sc := startWrappedServiceCluster(
+		t,
+		3,
+		harness.ClusterServiceTransferPortBase,
+		harness.ClusterServiceTransferLogEndpoint,
+		amend,
+		wrap,
+	)
 	set := sc.set
 	leader := requireSingleLeader(t, set, "")
 
@@ -960,6 +1238,10 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 			return true
 		}),
 	)
+
+	// Hold the clock until the stop. A host stall then cannot carry the old
+	// leader past the cancelled or fire deadline.
+	clock.hold()
 
 	preMsgLogPos := leader.LogPublisher().Position()
 	offerTransferSessionMessage(t, set, pump, sessionTransferPayload, sc.dump)
@@ -997,8 +1279,29 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 	requireFollowersOpenSessionCount(t, set, leader.ThisMemberID(), sc.dump)
 	requireNoServiceFailures(t, sc, " after baseline")
 
-	requireServicesAtCommit(t, sc, pump)
+	// Phase: timers settle before the stop. Commit at the append position and
+	// each service at commit show the old leader did not append a second
+	// TimerEvent.
+	timersDump := func() string { return formatLeaderStopTimers(sc, timers) }
+	clock.step(leaderStopNearStep)
+	requireServiceAwaitTick(
+		t, sc,
+		"timers settled before stop",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfServiceTransferStall(t, sc, -1)
+			failIfTimerEventsUnexpected(t, sc, timers, leaderStopNearTimerID)
+			return hasLeaderStopTimersSettled(sc, timers, 2, leaderStopNearTimerID) &&
+				hasServicesAtCommit(sc) &&
+				membersReachCommit(set, leader.LogPublisher().Position())
+		}),
+		timersDump,
+	)
+	requireLastTimerEventAgrees(t, sc, timers, "before stop", leaderStopNearDelay)
 
+	// A tick does not run between the release and the stop. The old leader holds
+	// the fire and far timers when it stops.
+	clock.release()
 	preTerm := leader.LeadershipTermID()
 	preCommit := leader.CommitPosition()
 	leaderIndex := int(leader.ThisMemberID())
@@ -1017,6 +1320,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 
 	offerTransferSessionMessage(t, set, pump, sessionTransferPostPayload, sc.dump)
 
+	survivorTimerIDs := []int64{leaderStopNearTimerID, leaderStopFireTimerID}
 	continuationDump := func() string {
 		return formatServiceTransferContinuation(
 			sc,
@@ -1042,6 +1346,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 				sessionTransferPayload,
 				sessionTransferPostPayload,
 			)
+			failIfTimerEventsUnexpected(t, sc, timers, survivorTimerIDs...)
 			commit := newLeader.CommitPosition()
 			failIfCommitBelowPreStop(t, commit, preCommit, recoveryCommit, sc.dump)
 			return survivorWitness.sawSession(sessionID) &&
@@ -1056,6 +1361,24 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 		}),
 		continuationDump,
 	)
+
+	// Phase: the new leader fires the fire timer. The old leader did not append
+	// its TimerEvent.
+	requireServiceAwaitTick(
+		t, sc,
+		"fire timer on new leader",
+		durableWorkBound,
+		pump.sessionPump(func() bool {
+			failIfSurvivorStalled(t, sc, leaderIndex, logFloors)
+			failIfTimerEventsUnexpected(t, sc, timers, survivorTimerIDs...)
+			return hasLeaderStopTimersSettled(sc, timers, 0, survivorTimerIDs...) &&
+				hasServicesAtCommit(sc) &&
+				liveMembersReachCommit(set, []int{leaderIndex}, newLeader.LogPublisher().Position())
+		}),
+		timersDump,
+	)
+	requireLastTimerEventAgrees(t, sc, timers, "after leader change", leaderStopFireDelay)
+
 	requireNoServiceFailure(t, sc, int(newLeader.ThisMemberID()), " after continuation")
 	requireNoServiceFailure(t, sc, survivorIndex, " after continuation")
 }
