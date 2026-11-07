@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -568,6 +569,70 @@ func TestAgent_Termination_endOfStreamAtPositionWithPaddingBelow(t *testing.T) {
 	require.False(t, run.agent.IsLogBound())
 	require.Equal(t, streamEnd, run.agent.LogPosition())
 	run.requireCleanStop(t, joinAck, serviceAckFields(streamEnd, 1, nullValue))
+}
+
+func TestAgent_Termination_paddingEndAtPositionOnOpenImage(t *testing.T) {
+	cases := []struct {
+		name       string
+		paddingEnd int
+	}{
+		{name: "midTerm", paddingEnd: 4096},
+		{name: "termEnd", paddingEnd: logbuffer.TermMinLength},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newBoundTerminationRun(t)
+			span := run.writeTimer(t, 0, 1, 0)
+			writeAgentPadding(t, run.image, span, int32(tc.paddingEnd-span))
+			position := int64(tc.paddingEnd)
+			*run.committed = position
+			enqueueTerminationPosition(t, run.control, position, clusterwire.BooleanType_TRUE)
+
+			run.agent.DoWork(0)
+			require.True(t, run.agent.IsLogBound())
+			require.Equal(t, position, run.agent.LogPosition())
+			run.requireCleanStop(t, joinAck, serviceAckFields(position, 1, nullValue))
+		})
+	}
+}
+
+func TestAgent_Termination_paddingConsumedBeforeFrame(t *testing.T) {
+	const paddingLength = 64
+	run := newBoundTerminationRun(t)
+	span := run.writeTimer(t, 0, 1, 0)
+	writeAgentPadding(t, run.image, span, paddingLength)
+	position := int64(span) + paddingLength
+	*run.committed = position
+
+	// Phase "consume": the image passes the padding. The log position stays at
+	// the message end.
+	run.agent.DoWork(0)
+	require.Equal(t, position, run.image.Position())
+	require.Equal(t, int64(span), run.agent.LogPosition())
+	require.False(t, run.agent.IsTerminated())
+
+	// Phase "stop": the frame arrives with the image already at the position.
+	enqueueTerminationPosition(t, run.control, position, clusterwire.BooleanType_FALSE)
+	run.agent.DoWork(0)
+	require.Equal(t, position, run.agent.LogPosition())
+	run.requireCleanStop(t, joinAck)
+}
+
+func TestAgent_Termination_paddingEndAtPositionHoldsLaterFrame(t *testing.T) {
+	const paddingLength = 64
+	run := newBoundTerminationRun(t)
+	span := run.writeTimer(t, 0, 1, 0)
+	writeAgentPadding(t, run.image, span, paddingLength)
+	position := span + paddingLength
+	laterSpan := run.writeTimer(t, position, 2, 0)
+	*run.committed = int64(position + laterSpan)
+	enqueueTerminationPosition(t, run.control, int64(position), clusterwire.BooleanType_TRUE)
+
+	run.agent.DoWork(0)
+	require.Equal(t, int64(position), run.image.Position())
+	require.Len(t, run.svc.timers, 1)
+	run.requireCleanStop(t, joinAck, serviceAckFields(int64(position), 1, nullValue))
 }
 
 func TestAgent_Termination_positionBetweenFragments(t *testing.T) {

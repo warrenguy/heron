@@ -489,6 +489,35 @@ func TestControlledFragmentAssembler_Clear(t *testing.T) {
 	}
 }
 
+func TestControlledFragmentAssembler_HasPartialMessage(t *testing.T) {
+	capture, assembler, termBuffer, offsets := setupControlledFragmentAssembler(
+		t, 512, helloWorldSpecs(),
+	)
+	capture.actions = []ControlledAction{ControlledAbort, ControlledContinue}
+
+	// Phase "fresh": the assembler holds no builder.
+	require.False(t, assembler.HasPartialMessage())
+
+	// Phase "begin": the builder holds the BEGIN fragment.
+	deliverControlledFragment(t, assembler, termBuffer, offsets[0])
+	require.True(t, assembler.HasPartialMessage())
+
+	// Phase "abort": the delegate aborts END. The builder keeps the BEGIN bytes.
+	deliverControlledFragment(t, assembler, termBuffer, offsets[1])
+	require.True(t, assembler.HasPartialMessage())
+
+	// Phase "delivered": the idle builder stays and holds nothing.
+	deliverControlledFragment(t, assembler, termBuffer, offsets[1])
+	require.Contains(t, assembler.builders, TestPublicationSessionID)
+	require.False(t, assembler.HasPartialMessage())
+
+	// Phase "clear": eviction drops a held fragment.
+	deliverControlledFragment(t, assembler, termBuffer, offsets[0])
+	require.True(t, assembler.HasPartialMessage())
+	assembler.Clear()
+	require.False(t, assembler.HasPartialMessage())
+}
+
 func TestControlledFragmentAssembler_reusesBuilderAcrossMessages(t *testing.T) {
 	const chunkSize = 2048
 	steps := []struct {

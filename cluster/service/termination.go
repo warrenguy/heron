@@ -30,12 +30,21 @@ func (a *Agent) handleServiceTerminationPosition(logPosition int64, ackRequired 
 }
 
 // terminationWork starts the stop once the log reaches the stored termination
-// position. A running snapshot take delays the stop. A mark from the request
-// sweep prevents the stop. A log position past the termination position makes
-// the stop unexpected.
+// position. Padding does not move logPosition, so the agent adopts the position
+// when isConsumedTo holds. A running snapshot take delays the stop. A mark from
+// the request sweep prevents the stop. A log position past the termination
+// position makes the stop unexpected.
 func (a *Agent) terminationWork() int {
 	position := a.terminationPosition
-	if position == nullValue || a.logPosition < position || a.take != nil {
+	if position == nullValue || a.take != nil {
+		return 0
+	}
+
+	if a.logPosition < position && a.adapter.isConsumedTo(position) {
+		a.logPosition = position
+	}
+
+	if a.logPosition < position {
 		return 0
 	}
 

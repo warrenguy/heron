@@ -643,7 +643,8 @@ func (a *Agent) MemberID() int32 {
 }
 
 // LogPosition returns the last consumed frame-end position, including padding
-// adoption on unbind. A recovery load in [Open] seeds it.
+// adoption on unbind or at a termination position. A recovery load in [Open]
+// seeds it.
 func (a *Agent) LogPosition() int64 {
 	return a.logPosition
 }
