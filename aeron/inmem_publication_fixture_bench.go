@@ -36,6 +36,10 @@ func newInMemImageFromLog(
 }
 
 func newInMemZeroAllocPollImage() *Image {
+	return newInMemPollImage(inMemPollZeroAllocPayloadBytes)
+}
+
+func newInMemPollImage(payload []byte) *Image {
 	cfg := defaultInMemPublicationLogConfig()
 	log := newInMemMappedLog(cfg)
 	termBuffers, err := log.TermBuffers()
@@ -48,7 +52,7 @@ func newInMemZeroAllocPollImage() *Image {
 		cfg.InitialTermID,
 		0,
 		logbuffer.Unfragmented,
-		inMemPollZeroAllocPayloadBytes,
+		payload,
 	)
 	return newInMemImageFromLog(log, 0)
 }

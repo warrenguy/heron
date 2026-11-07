@@ -5,6 +5,8 @@ package bench_test
 import (
 	"testing"
 
+	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -15,6 +17,8 @@ var (
 	clusterClientBenchSink     int64
 	clusterCodecBenchSink      int
 	asyncConnectBenchSink      int
+	clusterEgressPollSink      int
+	clusterEgressMessageSink   int
 	clusterCodecControlScratch []byte
 )
 
@@ -128,6 +132,37 @@ func BenchmarkAeronCluster_SendSnapshotRequest(b *testing.B) {
 		return harness.SendSnapshotRequestAeronClusterWithTermOverflowReset(
 			b, ac, benchAdminCorrelationID,
 		)
+	})
+}
+
+// BenchmarkAeronCluster_PollEgress polls the same unfragmented session message
+// each iteration.
+func BenchmarkAeronCluster_PollEgress(b *testing.B) {
+	payload := harness.Payload32[:]
+	handler := &client.EgressHandlers{
+		MessageFunc: func(
+			_ int64,
+			_ int64,
+			_ atomicbuffer.AtomicBuffer,
+			_ int,
+			length int,
+			_ *aeron.Header,
+		) {
+			clusterEgressMessageSink = length
+		},
+	}
+	b.Run("payload=32", func(b *testing.B) {
+		ac, image := harness.NewAeronClusterWithEgressForBench(payload, handler)
+		if work := ac.PollEgress(); work != 1 {
+			b.Fatalf("PollEgress work = %d, want 1", work)
+		}
+		b.ReportAllocs()
+		b.SetBytes(int64(len(payload)))
+		b.ResetTimer()
+		for b.Loop() {
+			aeron.SetImageSubscriberPositionForBench(image, 0)
+			clusterEgressPollSink = ac.PollEgress()
+		}
 	})
 }
 

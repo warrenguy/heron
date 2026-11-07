@@ -132,6 +132,41 @@ func TestResetInMemExclusivePublicationTermForBench_allowsTryClaimCommitAfterTer
 	require.NoError(t, ep.Commit(termIndex, frameOffset))
 }
 
+func pollBenchFragment(poll func(FragmentHandler, int) int) (fragments int, delivered []byte) {
+	fragments = poll(AdaptFragmentHandlerBytes(func(payload []byte, _ *Header) {
+		delivered = append(delivered, payload...)
+	}), 10)
+	return fragments, delivered
+}
+
+func TestNewInMemSubscriptionForBench_pollDeliversPayload(t *testing.T) {
+	payload := []byte("bench-subscription")
+	sub, image := NewInMemSubscriptionForBench(payload)
+	require.Equal(t, []*Image{image}, sub.images)
+
+	// First poll: the frame reaches the handler.
+	fragments, delivered := pollBenchFragment(sub.Poll)
+	require.Equal(t, 1, fragments)
+	require.Equal(t, payload, delivered)
+
+	// Poll at the tail: the image holds one frame only.
+	fragments, delivered = pollBenchFragment(sub.Poll)
+	require.Equal(t, 0, fragments)
+	require.Empty(t, delivered)
+
+	// Poll after the rewind: the same frame reaches the handler again.
+	SetImageSubscriberPositionForBench(image, 0)
+	fragments, delivered = pollBenchFragment(sub.Poll)
+	require.Equal(t, 1, fragments)
+	require.Equal(t, payload, delivered)
+}
+
+func TestDefaultBenchPollImageForBench_deliversZeroAllocPayload(t *testing.T) {
+	fragments, delivered := pollBenchFragment(DefaultBenchPollImageForBench().Poll)
+	require.Equal(t, 1, fragments)
+	require.Equal(t, inMemPollZeroAllocPayloadBytes, delivered)
+}
+
 func TestBenchFixture_nilInputs(t *testing.T) {
 	tests := []struct {
 		name string
