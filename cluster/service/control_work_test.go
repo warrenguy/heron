@@ -45,14 +45,40 @@ func encodeRequestServiceAckControl(tb assertTB, logPosition int64) []byte {
 	return buf[:wireEnd]
 }
 
-func encodeServiceTerminationPositionControl(tb assertTB, logPosition int64) []byte {
+func encodeServiceTerminationPositionControl(
+	tb assertTB,
+	logPosition int64,
+	ackRequired clusterwire.BooleanType,
+	actingVersion uint16,
+) []byte {
 	tb.Helper()
-	bufLen := codecs.MessageHeaderEncodedLen() +
-		int(clusterwire.ServiceTerminationPositionSbeBlockLength)
-	buf := make([]byte, bufLen)
-	var msg clusterwire.ServiceTerminationPosition
-	msg.WrapAndApplyHeader(buf, 0, uint64(len(buf))).SetLogPosition(logPosition)
-	return buf
+	buf := make([]byte, codecs.ServiceTerminationPositionEncodedLen())
+	wireEnd, ok := codecs.EncodeServiceTerminationPosition(
+		buf,
+		0,
+		actingVersion,
+		codecs.ServiceTerminationPositionFields{
+			LogPosition: logPosition,
+			AckRequired: ackRequired,
+		},
+	)
+	require.True(tb, ok)
+	return buf[:wireEnd]
+}
+
+func enqueueTerminationPosition(
+	tb assertTB,
+	control *QueueControlIngress,
+	logPosition int64,
+	ackRequired clusterwire.BooleanType,
+) {
+	tb.Helper()
+	control.Enqueue(encodeServiceTerminationPositionControl(
+		tb,
+		logPosition,
+		ackRequired,
+		clusterwire.ServiceTerminationPositionSbeSchemaVersion,
+	))
 }
 
 func defaultJoinLogFields(logPosition int64) codecs.JoinLogFields {
@@ -124,6 +150,27 @@ func serviceAckFields(logPosition, ackID, relevantID int64) codecs.ServiceAckFie
 		RelevantID:  relevantID,
 		ServiceID:   1,
 	}
+}
+
+// terminateRecorder is a TerminateHandler that counts Terminate calls.
+type terminateRecorder struct {
+	calls      int
+	err        error
+	panicValue any
+	probe      func()
+}
+
+func (r *terminateRecorder) Terminate(Cluster) error {
+	r.calls++
+
+	if r.probe != nil {
+		r.probe()
+	}
+
+	if r.panicValue != nil {
+		panic(r.panicValue)
+	}
+	return r.err
 }
 
 // controlAgentHarness holds an agent with control queue, log image, and module proxy.
@@ -645,13 +692,103 @@ func TestControlWork_NilControl(t *testing.T) {
 	require.Equal(t, int64(0), agent.NextAckID())
 }
 
-func TestControlWork_UnknownTemplate42(t *testing.T) {
-	h := newControlAgentHarness(t, 0)
-	h.control.Enqueue(encodeServiceTerminationPositionControl(t, 99))
-	h.agent.DoWork(0)
-	require.NoError(t, h.agent.ServiceFailure())
-	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
-	require.False(t, h.agent.HasPendingJoin())
+func TestControlWork_ServiceTerminationPosition(t *testing.T) {
+	currentVersion := clusterwire.ServiceTerminationPositionSbeSchemaVersion
+	tests := []struct {
+		name          string
+		bind          bool
+		position      int64
+		ackRequired   clusterwire.BooleanType
+		actingVersion uint16
+
+		wantWork        int
+		wantAckRequired bool
+		wantTerminated  bool
+		wantAcks        []codecs.ServiceAckFields
+	}{
+		{
+			name:            "store, ack required",
+			position:        99,
+			ackRequired:     clusterwire.BooleanType_TRUE,
+			actingVersion:   currentVersion,
+			wantWork:        2,
+			wantAckRequired: true,
+		},
+		{
+			name:          "store, no ack",
+			position:      99,
+			ackRequired:   clusterwire.BooleanType_FALSE,
+			actingVersion: currentVersion,
+			wantWork:      2,
+		},
+		{
+			name:            "stop, ack required",
+			bind:            true,
+			ackRequired:     clusterwire.BooleanType_TRUE,
+			actingVersion:   currentVersion,
+			wantWork:        3,
+			wantAckRequired: true,
+			wantTerminated:  true,
+			wantAcks: []codecs.ServiceAckFields{
+				serviceAckFields(0, 0, nullValue),
+				serviceAckFields(0, 1, nullValue),
+			},
+		},
+		{
+			name:           "stop, no ack",
+			bind:           true,
+			ackRequired:    clusterwire.BooleanType_FALSE,
+			actingVersion:  currentVersion,
+			wantWork:       2,
+			wantTerminated: true,
+			wantAcks: []codecs.ServiceAckFields{
+				serviceAckFields(0, 0, nullValue),
+			},
+		},
+		{
+			name:           "stop, acting version 16 reads no ack",
+			bind:           true,
+			ackRequired:    clusterwire.BooleanType_TRUE,
+			actingVersion:  16,
+			wantWork:       2,
+			wantTerminated: true,
+			wantAcks: []codecs.ServiceAckFields{
+				serviceAckFields(0, 0, nullValue),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := newTerminationRun(t)
+
+			if tt.bind {
+				run.bindJoin(t, 0)
+				run.drainJoin(t)
+			}
+
+			run.control.Enqueue(encodeServiceTerminationPositionControl(
+				t,
+				tt.position,
+				tt.ackRequired,
+				tt.actingVersion,
+			))
+			require.Equal(t, tt.wantWork, run.agent.DoWork(0))
+
+			require.NoError(t, run.agent.ServiceFailure())
+			require.Equal(t, tt.position, run.agent.terminationPosition)
+			require.Equal(t, tt.wantAckRequired, run.agent.terminationAckRequired)
+			require.Equal(t, tt.wantTerminated, run.agent.IsTerminated())
+			wantCalls := 0
+			if tt.wantTerminated {
+				wantCalls = 1
+			}
+
+			require.Equal(t, wantCalls, run.terminate.calls)
+			require.Equal(t, 0, run.agent.PendingCoordinationAcks())
+			run.requireAcks(t, tt.wantAcks...)
+		})
+	}
 }
 
 func TestControlWork_WrongSchemaAndUndecodable(t *testing.T) {
@@ -664,11 +801,22 @@ func TestControlWork_WrongSchemaAndUndecodable(t *testing.T) {
 	trunc := encodeRequestServiceAckControl(t, 1)
 	h.control.Enqueue(trunc[:len(trunc)-4])
 	h.control.Enqueue([]byte{1, 2, 3, 4})
+
+	// Truncated ServiceTerminationPosition (known template, undecodable).
+	termination := encodeServiceTerminationPositionControl(
+		t,
+		1,
+		clusterwire.BooleanType_TRUE,
+		clusterwire.ServiceTerminationPositionSbeSchemaVersion,
+	)
+	h.control.Enqueue(termination[:len(termination)-4])
 	h.agent.DoWork(0)
 	require.NoError(t, h.agent.ServiceFailure())
 	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+	require.Equal(t, nullValue, h.agent.terminationPosition)
 	want := []error{
 		ErrControlMessageSchema,
+		ErrControlMessageDecode,
 		ErrControlMessageDecode,
 		ErrControlMessageDecode,
 	}

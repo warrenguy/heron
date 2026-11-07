@@ -32,12 +32,6 @@ type modelFrame struct {
 	hookFails  bool
 }
 
-// pending control kinds for fragment-limit / handoff avoidance.
-const (
-	pendingKindRequest = 0
-	pendingKindJoin    = 1
-)
-
 // modelSender* name the drawn ack sender: a publication that accepts every
 // offer, one that returns NotConnected, a closed one, or none bound.
 const (
@@ -49,8 +43,8 @@ const (
 
 // pendingControlOp is one enqueued control message in the reference model.
 type pendingControlOp struct {
-	kind  int
-	apply func()
+	isJoin bool
+	apply  func()
 }
 
 // Asserts delivery-order ack pairing. The agent acks each pending ServiceAck
@@ -76,11 +70,19 @@ type pendingControlOp struct {
 // first tick, the model marks the error at once. The first tick runs on a
 // drawn sender.
 //
+// A delivered ServiceTerminationPosition stores the position and the flag. The
+// poll stops at that position. Once the log reaches it and no take runs, the
+// model stops. With the flag set, each queued entry acks at its own position.
+// The termination ack comes last at the stop position. A sender that fails
+// terminationSendAttempts times ends the drain with one report. A stop past the
+// position marks ErrTerminationPositionPassed, unless an earlier mark holds.
+//
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
 // unbound pending join); append a committed timer frame; append a committed
 // ClusterActionRequest SNAPSHOT with a drawn hook outcome; rebind the ack
-// sender; run one DoWork tick. Handoff (JoinLog while bound) stays in unit
-// tables.
+// sender; run one DoWork tick; deliver ServiceTerminationPosition. Half of the
+// runs leave out the last op, since DoWork returns 0 after a stop. Handoff
+// (JoinLog while bound) stays in unit tables.
 func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 	t.Parallel()
 	termEvent := termEventPayload(t, clusterwire.ClusterTimeUnit_NANOS, 0)
@@ -90,7 +92,12 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		hookErr := errors.New("rapid hook failure")
 		startErr := errors.New("rapid start failure")
 		svc := &snapshotRecordingService{}
-		startFails := rapid.IntRange(0, 3).Draw(rt, "startOutcome") == 0
+
+		// Half of the runs favour the termination op. A Start error or a closed
+		// sender usually marks before the stop, so most of those runs start clean.
+		terminationOps := rapid.Bool().Draw(rt, "terminationOps")
+		cleanStart := terminationOps && rapid.IntRange(0, 3).Draw(rt, "terminationCleanStart") > 0
+		startFails := !cleanStart && rapid.IntRange(0, 3).Draw(rt, "startOutcome") == 0
 		if startFails {
 			svc.startErr = startErr
 		}
@@ -126,6 +133,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			StartAck:          startAck,
 			ErrorHandler:      collectErrors(&handlerLog),
 		})
+		terminate := &terminateRecorder{}
+		agent.terminateHandler = terminate
 		InstallSnapshotTakeFakeForTest(t, agent)
 
 		var model []modelAckEntry
@@ -181,14 +190,32 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			hookFails   bool
 			recordingID int64
 		}
-		var modelTake *modelTakeState
-		modelNextRecordingID := snapshotTakeFakeFirstRecordingID
-		termEventWritten := false
-		modelBound := false
-		frameOffset := 0
-		var frames []modelFrame
-		nextFrame := 0
-		var pending []pendingControlOp
+
+		var (
+			modelTake            *modelTakeState
+			modelNextRecordingID = snapshotTakeFakeFirstRecordingID
+			termEventWritten     = false
+			modelBound           = false
+			frameOffset          = 0
+			frames               []modelFrame
+			nextFrame            = 0
+			pending              []pendingControlOp
+		)
+
+		var (
+			modelTerminationPosition = nullValue
+			modelTerminationAck      = false
+
+			// modelCapHolds reports that the stored position lay at or above the
+			// log when its frame arrived. The log must not pass such a position.
+			modelCapHolds = false
+
+			modelTerminating    = false
+			modelTerminated     = false
+			modelSendFailures   = 0
+			modelTerminateCalls = 0
+			modelAckReports     = 0
+		)
 
 		// markJoinReady sets ready and clears joinPending on one entry.
 		markJoinReady := func(e *modelAckEntry) {
@@ -254,6 +281,12 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 		}
 
+		applyTermination := func(position int64, ackRequired bool) {
+			modelTerminationPosition = position
+			modelTerminationAck = ackRequired
+			modelCapHolds = position >= modelLogPos
+		}
+
 		modelDrain := func() {
 			if modelDrained >= len(model) || !model[modelDrained].ready {
 				return
@@ -313,6 +346,10 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if rb, ok := modelReqBound(); ok && rb < bound {
 				bound = rb
 			}
+
+			if modelTerminationPosition != nullValue {
+				bound = min(bound, modelTerminationPosition)
+			}
 			frags := 0
 			for nextFrame < len(frames) && frags < DefaultLogFragmentLimit {
 				f := frames[nextFrame]
@@ -340,6 +377,96 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 		}
 
+		modelFinishTermination := func() {
+			modelTerminating = false
+			modelTerminated = true
+
+			if modelLogPos != modelTerminationPosition {
+				modelMark(ErrTerminationPositionPassed)
+			}
+		}
+
+		modelAbandonDrain := func() {
+			modelAckReports++
+			modelFinishTermination()
+		}
+
+		modelCountFailedSend := func() {
+			modelSendFailures++
+
+			if modelSendFailures >= terminationSendAttempts {
+				modelAbandonDrain()
+			}
+		}
+
+		modelTerminationDrain := func() {
+			if modelFailed || !modelTerminationAck {
+				modelFinishTermination()
+				return
+			}
+
+			switch modelSender {
+			case modelSenderNone:
+				modelAbandonDrain()
+
+			case modelSenderNotConnected:
+				modelCountFailedSend()
+
+			case modelSenderClosed:
+				if model[modelDrained].kind == ackKindTermination {
+					modelAbandonDrain()
+					return
+				}
+
+				modelDrain()
+				modelFinishTermination()
+
+			case modelSenderAccept:
+				for !modelFailed && model[modelDrained].kind != ackKindTermination {
+					modelDrain()
+				}
+
+				if !modelFailed {
+					modelDrained++
+				}
+
+				modelFinishTermination()
+			}
+		}
+
+		modelTerminationWork := func() {
+			reached := modelTerminationPosition != nullValue &&
+				modelLogPos >= modelTerminationPosition
+
+			if !reached || modelTake != nil {
+				return
+			}
+
+			modelSweep()
+
+			if modelFailed {
+				return
+			}
+
+			modelTerminating = true
+
+			if modelTerminationAck {
+				for i := range model {
+					markJoinReady(&model[i])
+				}
+
+				model = append(model, modelAckEntry{
+					logPosition: modelLogPos,
+					kind:        ackKindTermination,
+					ready:       true,
+					relevantID:  nullValue,
+				})
+			}
+
+			modelTerminateCalls++
+			modelTerminationDrain()
+		}
+
 		// joinWouldHandoff reports whether enqueueing another join leaves a
 		// join past the control fragment limit after a join that binds in the
 		// same poll (handoff is unit-only; model covers unbound supersession).
@@ -353,7 +480,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 			// New join lands past this poll's batch. Handoff iff batch binds.
 			for i := range defaultControlFragmentLimit {
-				if pending[i].kind == pendingKindJoin {
+				if pending[i].isJoin {
 					return true
 				}
 			}
@@ -364,9 +491,16 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		// control poll, sweep, drain, join bind, poll. Drain still runs after
 		// a sweep failure. Join and poll freeze after a sweep failure. After
 		// a Start error, each tick drains only the start entry. The first tick
-		// after Start sets the start ack deadline.
+		// after Start sets the start ack deadline. The termination check runs
+		// after the poll. While the termination drain runs, each tick only
+		// drains.
 		modelDoWork := func() {
-			if modelFailed {
+			if modelFailed || modelTerminated {
+				return
+			}
+
+			if modelTerminating {
+				modelTerminationDrain()
 				return
 			}
 			if !modelStarted && startFails {
@@ -424,6 +558,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				}
 			}
 			modelPoll()
+			modelTerminationWork()
 		}
 
 		checkInvariants := func() {
@@ -446,7 +581,47 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				require.Equal(rt, model[i].logPosition, ack.LogPosition)
 				require.Equal(rt, model[i].relevantID, ack.RelevantID)
 				require.Equal(rt, int32(1), ack.ServiceID)
+
+				if model[i].kind == ackKindTermination {
+					require.Equal(rt, modelDrained-1, i, "ack after termination ack")
+					require.Equal(rt, agent.LogPosition(), ack.LogPosition, "stop position")
+				}
 			}
+
+			if modelCapHolds {
+				require.LessOrEqual(
+					rt,
+					agent.LogPosition(),
+					modelTerminationPosition,
+					"log passed the position",
+				)
+			}
+
+			require.Equal(rt, modelTerminateCalls, terminate.calls, "terminate calls")
+			require.Equal(rt, modelTerminated, agent.IsTerminated(), "terminated")
+
+			// handlerLog holds the ack reports, then at most one mark.
+			var fatalLog []error
+			ackReports := 0
+
+			for _, err := range handlerLog {
+				if errors.Is(err, ErrTerminationAckPublish) {
+					require.NotErrorIs(rt, err, ErrFailed)
+					ackReports++
+					continue
+				}
+
+				fatalLog = append(fatalLog, err)
+			}
+
+			require.Equal(rt, modelAckReports, ackReports, "termination ack reports")
+			require.Equal(
+				rt,
+				errors.Is(modelCause, ErrTerminationPositionPassed),
+				errors.Is(agent.ServiceFailure(), ErrTerminationPositionPassed),
+				"position passed mark",
+			)
+
 			// A failed entry is the last ack sent.
 			for i := range modelDrained {
 				if model[i].failed {
@@ -469,8 +644,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				}
 			}
 			if modelFailed {
-				require.Len(rt, handlerLog, 1)
-				require.Same(rt, failure, handlerLog[0])
+				require.Len(rt, fatalLog, 1)
+				require.Same(rt, failure, fatalLog[0])
 				require.ErrorIs(rt, failure, ErrFailed)
 				require.ErrorIs(rt, failure, modelCause)
 				if modelClosedFirst {
@@ -481,7 +656,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				require.Equal(rt, len(model)-modelDrained, agent.PendingCoordinationAcks())
 				return
 			}
-			require.Empty(rt, handlerLog)
+
+			require.Empty(rt, fatalLog)
 			require.NoError(rt, agent.ServiceFailure())
 			require.Equal(rt, len(model)-modelDrained, agent.PendingCoordinationAcks())
 			require.Equal(rt, modelTake != nil, agent.take != nil, "take in flight")
@@ -513,7 +689,11 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		// the agent and the model.
 		tick := func() {
 			nowNs += int64(rapid.IntRange(0, 3).Draw(rt, "clockStep"))
-			agent.DoWork(nowNs)
+			work := agent.DoWork(nowNs)
+
+			if modelTerminated {
+				require.Zero(rt, work, "work after the stop")
+			}
 			modelDoWork()
 		}
 
@@ -531,6 +711,49 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			committed = end
 		}
 
+		appendTimerFrame := func() {
+			payload := encodeTimerEvent(rt, codecs.TimerEventFields{
+				LeadershipTermID: 1,
+				CorrelationID:    int64(len(frames) + 1),
+				Timestamp:        int64(len(frames) + 1),
+			})
+			appendFrame(payload, false, false)
+		}
+
+		appendSnapshotFrame := func() {
+			if !termEventWritten {
+				appendFrame(termEvent, false, false)
+				termEventWritten = true
+			}
+
+			end := int64(frameOffset) + int64(clusterActionFrameSpan())
+			payload := encodeClusterAction(rt, snapshotActionFields(end, int64(len(frames)+1)))
+			hookFails := rapid.IntRange(0, 3).Draw(rt, "hookOutcome") == 0
+			var outcome error
+
+			if hookFails {
+				outcome = hookErr
+			}
+
+			svc.hookErrs = append(svc.hookErrs, outcome)
+			appendFrame(payload, true, hookFails)
+		}
+
+		enqueueJoin := func(position int64) {
+			pending = append(pending, pendingControlOp{
+				isJoin: true,
+				apply:  func() { applyJoin(position) },
+			})
+			control.Enqueue(encodeJoinLogControl(rt, defaultJoinLogFields(position)))
+		}
+
+		enqueueRequest := func(position int64) {
+			pending = append(pending, pendingControlOp{
+				apply: func() { applyRequest(position) },
+			})
+			control.Enqueue(encodeRequestServiceAckControl(rt, position))
+		}
+
 		rebind := func(sender int) {
 			modelSender = sender
 			switch modelSender {
@@ -545,18 +768,136 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 		}
 
+		// deliverTerminationPosition draws a position, a flag, and a sender. It then
+		// enqueues one ServiceTerminationPosition. It does not enqueue when a draw
+		// for a frame ahead of the log finds none, or when its own tick marks.
+		deliverTerminationPosition := func() {
+			rt.Helper()
+
+			position := modelLogPos
+			requestAbove := false
+			overshoot := false
+
+			switch rapid.IntRange(0, 5).Draw(rt, "terminationPositionKind") {
+			case 1, 3: // A frame end ahead of the log.
+				if agent.IsLogBound() {
+					if rapid.Bool().Draw(rt, "terminationSnapshotAhead") {
+						appendSnapshotFrame()
+					} else {
+						appendTimerFrame()
+					}
+
+					if rapid.Bool().Draw(rt, "terminationFrameBeyond") {
+						appendTimerFrame()
+					}
+				}
+
+				if nextFrame >= len(frames) {
+					return
+				}
+
+				idx := rapid.IntRange(nextFrame, len(frames)-1).Draw(rt, "terminationFrameIdx")
+				position = frames[idx].end
+
+				// A request above the stop acks at its own position. The
+				// accepting sender and the flag let that ack reach the wire.
+				if idx+1 < len(frames) && rapid.Bool().Draw(rt, "terminationRequestAbove") {
+					requestIdx := rapid.IntRange(idx+1, len(frames)-1).Draw(rt, "terminationRequestIdx")
+					enqueueRequest(frames[requestIdx].end)
+					rebind(modelSenderAccept)
+					requestAbove = true
+				}
+
+			case 2, 4, 5: // A value below the log.
+				// The range below a log at 0 is empty. Consume one frame first.
+				if modelLogPos == 0 && agent.IsLogBound() {
+					appendTimerFrame()
+					tick()
+					checkInvariants()
+
+					if modelFailed {
+						return
+					}
+				}
+
+				if modelLogPos > 0 {
+					position = rapid.Int64Range(0, modelLogPos-1).Draw(rt, "terminationPassedPos")
+					overshoot = true
+				}
+			}
+
+			ackRequired := rapid.Bool().Draw(rt, "terminationAckRequired") || requestAbove
+			flag := clusterwire.BooleanType_FALSE
+			if ackRequired {
+				flag = clusterwire.BooleanType_TRUE
+			}
+
+			// A flagged frame often rebinds, so the termination ack sends, meets
+			// a terminal code, or fails until the drain ends. An overshoot favours
+			// the send, since the ack carries the stop position, not the frame
+			// position.
+			if ackRequired && !requestAbove {
+				closedShare := 2
+				if overshoot {
+					closedShare = 1
+				}
+
+				draw := rapid.IntRange(0, 4).Draw(rt, "terminationSender")
+
+				switch {
+				case draw < closedShare:
+					rebind(modelSenderClosed)
+
+				case draw < 3:
+					rebind(modelSenderAccept)
+
+				case draw == 3:
+					rebind(modelSenderNotConnected)
+				}
+			}
+
+			pending = append(pending, pendingControlOp{
+				apply: func() { applyTermination(position, ackRequired) },
+			})
+			enqueueTerminationPosition(rt, control, position, flag)
+
+			// A later frame can replace this one before the next drawn tick. Most
+			// flagged or overshoot draws tick now, so the stop runs on this frame.
+			if (overshoot || ackRequired) && rapid.IntRange(0, 3).Draw(rt, "terminationTickNow") > 0 {
+				tick()
+				checkInvariants()
+			}
+		}
+
 		// First tick: start work on a drawn sender.
-		rebind(rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "firstSender"))
+		firstSender := rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "firstSender")
+		if cleanStart {
+			firstSender = modelSenderAccept
+		}
+
+		rebind(firstSender)
 		tick()
 		checkInvariants()
 
+		lastOp := 5
+		if terminationOps {
+			lastOp = 8
+
+			// Most termination runs bind first, so a stop has frames ahead.
+			if !modelFailed && rapid.IntRange(0, 3).Draw(rt, "terminationBindFirst") > 0 {
+				enqueueJoin(modelLogPos)
+				tick()
+				checkInvariants()
+			}
+		}
 		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
 		for range nOps {
 			if modelFailed || agent.ServiceFailure() != nil {
 				checkAfterMark()
 				return
 			}
-			op := rapid.IntRange(0, 5).Draw(rt, "op")
+
+			op := min(rapid.IntRange(0, lastOp).Draw(rt, "op"), 6)
 			switch op {
 			case 0: // RequestServiceAck
 				var pos int64
@@ -569,23 +910,15 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				if modelLogPos > 0 && rapid.IntRange(0, 9).Draw(rt, "passedBias") == 0 {
 					pos = int64(rapid.IntRange(0, int(modelLogPos-1)).Draw(rt, "passedPos"))
 				}
-				p := pos
-				pending = append(pending, pendingControlOp{
-					kind:  pendingKindRequest,
-					apply: func() { applyRequest(p) },
-				})
-				control.Enqueue(encodeRequestServiceAckControl(rt, p))
+
+				enqueueRequest(pos)
 
 			case 1: // Append timer frame
 				if !agent.IsLogBound() {
 					continue
 				}
-				payload := encodeTimerEvent(rt, codecs.TimerEventFields{
-					LeadershipTermID: 1,
-					CorrelationID:    int64(len(frames) + 1),
-					Timestamp:        int64(len(frames) + 1),
-				})
-				appendFrame(payload, false, false)
+
+				appendTimerFrame()
 
 			case 2: // DoWork
 				tick()
@@ -596,33 +929,20 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					continue
 				}
 				// Contiguity: join position must equal agent log position.
-				pos := modelLogPos
-				pending = append(pending, pendingControlOp{
-					kind:  pendingKindJoin,
-					apply: func() { applyJoin(pos) },
-				})
-				control.Enqueue(encodeJoinLogControl(rt, defaultJoinLogFields(pos)))
+				enqueueJoin(modelLogPos)
 
 			case 4: // ClusterActionRequest SNAPSHOT flags 0
 				if !agent.IsLogBound() {
 					continue
 				}
-				if !termEventWritten {
-					appendFrame(termEvent, false, false)
-					termEventWritten = true
-				}
-				end := int64(frameOffset) + int64(clusterActionFrameSpan())
-				payload := encodeClusterAction(rt, snapshotActionFields(end, int64(len(frames)+1)))
-				hookFails := rapid.IntRange(0, 3).Draw(rt, "hookOutcome") == 0
-				var outcome error
-				if hookFails {
-					outcome = hookErr
-				}
-				svc.hookErrs = append(svc.hookErrs, outcome)
-				appendFrame(payload, true, hookFails)
+
+				appendSnapshotFrame()
 
 			case 5: // Rebind the ack sender
 				rebind(rapid.IntRange(modelSenderAccept, modelSenderNone).Draw(rt, "sender"))
+
+			case 6: // ServiceTerminationPosition
+				deliverTerminationPosition()
 			}
 		}
 

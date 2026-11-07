@@ -90,6 +90,18 @@ func (assembler *ControlledFragmentAssembler) FreeSessionBuffer(sessionID int32)
 	return ok
 }
 
+// HasPartialMessage reports whether a session builder holds fragments of a
+// message that the delegate has not received.
+func (assembler *ControlledFragmentAssembler) HasPartialMessage() bool {
+	for _, builder := range assembler.builders {
+		if builder.limit > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (assembler *ControlledFragmentAssembler) handleFragment(
 	buffer atomicbuffer.AtomicBuffer,
 	offset int,

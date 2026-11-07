@@ -21,7 +21,7 @@ Measured against the Java stack at the Aeron release pinned in
 | Archive client | `archive` | Partial | Recording listing, position queries, `ReplayMerge` |
 | Cluster client | `cluster/client` | Functional | Controlled egress dispatch, egress listener extensions |
 | Consensus module | `cluster` | Experimental | Snapshots, termination, cluster control, admin requests |
-| Service container | `cluster/service` | Experimental | Egress to clients, snapshots, recovery, termination |
+| Service container | `cluster/service` | Experimental | Egress to clients, snapshots, recovery |
 
 Detail per component: [STATUS.md](STATUS.md).
 

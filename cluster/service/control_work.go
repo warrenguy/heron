@@ -86,6 +86,18 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 			return
 		}
 		a.handleRequestServiceAck(fields.LogPosition)
+
+	case clusterwire.ServiceTerminationPositionSbeTemplateID:
+		fields, decOK := codecs.TryDecodeServiceTerminationPositionAt(buf, offset)
+		if !decOK {
+			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
+			return
+		}
+
+		a.handleServiceTerminationPosition(
+			fields.LogPosition,
+			fields.AckRequired == clusterwire.BooleanType_TRUE,
+		)
 	}
 }
 
@@ -176,11 +188,25 @@ func (a *Agent) drainReadyCoordinationAck() int {
 	if len(a.coordinationAcks) == 0 {
 		return 0
 	}
-	entry := a.coordinationAcks[0]
-	if !entry.ready {
+
+	if !a.coordinationAcks[0].ready {
 		return 0
 	}
 
+	if a.sendFirstCoordinationAck() <= 0 {
+		return 0
+	}
+	return 1
+}
+
+// sendFirstCoordinationAck offers the first queued entry under the
+// drainReadyCoordinationAck rules. A terminal code on a termination entry does
+// not mark a failure. The caller must ensure canPublish and a ready first
+// entry.
+//
+// Returns the offer result.
+func (a *Agent) sendFirstCoordinationAck() int64 {
+	entry := a.coordinationAcks[0]
 	result := a.moduleProxy.PublishServiceAck(codecs.ServiceAckFields{
 		LogPosition: entry.logPosition,
 		Timestamp:   a.clusterTime,
@@ -188,8 +214,13 @@ func (a *Agent) drainReadyCoordinationAck() int {
 		RelevantID:  entry.relevantID,
 		ServiceID:   a.serviceID,
 	})
-	if !a.acceptOffer(result, ErrAckPublish, entry.failure) {
-		return 0
+	accepted := result > 0
+	if entry.kind != ackKindTermination {
+		accepted = a.acceptOffer(result, ErrAckPublish, entry.failure)
+	}
+
+	if !accepted {
+		return result
 	}
 	a.coordinationAcks = a.coordinationAcks[1:]
 	a.ackID++
@@ -199,5 +230,5 @@ func (a *Agent) drainReadyCoordinationAck() int {
 	if entry.failure != nil {
 		a.markFailure(entry.failure)
 	}
-	return 1
+	return result
 }

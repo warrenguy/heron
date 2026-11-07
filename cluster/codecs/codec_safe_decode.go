@@ -750,6 +750,9 @@ func decodeTemplateFields(
 			IsStandby:      msg.IsStandby(),
 			LogChannel:     vars.logChannel,
 		}, true
+
+	case clusterwire.ServiceTerminationPositionSbeTemplateID:
+		return decodeServiceTerminationPositionFields(buf, body, block, version, bufLen), true
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		return decodeRequestServiceAckFields(buf, body, block, version, bufLen), true
 	case clusterwire.SnapshotMarkerSbeTemplateID:

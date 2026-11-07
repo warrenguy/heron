@@ -423,10 +423,10 @@ func TestAgent_DispatchFailure_sticky(t *testing.T) {
 	require.Equal(t, 0, agent.DoWork(0))
 }
 
-// lifecycleRecordingService adds RoleChangeHandler and BackgroundWorkHandler
-// to snapshotRecordingService. Each call appends its name to order. probes
-// maps a call name ("start", "role", "background", "message") to a func that
-// runs inside that call.
+// lifecycleRecordingService adds RoleChangeHandler, BackgroundWorkHandler, and
+// TerminateHandler to snapshotRecordingService. Each call except Terminate
+// appends its name to order. probes maps a call name ("start", "role",
+// "background", "terminate", "message") to a func that runs inside that call.
 type lifecycleRecordingService struct {
 	snapshotRecordingService
 
@@ -485,6 +485,11 @@ func (s *lifecycleRecordingService) DoBackgroundWork(nowNs int64) int {
 	s.order = append(s.order, "background")
 	s.runProbe("background")
 	return s.backgroundResult
+}
+
+func (s *lifecycleRecordingService) Terminate(Cluster) error {
+	s.runProbe("terminate")
+	return nil
 }
 
 func (s *lifecycleRecordingService) runProbe(call string) {
@@ -1001,6 +1006,20 @@ func setupBackgroundRefusal(t *testing.T, handler func(error)) refusalRun {
 	return run
 }
 
+// setupTerminateRefusal stops a bound leader at its log position with the ack
+// flag false, so the stop does not move the module publication.
+func setupTerminateRefusal(t *testing.T, handler func(error)) refusalRun {
+	t.Helper()
+	run := setupBackgroundRefusal(t, handler)
+	agent := run.agent
+	run.trigger = func() {
+		agent.handleServiceTerminationPosition(agent.LogPosition(), false)
+		agent.DoWork(0)
+		require.True(t, agent.IsTerminated())
+	}
+	return run
+}
+
 func publicationPosition(publication *aeron.Publication) int64 {
 	if publication == nil {
 		return 0
@@ -1009,7 +1028,7 @@ func publicationPosition(publication *aeron.Publication) int64 {
 }
 
 // TestAgent_LifecycleCalls_refused asserts the module request and session
-// offer refusal inside Start, RoleChange, and DoBackgroundWork.
+// offer refusal inside Start, RoleChange, DoBackgroundWork, and Terminate.
 func TestAgent_LifecycleCalls_refused(t *testing.T) {
 	refusedResult := requestProbeResult{offer: LifecycleRefused}
 	setups := []struct {
@@ -1023,6 +1042,7 @@ func TestAgent_LifecycleCalls_refused(t *testing.T) {
 		{name: "Start", call: "start", setup: setupStartRefusal},
 		{name: "RoleChange", call: "role", setup: setupRoleChangeRefusal},
 		{name: "DoBackgroundWork", call: "background", setup: setupBackgroundRefusal},
+		{name: "Terminate", call: "terminate", setup: setupTerminateRefusal},
 	}
 	for _, tc := range setups {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1069,6 +1089,31 @@ func TestAgent_LifecycleCalls_refused(t *testing.T) {
 			require.NoError(t, agent.ServiceFailure())
 		})
 	}
+
+	t.Run("terminate at close", func(t *testing.T) {
+		var got []error
+		run := setupBackgroundRefusal(t, collectErrors(&got))
+		agent := run.agent
+		probe := &requestProbe{sessionID: refusalSessionID}
+		proxySent := run.proxyPub.Position()
+		responseSent := run.responsePub.Position()
+
+		// Close closes the response publication after Terminate, so the probe
+		// reads both positions inside the call.
+		var proxyInside, responseInside int64
+		run.svc.probes = map[string]func(*Agent){"terminate": func(a *Agent) {
+			probe.run(a)
+			proxyInside = run.proxyPub.Position()
+			responseInside = run.responsePub.Position()
+		}}
+
+		agent.Close()
+		require.Equal(t, []requestProbeResult{refusedResult}, probe.runs)
+		require.Equal(t, proxySent, proxyInside)
+		require.Equal(t, responseSent, responseInside)
+		require.NoError(t, agent.ServiceFailure())
+		requireRefusals(t, got, refusalTexts("Terminate"))
+	})
 
 	t.Run("unknown id", func(t *testing.T) {
 		var got []error

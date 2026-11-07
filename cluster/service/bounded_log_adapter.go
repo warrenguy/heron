@@ -161,6 +161,16 @@ func (b *BoundedLogAdapter) isDone() bool {
 	return image.Position() >= b.maxLogPosition || image.IsEndOfStream() || image.IsClosed()
 }
 
+// isConsumedTo reports whether the image stands at position and the assembler
+// does not hold a partial message.
+func (b *BoundedLogAdapter) isConsumedTo(position int64) bool {
+	if b == nil || b.image == nil {
+		return false
+	}
+
+	return b.image.Position() == position && !b.assembler.HasPartialMessage()
+}
+
 // Poll delivers whole messages whose frames start before
 // min(boundPosition, maxLogPosition).
 //

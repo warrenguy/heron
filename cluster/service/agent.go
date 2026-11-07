@@ -64,6 +64,18 @@ var ErrCloseUnknownSession = errors.New("service: close unknown client session")
 // error is not fatal.
 var ErrUnknownTimeUnit = errors.New("service: unknown time unit")
 
+// ErrTerminate wraps a Terminate error. The error is not fatal.
+var ErrTerminate = errors.New("service: terminate")
+
+// ErrTerminationPositionPassed marks a stop with the log position past the
+// termination position. The agent marks the error after Terminate and the
+// termination drain. The error is fatal.
+var ErrTerminationPositionPassed = errors.New("service: termination position passed")
+
+// ErrTerminationAckPublish reports an unsent termination ack. The agent still
+// stops. The error is not fatal.
+var ErrTerminationAckPublish = errors.New("service: termination ack publish failed")
+
 // AgentConfig configures NewAgent. Zero-value fields have the defaults stated
 // per field.
 type AgentConfig struct {
@@ -98,7 +110,8 @@ type AgentConfig struct {
 
 	// ModuleProxy sends ServiceAck, timer and CloseSession frames (stream
 	// 105). Nil is allowed: ready acks stay queued. Timer and close requests
-	// return false. A proxy with no bound publication behaves as nil.
+	// return false. A stop reports ErrTerminationAckPublish when the module
+	// asked for the ack. A proxy with no bound publication behaves as nil.
 	ModuleProxy *ConsensusModuleProxy
 
 	// StartAck enables the spontaneous start ack a Java consensus module
@@ -134,7 +147,8 @@ type AgentConfig struct {
 	//
 	// Behaviour:
 	//   - A non-fatal error reaches the handler once. The duty cycle keeps
-	//     running.
+	//     running until a stop at the termination position. See
+	//     [Agent.IsTerminated].
 	//   - The first fatal error reaches the handler once. The error wraps
 	//     ErrFailed. ServiceFailure returns the same error. DoWork returns
 	//     0 after the fatal error.
@@ -144,7 +158,8 @@ type AgentConfig struct {
 	//   - A nil ErrorHandler drops every report. The agent still records a
 	//     fatal error.
 	//
-	// Concurrency: invoker-only. ErrorHandler must not:
+	// Concurrency: ErrorHandler runs on the goroutine that runs [Agent.DoWork].
+	// ErrorHandler must not:
 	//   - panic
 	//   - call Agent.DoWork or Agent.Close
 	//   - call ScheduleTimer, CancelTimer or CloseClientSession
@@ -158,8 +173,9 @@ type AgentConfig struct {
 // Agent owns the service duty cycle: log join, bounded log consumption,
 // session registry, and the pending coordination-ack queue.
 //
-// Concurrency: invoker-only. The harness drives DoWork after runner.DoWork on
-// one goroutine. Agent never calls DoWork on aeron.Client. The log
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines. The harness drives DoWork after runner.DoWork on one
+// goroutine. Agent never calls DoWork on aeron.Client. The log
 // subscription add, the snapshot publication add poll, and the response
 // publication add poll run conductor ticks.
 //
@@ -168,7 +184,9 @@ type AgentConfig struct {
 // while a take runs. Close ends every in-flight response add and closes
 // every response publication. Unbind and a non-leader join close every
 // response publication. A leader join with isStartup false re-adds them.
-// Agent does not own the aeron.Client.
+// Agent does not own the aeron.Client. Agent stops at the termination position
+// the module sends. [Agent.IsTerminated] reports the stop.
+// [Agent.ServiceFailure] reports an unexpected stop.
 //
 // Ownership: Agent owns the BoundedLogAdapter, the log subscription, and the
 // snapshot publication and start request of a running take. Agent owns the
@@ -262,6 +280,7 @@ type Agent struct {
 	snapshotHandler       TakeSnapshotHandler
 	roleChangeHandler     RoleChangeHandler
 	backgroundWorkHandler BackgroundWorkHandler
+	terminateHandler      TerminateHandler
 
 	// activeLifecycleCall is the running lifecycle call, or lifecycleCallNone.
 	// A panic in the call also resets it to lifecycleCallNone.
@@ -292,8 +311,24 @@ type Agent struct {
 	// StartAck.Timeout. Zero or negative takes DefaultRecoveryTimeout.
 	startAckTimeoutNs int64
 
+	// terminationPosition is the last delivered position, or nullValue.
+	terminationPosition int64
+
+	// terminationAckRequired is the ack flag of the last delivered frame.
+	terminationAckRequired bool
+
+	terminationSendFailures int
+
 	started bool
 	closed  bool
+
+	// serviceActive holds from a successful Start until the stop or Close.
+	serviceActive bool
+
+	// terminating holds while Terminate and the termination drain run.
+	terminating bool
+
+	terminated bool
 
 	role        codecs.Role
 	memberID    int32
@@ -331,6 +366,9 @@ const (
 	// ackKindStart: queued at NewAgent. Ready after start work, on success
 	// or failure.
 	ackKindStart
+
+	// ackKindTermination: queued ready at the stop, behind every other entry.
+	ackKindTermination
 )
 
 // coordinationAck is one pending ServiceAck. Drain is prefix-gated: only a
@@ -344,6 +382,10 @@ const (
 //   - request: ready when the agent log position equals the entry
 //     logPosition
 //   - snapshot: ready when the take resolves, on success or failure
+//   - termination: ready when queued
+//
+// When the module asks for the termination ack, the stop readies each unready
+// entry at its own queued position.
 //
 // failure stores the cause of a failed Start or a failed snapshot take.
 type coordinationAck struct {
@@ -379,6 +421,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		memberID:                -1,
 		sessions:                make(map[int64]*containerClientSession),
 		egressLeadershipTermID:  nullValue,
+		terminationPosition:     nullValue,
 	}
 	if a.snapshotChannel == "" {
 		a.snapshotChannel = DefaultSnapshotChannel
@@ -407,6 +450,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 	a.snapshotHandler, _ = cfg.Service.(TakeSnapshotHandler)
 	a.roleChangeHandler, _ = cfg.Service.(RoleChangeHandler)
 	a.backgroundWorkHandler, _ = cfg.Service.(BackgroundWorkHandler)
+	a.terminateHandler, _ = cfg.Service.(TerminateHandler)
 	a.controlOnFragment = a.handleControlFragment
 	a.clientSessions = a.walkClientSessions
 	a.adapter = NewBoundedLogAdapter(a, cfg.FragmentLimit)
@@ -438,18 +482,30 @@ func NewAgent(cfg AgentConfig) *Agent {
 //     DoWork again.
 //   - The agent can send the ack of a take in the tick that resolves the take.
 //   - The log poll bound is min(committed, lowest unready request entry
-//     position).
+//     position, stored termination position).
 //   - While a take runs, the take action position also caps the bound.
 //   - The agent does not unbind while a take runs.
+//   - After the unbind and before background work, the agent checks the
+//     stored termination position. The agent stops at that position once a
+//     running take ends.
+//   - While the termination drain runs, each tick only sends queued acks.
+//     DoWork returns 0 after the stop.
+//   - A panic from Terminate propagates out of DoWork. A later DoWork runs the
+//     termination drain.
 //
 // Returns the work count. A response add that a bind starts counts when its
 // poll runs. The disconnect polls of an unbind or a non-leader join do not
 // count.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) DoWork(nowNs int64) int {
-	if a.closed || a.serviceFailure != nil {
+	if a.closed || a.serviceFailure != nil || a.terminated {
 		return 0
+	}
+
+	if a.terminating {
+		return a.terminationDrainWork()
 	}
 
 	work := 0
@@ -464,6 +520,8 @@ func (a *Agent) DoWork(nowNs int64) int {
 			}
 			return work + a.drainReadyCoordinationAck()
 		}
+
+		a.serviceActive = true
 		a.markAckReady(ackKindStart)
 	}
 	if a.pendingStartFailure() != nil {
@@ -506,6 +564,10 @@ func (a *Agent) DoWork(nowNs int64) int {
 		if a.take != nil {
 			bound = min(bound, a.take.logPosition)
 		}
+
+		if a.terminationPosition != nullValue {
+			bound = min(bound, a.terminationPosition)
+		}
 		polled = a.adapter.Poll(bound)
 		work += polled
 		if a.serviceFailure != nil {
@@ -514,18 +576,30 @@ func (a *Agent) DoWork(nowNs int64) int {
 	}
 
 	a.maybeUnbind(polled)
+	work += a.terminationWork()
+
+	if a.terminating || a.terminated || a.serviceFailure != nil {
+		return work
+	}
 	work += a.backgroundWork(nowNs)
 	return work
 }
 
+// Close calls Terminate first when the service started and did not stop.
+//
 // Close marks a Start error or a snapshot take failure that still waits for
 // its ack, unless the agent has already failed. The waiting ack does not
 // send. Close does not report teardown errors. A take that Close ends does
 // not send an ack.
 //
+// Close ends a running termination drain. The queued acks do not send. When
+// the module asked for the ack, Close reports ErrTerminationAckPublish, unless
+// the agent has already failed.
+//
 // Registry entries stay.
 //
-// Idempotent. The Agent is inert after Close.
+// Idempotent. The Agent is inert after Close. A Terminate panic skips the
+// teardown. A second Close runs the teardown and does not call Terminate.
 //
 // Ownership: closes the snapshot publication and start request of a running
 // take. Ends every in-flight response add and closes every response
@@ -537,8 +611,14 @@ func (a *Agent) Close() {
 	if a.closed {
 		return
 	}
+
+	a.callTerminate()
 	if err := a.pendingAckFailure(); err != nil {
 		a.markFailure(err)
+	}
+
+	if a.terminating {
+		a.abandonTerminationDrain(aeron.Closed)
 	}
 	a.closed = true
 	a.closeSnapshotTake()
@@ -563,7 +643,8 @@ func (a *Agent) MemberID() int32 {
 }
 
 // LogPosition returns the last consumed frame-end position, including padding
-// adoption on unbind. A recovery load in [Open] seeds it.
+// adoption on unbind or at a termination position. A recovery load in [Open]
+// seeds it.
 func (a *Agent) LogPosition() int64 {
 	return a.logPosition
 }

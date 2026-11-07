@@ -135,6 +135,15 @@ func ClusterRootBlockLengthBounds(
 		}
 		return clusterFixedBlockLength(maxBlock)
 
+	case clusterwire.ServiceTerminationPositionSbeTemplateID:
+		maxBlock = clusterwire.ServiceTerminationPositionSbeBlockLength
+
+		if actingVersion < ServiceTerminationPositionAckRequiredMinVersion {
+			// id 1 only (AckRequired sinceVersion 17).
+			return 8, maxBlock, true
+		}
+		return clusterFixedBlockLength(maxBlock)
+
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.RequestServiceAckSbeBlockLength)
 
@@ -217,6 +226,7 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.CloseSessionSbeTemplateID,
 		clusterwire.ServiceAckSbeTemplateID,
 		clusterwire.RequestServiceAckSbeTemplateID,
+		clusterwire.ServiceTerminationPositionSbeTemplateID,
 		clusterwire.SnapshotMarkerSbeTemplateID,
 		clusterwire.TimerSbeTemplateID,
 		clusterwire.ConsensusModuleSbeTemplateID,

@@ -273,6 +273,9 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireBytesEqual(tb, wantFields.LogChannel, gotFields.LogChannel)
 	case codecs.RequestServiceAckFields:
 		requireDecodedFieldsEqual[codecs.RequestServiceAckFields](tb, wantFields, got)
+
+	case codecs.ServiceTerminationPositionFields:
+		requireDecodedFieldsEqual[codecs.ServiceTerminationPositionFields](tb, wantFields, got)
 	case codecs.SnapshotMarkerFields:
 		requireDecodedFieldsEqual[codecs.SnapshotMarkerFields](tb, wantFields, got)
 	case codecs.ClientSessionFields:
@@ -439,7 +442,7 @@ func requireTryDecodeAt[T any](
 func codecFuzzSeedBuffers() [][]byte {
 	const (
 		actingVersion   = clusterwire.SessionMessageHeaderSbeSchemaVersion
-		seedEncodeCount = 40
+		seedEncodeCount = 42
 	)
 	buf := make([]byte, fuzzClusterCodecMaxLen)
 	seeds := make([][]byte, 0, seedEncodeCount*(1+codecFuzzMaxOffset))
@@ -758,6 +761,20 @@ func codecFuzzSeedBuffers() [][]byte {
 			LogPosition: 42,
 		})
 	})
+
+	for _, seedVersion := range []uint16{16, 17} {
+		addEncoded(func(b []byte) (int, bool) {
+			return codecs.EncodeServiceTerminationPosition(
+				b,
+				0,
+				seedVersion,
+				codecs.ServiceTerminationPositionFields{
+					LogPosition: 42,
+					AckRequired: clusterwire.BooleanType_TRUE,
+				},
+			)
+		})
+	}
 
 	addEncoded(func(b []byte) (int, bool) {
 		return codecs.EncodeSnapshotMarker(b, 0, actingVersion, codecs.SnapshotMarkerFields{

@@ -29,7 +29,8 @@ const (
 	goldenJoinLogHex = "280028006f001100" +
 		"6400000000000000c80000000000000001000000020000006400000001000000" +
 		"0100000000000000210000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a39303034"
-	goldenRequestServiceAckHex = "08006c006f0011002a00000000000000"
+	goldenRequestServiceAckHex          = "08006c006f0011002a00000000000000"
+	goldenServiceTerminationPositionHex = "0c002a006f0011002a0000000000000001000000"
 )
 
 func TestServiceWireBytes_goldenHex(t *testing.T) {
@@ -142,6 +143,22 @@ func TestServiceWireBytes_goldenHex(t *testing.T) {
 			},
 			templateID: clusterwire.RequestServiceAckSbeTemplateID,
 		},
+		{
+			name:    "ServiceTerminationPosition",
+			wantHex: goldenServiceTerminationPositionHex,
+			encode: func(b []byte) (int, bool) {
+				return codecs.EncodeServiceTerminationPosition(
+					b,
+					0,
+					actingVersion,
+					codecs.ServiceTerminationPositionFields{
+						LogPosition: 42,
+						AckRequired: clusterwire.BooleanType_TRUE,
+					},
+				)
+			},
+			templateID: clusterwire.ServiceTerminationPositionSbeTemplateID,
+		},
 	})
 }
 
@@ -184,6 +201,10 @@ func TestServiceFlyweightConstants(t *testing.T) {
 	require.Equal(t, uint16(108), clusterwire.RequestServiceAckSbeTemplateID)
 	require.Equal(t, 16, codecs.RequestServiceAckEncodedLen())
 
+	require.Equal(t, uint16(12), clusterwire.ServiceTerminationPositionSbeBlockLength)
+	require.Equal(t, uint16(42), clusterwire.ServiceTerminationPositionSbeTemplateID)
+	require.Equal(t, 20, codecs.ServiceTerminationPositionEncodedLen())
+
 	// Schema id and version are schema-wide. A single divergence means the
 	// generated sources were regenerated from a different schema.
 	for _, id := range []uint16{
@@ -197,6 +218,7 @@ func TestServiceFlyweightConstants(t *testing.T) {
 		clusterwire.ServiceAckSbeSchemaID,
 		clusterwire.JoinLogSbeSchemaID,
 		clusterwire.RequestServiceAckSbeSchemaID,
+		clusterwire.ServiceTerminationPositionSbeSchemaID,
 	} {
 		require.Equal(t, uint16(111), id)
 	}
@@ -211,6 +233,7 @@ func TestServiceFlyweightConstants(t *testing.T) {
 		clusterwire.ServiceAckSbeSchemaVersion,
 		clusterwire.JoinLogSbeSchemaVersion,
 		clusterwire.RequestServiceAckSbeSchemaVersion,
+		clusterwire.ServiceTerminationPositionSbeSchemaVersion,
 	} {
 		require.Equal(t, uint16(17), version)
 	}
@@ -249,6 +272,12 @@ func TestCancelTimer_fieldOffsets(t *testing.T) {
 func TestCloseSession_fieldOffsets(t *testing.T) {
 	var msg clusterwire.CloseSession
 	require.Equal(t, uint(0), msg.ClusterSessionIdEncodingOffset())
+}
+
+func TestServiceTerminationPosition_ackRequiredSinceVersion(t *testing.T) {
+	var msg clusterwire.ServiceTerminationPosition
+	require.Equal(t, uint64(17), msg.AckRequiredSinceVersion())
+	require.Equal(t, uint16(17), codecs.ServiceTerminationPositionAckRequiredMinVersion)
 }
 
 func TestJoinLog_isStandbySinceVersion(t *testing.T) {
