@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strconv"
@@ -126,45 +127,31 @@ func (cfg Config) Normalize() Config {
 	if !cfg.remoteControlExplicit && cfg.LocalControlChannel == "" {
 		cfg.LocalControlChannel = DefaultLocalControlChannel
 	}
-	if cfg.ControlRequestChannel == "" {
-		cfg.ControlRequestChannel = DefaultControlRequestChannel
-	}
-	if cfg.ControlResponseChannel == "" {
-		cfg.ControlResponseChannel = DefaultControlResponseChannel
-	}
-	if cfg.LocalControlStreamID == 0 {
-		cfg.LocalControlStreamID = DefaultLocalControlStreamID
-	}
-	if cfg.ControlRequestStreamID == 0 {
-		cfg.ControlRequestStreamID = DefaultControlRequestStreamID
-	}
-	if cfg.ControlResponseStreamID == 0 {
-		cfg.ControlResponseStreamID = DefaultControlResponseStreamID
-	}
-	if cfg.ConnectTimeout == 0 {
-		cfg.ConnectTimeout = DefaultConnectTimeout
-	}
-	if cfg.ControlResponseTimeout == 0 {
-		cfg.ControlResponseTimeout = DefaultControlResponseTimeout
-	}
-	if cfg.ControlOfferRetryTimeout == 0 {
-		cfg.ControlOfferRetryTimeout = DefaultControlOfferRetryTimeout
-	}
-	if cfg.MessageRetryAttempts == 0 {
-		cfg.MessageRetryAttempts = DefaultMessageRetryAttempts
-	}
+
+	cfg.ControlRequestChannel = cmp.Or(cfg.ControlRequestChannel, DefaultControlRequestChannel)
+	cfg.ControlResponseChannel = cmp.Or(cfg.ControlResponseChannel, DefaultControlResponseChannel)
+	cfg.LocalControlStreamID = cmp.Or(cfg.LocalControlStreamID, DefaultLocalControlStreamID)
+	cfg.ControlRequestStreamID = cmp.Or(cfg.ControlRequestStreamID, DefaultControlRequestStreamID)
+	cfg.ControlResponseStreamID = cmp.Or(cfg.ControlResponseStreamID, DefaultControlResponseStreamID)
+	cfg.ConnectTimeout = cmp.Or(cfg.ConnectTimeout, DefaultConnectTimeout)
+	cfg.ControlResponseTimeout = cmp.Or(cfg.ControlResponseTimeout, DefaultControlResponseTimeout)
+	cfg.ControlOfferRetryTimeout = cmp.Or(
+		cfg.ControlOfferRetryTimeout,
+		DefaultControlOfferRetryTimeout,
+	)
+	cfg.MessageRetryAttempts = cmp.Or(cfg.MessageRetryAttempts, DefaultMessageRetryAttempts)
+	cfg.ClientName = cmp.Or(cfg.ClientName, defaultClientName)
+
 	if cfg.CredentialsSupplier == nil {
 		cfg.CredentialsSupplier = NullCredentialsSupplier{}
 	}
+
 	if cfg.IdleStrategy == nil {
 		cfg.IdleStrategy = NewDefaultIdleStrategy()
 	}
-	if cfg.ClientName == "" {
-		cfg.ClientName = defaultClientName
-	}
-	if cfg.AeronDir != "" && cfg.AeronConfig.AeronDir == "" {
-		cfg.AeronConfig.AeronDir = cfg.AeronDir
-	}
+
+	cfg.AeronConfig.AeronDir = cmp.Or(cfg.AeronConfig.AeronDir, cfg.AeronDir)
+
 	return cfg
 }
 

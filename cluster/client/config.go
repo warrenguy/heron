@@ -1,6 +1,7 @@
 package client
 
 import (
+	"cmp"
 	"errors"
 	"strconv"
 	"time"
@@ -79,37 +80,28 @@ type Config struct {
 // Normalize applies cluster client defaults. Zero duration and stream ID fields mean
 // apply default. Idempotent.
 func (cfg Config) Normalize() Config {
-	if cfg.IngressStreamID == 0 {
-		cfg.IngressStreamID = DefaultIngressStreamID
-	}
-	if cfg.EgressStreamID == 0 {
-		cfg.EgressStreamID = DefaultEgressStreamID
-	}
-	if cfg.ResponseStreamID == 0 {
-		cfg.ResponseStreamID = cfg.EgressStreamID
-	}
-	if cfg.MessageTimeout == 0 {
-		cfg.MessageTimeout = DefaultMessageTimeout
-	}
-	if cfg.IngressRetryTimeout == 0 {
-		cfg.IngressRetryTimeout = DefaultIngressRetryTimeout
-	}
-	if cfg.NewLeaderTimeout == 0 {
-		cfg.NewLeaderTimeout = cfg.MessageTimeout
-	}
+	cfg.IngressStreamID = cmp.Or(cfg.IngressStreamID, DefaultIngressStreamID)
+	cfg.EgressStreamID = cmp.Or(cfg.EgressStreamID, DefaultEgressStreamID)
+	cfg.ResponseStreamID = cmp.Or(cfg.ResponseStreamID, cfg.EgressStreamID)
+	cfg.MessageTimeout = cmp.Or(cfg.MessageTimeout, DefaultMessageTimeout)
+	cfg.IngressRetryTimeout = cmp.Or(cfg.IngressRetryTimeout, DefaultIngressRetryTimeout)
+	cfg.NewLeaderTimeout = cmp.Or(cfg.NewLeaderTimeout, cfg.MessageTimeout)
+
 	if cfg.CredentialsSupplier == nil {
 		cfg.CredentialsSupplier = NullCredentialsSupplier{}
 	}
+
 	if cfg.IdleStrategy == nil {
 		cfg.IdleStrategy = NewDefaultIdleStrategy()
 	}
+
 	if cfg.IngressExclusive == nil {
 		v := true
 		cfg.IngressExclusive = &v
 	}
-	if cfg.AeronDir != "" && cfg.AeronConfig.AeronDir == "" {
-		cfg.AeronConfig.AeronDir = cfg.AeronDir
-	}
+
+	cfg.AeronConfig.AeronDir = cmp.Or(cfg.AeronConfig.AeronDir, cfg.AeronDir)
+
 	return cfg
 }
 

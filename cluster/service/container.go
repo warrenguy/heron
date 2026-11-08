@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -461,18 +462,22 @@ func serviceArchiveConfig(cfg Config) (archive.Config, error) {
 	}
 
 	archiveCfg = archiveCfg.WithRemoteControl()
-	if archiveCfg.ControlRequestChannel == "" {
-		archiveCfg.ControlRequestChannel = archive.DefaultLocalControlChannel
-	}
-	if archiveCfg.ControlResponseChannel == "" {
-		archiveCfg.ControlResponseChannel = archive.DefaultLocalControlChannel
-	}
-	if archiveCfg.ControlRequestStreamID == 0 {
-		archiveCfg.ControlRequestStreamID = archive.DefaultLocalControlStreamID
-	}
-	if archiveCfg.ControlResponseStreamID == 0 {
-		archiveCfg.ControlResponseStreamID = archiveResponseStreamBase + cfg.ServiceID
-	}
+	archiveCfg.ControlRequestChannel = cmp.Or(
+		archiveCfg.ControlRequestChannel,
+		archive.DefaultLocalControlChannel,
+	)
+	archiveCfg.ControlResponseChannel = cmp.Or(
+		archiveCfg.ControlResponseChannel,
+		archive.DefaultLocalControlChannel,
+	)
+	archiveCfg.ControlRequestStreamID = cmp.Or(
+		archiveCfg.ControlRequestStreamID,
+		archive.DefaultLocalControlStreamID,
+	)
+	archiveCfg.ControlResponseStreamID = cmp.Or(
+		archiveCfg.ControlResponseStreamID,
+		archiveResponseStreamBase+cfg.ServiceID,
+	)
 
 	requestStreamID := archiveCfg.ControlRequestStreamID
 	responseStreamID := archiveCfg.ControlResponseStreamID
@@ -549,24 +554,16 @@ func addedHandle[T any](handle *T, err, nilErr error) (*T, error) {
 }
 
 func defaultConfig(cfg Config) Config {
-	if cfg.ControlChannel == "" {
-		cfg.ControlChannel = DefaultControlChannel
-	}
-	if cfg.ServiceStreamID == 0 {
-		cfg.ServiceStreamID = DefaultServiceStreamID
-	}
-	if cfg.ConsensusModuleStreamID == 0 {
-		cfg.ConsensusModuleStreamID = DefaultConsensusModuleStreamID
-	}
-	if cfg.SnapshotChannel == "" {
-		cfg.SnapshotChannel = DefaultSnapshotChannel
-	}
-	if cfg.SnapshotStreamID == 0 {
-		cfg.SnapshotStreamID = DefaultSnapshotStreamID
-	}
+	cfg.ControlChannel = cmp.Or(cfg.ControlChannel, DefaultControlChannel)
+	cfg.ServiceStreamID = cmp.Or(cfg.ServiceStreamID, DefaultServiceStreamID)
+	cfg.ConsensusModuleStreamID = cmp.Or(cfg.ConsensusModuleStreamID, DefaultConsensusModuleStreamID)
+	cfg.SnapshotChannel = cmp.Or(cfg.SnapshotChannel, DefaultSnapshotChannel)
+	cfg.SnapshotStreamID = cmp.Or(cfg.SnapshotStreamID, DefaultSnapshotStreamID)
+
 	if cfg.Recovery != nil {
 		cfg.Recovery = defaultRecoveryConfig(*cfg.Recovery)
 	}
+
 	return cfg
 }
 

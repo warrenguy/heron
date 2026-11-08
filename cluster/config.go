@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strconv"
@@ -247,77 +248,50 @@ type Config struct {
 
 // Normalize applies defaults and returns a copy. Idempotent.
 func (cfg Config) Normalize() Config {
-	if cfg.ConsensusChannel == "" {
-		cfg.ConsensusChannel = DefaultConsensusChannel
-	}
-	if cfg.LogChannel == "" {
-		cfg.LogChannel = DefaultLogChannel
-	}
-	if cfg.IngressChannel == "" {
-		cfg.IngressChannel = DefaultIngressChannel
-	}
-	if cfg.ReplayChannel == "" {
-		cfg.ReplayChannel = DefaultReplayChannel
-	}
-	if cfg.ServiceControlChannel == "" {
-		cfg.ServiceControlChannel = DefaultServiceControlChannel
-	}
-	if cfg.SnapshotChannel == "" {
-		cfg.SnapshotChannel = DefaultSnapshotChannel
-	}
-	if cfg.LeaderArchiveControlChannel == "" {
-		cfg.LeaderArchiveControlChannel = DefaultLeaderArchiveControlChannel
-	}
-	if cfg.ConsensusStreamID == 0 {
-		cfg.ConsensusStreamID = DefaultConsensusStreamID
-	}
-	if cfg.LogStreamID == 0 {
-		cfg.LogStreamID = DefaultLogStreamID
-	}
-	if cfg.ReplayStreamID == 0 {
-		cfg.ReplayStreamID = DefaultReplayStreamID
-	}
-	if cfg.IngressStreamID == 0 {
-		cfg.IngressStreamID = DefaultIngressStreamID
-	}
-	if cfg.ConsensusModuleStreamID == 0 {
-		cfg.ConsensusModuleStreamID = DefaultConsensusModuleStreamID
-	}
-	if cfg.ServiceStreamID == 0 {
-		cfg.ServiceStreamID = DefaultServiceStreamID
-	}
-	if cfg.SnapshotStreamID == 0 {
-		cfg.SnapshotStreamID = DefaultSnapshotStreamID
-	}
+	cfg.ConsensusChannel = cmp.Or(cfg.ConsensusChannel, DefaultConsensusChannel)
+	cfg.LogChannel = cmp.Or(cfg.LogChannel, DefaultLogChannel)
+	cfg.IngressChannel = cmp.Or(cfg.IngressChannel, DefaultIngressChannel)
+	cfg.ReplayChannel = cmp.Or(cfg.ReplayChannel, DefaultReplayChannel)
+	cfg.ServiceControlChannel = cmp.Or(cfg.ServiceControlChannel, DefaultServiceControlChannel)
+	cfg.SnapshotChannel = cmp.Or(cfg.SnapshotChannel, DefaultSnapshotChannel)
+	cfg.LeaderArchiveControlChannel = cmp.Or(
+		cfg.LeaderArchiveControlChannel,
+		DefaultLeaderArchiveControlChannel,
+	)
+	cfg.ConsensusStreamID = cmp.Or(cfg.ConsensusStreamID, DefaultConsensusStreamID)
+	cfg.LogStreamID = cmp.Or(cfg.LogStreamID, DefaultLogStreamID)
+	cfg.ReplayStreamID = cmp.Or(cfg.ReplayStreamID, DefaultReplayStreamID)
+	cfg.IngressStreamID = cmp.Or(cfg.IngressStreamID, DefaultIngressStreamID)
+	cfg.ConsensusModuleStreamID = cmp.Or(cfg.ConsensusModuleStreamID, DefaultConsensusModuleStreamID)
+	cfg.ServiceStreamID = cmp.Or(cfg.ServiceStreamID, DefaultServiceStreamID)
+	cfg.SnapshotStreamID = cmp.Or(cfg.SnapshotStreamID, DefaultSnapshotStreamID)
+	cfg.RecordingLogFileSyncLevel = cmp.Or(cfg.RecordingLogFileSyncLevel, recordinglog.FileSyncData)
+	cfg.NodeStateFileSyncLevel = cmp.Or(cfg.NodeStateFileSyncLevel, recordinglog.FileSyncData)
+
 	if cfg.Idle == nil {
 		cfg.Idle = idlestrategy.NewDefaultBackoff()
 	}
-	if cfg.RecordingLogFileSyncLevel == 0 {
-		cfg.RecordingLogFileSyncLevel = recordinglog.FileSyncData
-	}
-	if cfg.NodeStateFileSyncLevel == 0 {
-		cfg.NodeStateFileSyncLevel = recordinglog.FileSyncData
-	}
-	if cfg.AeronDir != "" && cfg.AeronConfig.AeronDir == "" {
-		cfg.AeronConfig.AeronDir = cfg.AeronDir
-	}
+
+	cfg.AeronConfig.AeronDir = cmp.Or(cfg.AeronConfig.AeronDir, cfg.AeronDir)
 
 	defaults := election.DefaultElectionConfig()
-	if cfg.Election.ElectionTimeoutNs == 0 {
-		cfg.Election.ElectionTimeoutNs = defaults.ElectionTimeoutNs
-	}
-	if cfg.Election.ElectionStatusIntervalNs == 0 {
-		cfg.Election.ElectionStatusIntervalNs = defaults.ElectionStatusIntervalNs
-	}
-	if cfg.Election.LeaderHeartbeatTimeoutNs == 0 {
-		cfg.Election.LeaderHeartbeatTimeoutNs = defaults.LeaderHeartbeatTimeoutNs
-	}
-	if cfg.Election.LeaderHeartbeatIntervalNs == 0 {
-		cfg.Election.LeaderHeartbeatIntervalNs = defaults.LeaderHeartbeatIntervalNs
-	}
-	if cfg.Election.StartupCanvassTimeoutNs == 0 {
-		cfg.Election.StartupCanvassTimeoutNs = defaults.StartupCanvassTimeoutNs
-	}
+	cfg.Election.ElectionTimeoutNs = cmp.Or(cfg.Election.ElectionTimeoutNs, defaults.ElectionTimeoutNs)
+	cfg.Election.ElectionStatusIntervalNs = cmp.Or(
+		cfg.Election.ElectionStatusIntervalNs,
+		defaults.ElectionStatusIntervalNs,
+	)
+	cfg.Election.LeaderHeartbeatTimeoutNs = cmp.Or(
+		cfg.Election.LeaderHeartbeatTimeoutNs,
+		defaults.LeaderHeartbeatTimeoutNs,
+	)
+	cfg.Election.LeaderHeartbeatIntervalNs = cmp.Or(
+		cfg.Election.LeaderHeartbeatIntervalNs,
+		defaults.LeaderHeartbeatIntervalNs,
+	)
+	cfg.Election.StartupCanvassTimeoutNs = cmp.Or(
+		cfg.Election.StartupCanvassTimeoutNs,
+		defaults.StartupCanvassTimeoutNs,
+	)
 
 	// Always stamp member id and leader sentinels so a partially populated
 	// Election cannot leave zero (member 0) in place of unset.

@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -652,7 +653,8 @@ type AgentConfig struct {
 //
 // Member ids are stored as given (0 is valid; -1 is unset).
 //
-// Concurrency: invoker-only after construction; see [Agent].
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines. See [Agent].
 //
 // Lifetime: caller owns the returned Agent. Positions, egress, election, and
 // election factory may be wired later via [Agent.SetPositions],
@@ -660,31 +662,25 @@ type AgentConfig struct {
 // a factory wired, a settled member may install further elections after
 // [Agent.ElectionComplete].
 func NewAgent(cfg AgentConfig) *Agent {
-	interval := cfg.LeaderHeartbeatIntervalNs
-	if interval == 0 {
-		interval = DefaultLeaderHeartbeatIntervalNs
-	}
+	interval := cmp.Or(cfg.LeaderHeartbeatIntervalNs, DefaultLeaderHeartbeatIntervalNs)
 	if interval < 0 {
 		panic("consensus: negative LeaderHeartbeatIntervalNs")
 	}
-	timeout := cfg.LeaderHeartbeatTimeoutNs
-	if timeout == 0 {
-		timeout = DefaultLeaderHeartbeatTimeoutNs
-	}
+
+	timeout := cmp.Or(cfg.LeaderHeartbeatTimeoutNs, DefaultLeaderHeartbeatTimeoutNs)
 	if timeout < 0 {
 		panic("consensus: negative LeaderHeartbeatTimeoutNs")
 	}
-	appendTimeout := cfg.AppendPositionNotReadyTimeoutNs
-	if appendTimeout == 0 {
-		appendTimeout = DefaultAppendPositionNotReadyTimeoutNs
-	}
+
+	appendTimeout := cmp.Or(
+		cfg.AppendPositionNotReadyTimeoutNs,
+		DefaultAppendPositionNotReadyTimeoutNs,
+	)
 	if appendTimeout < 0 {
 		panic("consensus: negative AppendPositionNotReadyTimeoutNs")
 	}
-	sessionTimeout := cfg.SessionTimeoutNs
-	if sessionTimeout == 0 {
-		sessionTimeout = DefaultSessionTimeoutNs
-	}
+
+	sessionTimeout := cmp.Or(cfg.SessionTimeoutNs, DefaultSessionTimeoutNs)
 	if sessionTimeout < 0 {
 		panic("consensus: negative SessionTimeoutNs")
 	}
