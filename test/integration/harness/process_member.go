@@ -66,8 +66,8 @@ type MemberApplied struct {
 	Seq int64
 }
 
-// MemberExit is the record a child writes after a stop or a failed setup.
-// Error is empty on a clean stop.
+// MemberExit is the record a child writes after a stop, a failed setup, or a
+// member termination. Error is empty on a clean stop.
 type MemberExit struct {
 	Error string
 }

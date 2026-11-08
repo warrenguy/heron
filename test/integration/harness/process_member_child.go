@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -174,6 +175,7 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 	defer idle.Reset()
 	client := m.module.Client()
 	clock := m.module.NanoClock()
+	agent := m.module.Agent()
 	serviceAgent := m.container.Agent()
 
 	for {
@@ -185,6 +187,11 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 		if client.IsTerminating() || serviceAgent.ServiceFailure() != nil {
 			return 3
 		}
+
+		if err := agent.TerminationError(); err != nil {
+			return m.sink.writeExit(errors.Join(err, m.close()))
+		}
+
 		m.sampleStatus(true)
 		idle.Idle(work)
 	}
@@ -324,7 +331,15 @@ func (s *sequenceService) SessionMessage(session service.ClientSession, _ int64,
 		return
 	}
 
-	if session.Offer(payload) < 0 {
+	result := session.Offer(payload)
+
+	// An offer that ends the egress term writes nothing. The next offer lands in
+	// the new term.
+	if result == aeron.AdminAction {
+		result = session.Offer(payload)
+	}
+
+	if result < 0 {
 		s.echoFailures++
 	}
 }

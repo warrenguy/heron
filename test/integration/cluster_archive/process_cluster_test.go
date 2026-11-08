@@ -80,8 +80,8 @@ func TestProcessCluster_restartsAStoppedFollower(t *testing.T) {
 
 	session.SetSending(false)
 
-	// sequenceService does not retry a failed echo. That sequence stays in
-	// Pending. Each applied list must hold the Pending sequences too.
+	// sequenceService retries a failed echo only on AdminAction. Any other
+	// failed echo stays in Pending. Each applied list must hold those too.
 	requireProcessAwait(t, pc, "applied lists", workBound, func() bool {
 		session.Pump()
 
