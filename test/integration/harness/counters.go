@@ -42,17 +42,12 @@ func PublicationLimitCounterValue(
 // DriverCounters reads counters from a media driver's CnC file by type id.
 //
 // Behaviour:
-//   - Maps the CnC file once.
-//   - On first lookup of a type id, finds the first allocated counter of that
-//     type and caches the id.
-//   - Later lookups revalidate the cached id.
-//   - Rescans only when the cached record no longer carries the type.
+//   - Caches the first allocated counter id of each type.
+//   - Rescans when the cached record no longer carries the type.
 //   - Does not filter by registration id. When one driver allocates a type more
-//     than once, the lowest id wins.
+//     than once, the scan returns the lowest id.
 //
-// Concurrency: invoker-only. Every method runs on the caller goroutine.
-//
-// Lifetime: Close unmaps the file. Close is idempotent.
+// Concurrency: not safe for concurrent calls.
 //
 // Ownership: owns the mapping. Does not own the driver.
 type DriverCounters struct {
@@ -63,7 +58,7 @@ type DriverCounters struct {
 
 // OpenDriverCounters maps the CnC file under aeronDir.
 //
-// Returns an error when the directory holds no readable CnC file.
+// Returns an error when the directory does not hold a readable CnC file.
 func OpenDriverCounters(aeronDir string) (*DriverCounters, error) {
 	mapped, err := cnc.MapCncFile(filepath.Join(aeronDir, cnc.FileName))
 	if err != nil {
@@ -147,6 +142,35 @@ const (
 type RecordingPosition struct {
 	RecordingID int64
 	Position    int64
+}
+
+// RecordingPosition returns the value of the RecordingPos counter for
+// recordingID on archiveID.
+//
+// Returns 0, false when the receiver is nil or closed, or when no active
+// counter matches.
+func (c *DriverCounters) RecordingPosition(archiveID, recordingID int64) (int64, bool) {
+	if c == nil || c.reader == nil {
+		return 0, false
+	}
+
+	slot, ok := c.reader.FindRecordingPositionCounter(recordingID, archiveID)
+	if !ok {
+		return 0, false
+	}
+
+	return slot.Get(), true
+}
+
+// HasClient reports whether the driver holds a client heartbeat counter for
+// clientID.
+func (c *DriverCounters) HasClient(clientID int64) bool {
+	if c == nil || c.reader == nil {
+		return false
+	}
+
+	_, ok := c.reader.FindHeartbeatCounter(clientID, cnc.ClientHeartbeatTypeID)
+	return ok
 }
 
 // RecordingPositionsBySession returns every allocated recording-position
