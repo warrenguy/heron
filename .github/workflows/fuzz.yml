@@ -56,7 +56,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
-      FUZZ_TIME: ${{ github.event_name == 'pull_request' && '10s' || '2m' }}
+      FUZZ_TIME: ${{ github.event_name == 'pull_request' && '45s' || '2m' }}
       FUZZ_TIMEOUT: 6m
       FUZZ_PKG: ${{ matrix.pkg }}
       FUZZ_NAME: ${{ matrix.name }}
