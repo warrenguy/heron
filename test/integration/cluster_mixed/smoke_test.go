@@ -16,8 +16,8 @@ import (
 //
 // Asserts durable log recording after elect. The Go follower records the
 // received leader log into its own Archive. The recorded position reaches a
-// commit position the member observed. Makes no claim about Java members'
-// recordings.
+// commit position the member observed. Each Java member's recording-position
+// counter for that log session reaches the same commit.
 //
 // No t.Parallel. This test is the single owner of compose-fixed
 // MixedAeronDir*, MixedClusterDirGo, and the PortBase 9000 unicast block.
@@ -50,11 +50,8 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 
 	// Record: active catalog recording of the leader log session. The returned
 	// position is the pre-induction baseline for the commit-wait floor.
-	recordingID, recordingBefore := requireGoLogRecording(
-		t,
-		f,
-		f.module.LogAdapter().Image().SessionID(),
-	)
+	logSessionID := f.module.LogAdapter().Image().SessionID()
+	recordingID, recordingBefore := requireGoLogRecording(t, f, logSessionID)
 
 	// Store commit high-water before induction.
 	recorded := f.module.NotifiedCommitPosition()
@@ -72,13 +69,14 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 		clusterjava.MixedCommitBudget,
 	)
 
-	// Durable: recorded position reaches the observed commit.
+	// Durable: each log recording reaches the observed commit.
 	commitAfter := f.module.NotifiedCommitPosition()
-	awaitGoRecordingReaches(
+	awaitLogRecordingsReach(
 		t,
-		f,
+		f.tick,
+		[]goLogRecording{{member: f, recordingID: recordingID}},
 		java,
-		recordingID,
+		logSessionID,
 		commitAfter,
 		clusterjava.MixedCommitBudget,
 	)
@@ -103,10 +101,10 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 // commit counters from term-start log frames. Runs only under
 // HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE.
 //
-// Asserts durable log recording after elect: the Go leader records its own
-// cluster log publication locally, and the recorded position reaches the
-// commit position the Java followers advanced. Makes no claim about Java
-// members' recordings.
+// Asserts durable log recording after elect. The Go leader records its own
+// cluster log publication locally. The recorded position reaches the commit
+// position the Java followers advanced. Each Java member's recording-position
+// counter for that log session reaches the same commit.
 //
 // No client session offer: Go ServiceCount is 0.
 //
@@ -179,12 +177,13 @@ func TestClusterMixedGoLeader(t *testing.T) {
 		"recorded position already at or past commit before advance",
 	)
 
-	// Durable: recorded position reaches the observed commit.
-	awaitGoRecordingReaches(
+	// Durable: each log recording reaches the observed commit.
+	awaitLogRecordingsReach(
 		t,
-		f,
+		f.tick,
+		[]goLogRecording{{member: f, recordingID: recordingID}},
 		java,
-		recordingID,
+		pub.SessionID(),
 		commitAfter,
 		clusterjava.MixedCommitBudget,
 	)
