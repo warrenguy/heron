@@ -207,7 +207,7 @@ func sliceLogRegions(
 	metaStart := LogMetaDataOffset(len(data))
 	for i := range PartitionCount {
 		off := SectionTermOffset(i, termLength)
-		terms[i] = data[off : off+termLength]
+		terms[i] = data[off : off+termLength : off+termLength]
 	}
 	meta = data[metaStart : metaStart+MetaDataLength]
 	return terms, meta, nil

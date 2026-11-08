@@ -15,11 +15,9 @@ import (
 // TestPublicationCodegen asserts the calls that the offer path, TryClaim,
 // Commit, and Abort make on both publication types.
 //
-// The OfferWithOffset success path calls only runtime.memmove.
-// OfferWithReservedValue calls offerMessage. The offerMessage success path
-// for one part without a supplier calls only runtime.memmove. The claim
-// success paths do not call anything. Every other allowed call sits on a
-// failure, fragmented, gather, supplier, panic, or stack-growth branch.
+// Success paths call at most runtime.memmove or offerMessage. Every other
+// allowed call sits on a failure, fragmented, gather, supplier, panic, or
+// stack-growth branch.
 func TestPublicationCodegen(t *testing.T) {
 	t.Parallel()
 
@@ -38,9 +36,9 @@ func TestPublicationCodegen(t *testing.T) {
 		aeronPrefix + "(*Publication).handleEndOfLog", aeronPrefix + "backPressureStatus",
 	}
 
-	// backPressureStatusForLog inlines on arm64 and reads the connected flag.
+	// IsConnectedVolatile inlines on amd64. Its boundsCheck panic call remains.
 	exclusiveBackPressure := map[string]string{
-		"amd64": aeronPrefix + "backPressureStatusForLog",
+		"amd64": "runtime.gopanic",
 		"arm64": "github.com/warrenguy/heron/aeron/logbuffer.IsConnectedVolatile",
 	}
 

@@ -2,8 +2,6 @@
 
 package atomicbuffer
 
-import "unsafe"
-
 // PutInt32Release stores value with release order, like Agrona putIntRelease.
 //
 // The store compiles to one plain MOVL:
@@ -35,11 +33,10 @@ func StoreInt64Release(ptr *int64, value int64) {
 	*ptr = value
 }
 
-// PutInt64ReleaseStoreFenceAt stores value at offset with release order, then
+// StoreInt64ReleaseStoreFence stores value at ptr with release order, then
 // keeps later stores behind it. It matches Agrona putLongRelease followed by
-// Java VarHandle.storeStoreFence. It skips boundsCheck, like the other *At
-// accessors. Unlike them, it does not reject an empty buffer. The caller proves
-// offset+SizeInt64 <= Capacity.
+// Java VarHandle.storeStoreFence. Get ptr from Int64Pointer, or from a slice
+// whose length the caller checked. ptr must be 8-byte aligned.
 //
 // The store compiles to one plain MOVQ between two fenceWord loads:
 //   - The leading load gives release order, as in PutInt32Release.
@@ -47,9 +44,8 @@ func StoreInt64Release(ptr *int64, value int64) {
 //     this one. The x86 total store order keeps store order in hardware.
 //
 // The loads read fenceWord directly. A ReleaseFence call costs more inline
-// budget, and HeaderWriter.WriteHeader must stay inlinable.
-func (b AtomicBuffer) PutInt64ReleaseStoreFenceAt(offset int, value int64) {
-	ptr := (*int64)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(b.buf)), offset))
+// budget. HeaderWriter.WriteHeader must stay inlinable.
+func StoreInt64ReleaseStoreFence(ptr *int64, value int64) {
 	fenceWord.Load()
 	*ptr = value
 	fenceWord.Load()

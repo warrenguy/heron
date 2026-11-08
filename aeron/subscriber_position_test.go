@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/atomicbuffer"
 )
 
 func TestSubscriberPosition_GetSetReleaseCounterID(t *testing.T) {
@@ -19,4 +22,15 @@ func TestSubscriberPosition_GetSetReleaseCounterID(t *testing.T) {
 	const updated int64 = 99
 	position.SetRelease(updated)
 	require.Equal(t, updated, position.Get())
+}
+
+func TestNewSubscriberPosition_outOfBoundsPanics(t *testing.T) {
+	values := atomicbuffer.Wrap(make([]byte, cnc.CounterValueLength))
+
+	require.Panics(t, func() {
+		newSubscriberPosition(1, values)
+	}, "id past the values buffer")
+	require.Panics(t, func() {
+		newSubscriberPosition(-1, values)
+	}, "negative id")
 }

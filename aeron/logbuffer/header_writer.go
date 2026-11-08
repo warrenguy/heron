@@ -69,7 +69,7 @@ func wordBits(value int32) uint64 {
 // Write writes the header at termOffset with the template flags. See
 // WriteHeader for the store order and the alignment rule.
 //
-// Panics when the header does not fit in termBuf.
+// Panics when the header does not fit in the slice capacity of termBuf.
 func (writer *HeaderWriter) Write(
 	termBuf atomicbuffer.AtomicBuffer,
 	termOffset int,
@@ -83,7 +83,7 @@ func (writer *HeaderWriter) Write(
 // WriteWithFlags writes the header at termOffset with flags in place of the
 // template flags. See WriteHeader for the store order and the alignment rule.
 //
-// Panics when the header does not fit in termBuf.
+// Panics when the header does not fit in the slice capacity of termBuf.
 func (writer *HeaderWriter) WriteWithFlags(
 	termBuf atomicbuffer.AtomicBuffer,
 	termOffset int,
@@ -99,22 +99,16 @@ func (writer *HeaderWriter) WriteWithFlags(
 }
 
 // WriteHeader writes the header with the template flags at the start of frame.
-// frame starts at termOffset in the term buffer. The offer and claim paths
-// call it on a frame they have already sliced, so the header does not need
-// a second bounds check.
+// frame starts at termOffset in the term buffer.
 //
 // Store order:
-//  1. A release store of the word at OffsetFrameLength. It holds -frameLength
-//     with version, flags, and type.
+//  1. A release store of the word at OffsetFrameLength. The word holds
+//     -frameLength with version, flags, and type.
 //  2. A store-store fence.
 //  3. Plain stores of the words at OffsetTermOffset and OffsetStreamID.
 //
-// Version, flags, and type become visible with the negative frame length. The
-// other fields become visible after it.
-//
-// frame must start at a FrameAlignment-aligned offset in a term buffer with an
-// 8-byte aligned base. The first store is a 64-bit atomic store, and arm64
-// faults on a misaligned one.
+// frame must start at a FrameAlignment-aligned offset. The term buffer base
+// must be 8-byte aligned.
 //
 // Panics when frame is shorter than DataHeaderLength.
 func (writer *HeaderWriter) WriteHeader(
@@ -125,16 +119,16 @@ func (writer *HeaderWriter) WriteHeader(
 ) {
 	_ = frame[DataHeaderLength-1]
 
+	//nolint:gosec // G103: the frame index above proves 32 bytes from frame start
+	header := unsafe.Pointer(unsafe.SliceData(frame))
+
 	//nolint:gosec // G115: keeps the two's complement bit pattern
-	atomicbuffer.Wrap(frame).PutInt64ReleaseStoreFenceAt(
-		OffsetFrameLength,
+	atomicbuffer.StoreInt64ReleaseStoreFence(
+		(*int64)(unsafe.Add(header, OffsetFrameLength)),
 		int64(writer.versionFlagsType|uint64(uint32(-frameLength))),
 	)
 
 	// The words go out in host order, which is little-endian on amd64 and arm64.
-	//nolint:gosec // G103: the frame index above proves 32 bytes from frame start
-	header := unsafe.Pointer(unsafe.SliceData(frame))
-
 	//nolint:gosec // G115: the term offset is below the term length
 	*(*uint64)(unsafe.Add(header, OffsetTermOffset)) = writer.sessionID | uint64(uint32(termOffset))
 

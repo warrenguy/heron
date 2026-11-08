@@ -169,7 +169,7 @@ func (reader *CountersReader) CounterValue(counterID int32) (int64, error) {
 	if err := reader.validateCounterID(counterID); err != nil {
 		return 0, err
 	}
-	return reader.values.VolatileInt64At(CounterOffset(counterID)), nil
+	return reader.values.GetInt64Volatile(CounterOffset(counterID)), nil
 }
 
 func (reader *CountersReader) SetCounterValue(counterID int32, value int64) error {

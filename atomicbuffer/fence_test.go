@@ -165,8 +165,7 @@ func TestFenceARM64Barrier(t *testing.T) {
 }
 
 // TestReleaseStoreCodegen asserts that each release store inlines into its
-// probe wrapper with the fence the ordering argument needs. See
-// requireReleaseStore.
+// probe wrapper with its fence.
 //
 // Race builds keep sync/atomic stores so the race detector sees them.
 func TestReleaseStoreCodegen(t *testing.T) {
@@ -198,9 +197,9 @@ func TestReleaseStoreCodegen(t *testing.T) {
 			raceStore:  "sync/atomic.StoreInt64",
 		},
 		{
-			symbol:     "main.putInt64ReleaseStoreFenceAt",
+			symbol:     "main.storeInt64ReleaseStoreFence",
 			storeFence: true,
-			raceSymbol: atomicbufferPrefix + "AtomicBuffer.PutInt64ReleaseStoreFenceAt",
+			raceSymbol: atomicbufferPrefix + "StoreInt64ReleaseStoreFence",
 			raceStore:  "sync/atomic.StoreInt64",
 		},
 	}

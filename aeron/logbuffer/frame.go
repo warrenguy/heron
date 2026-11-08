@@ -33,23 +33,14 @@ const (
 )
 
 func frameHeaderInBounds(buffer atomicbuffer.AtomicBuffer, frameOffset int) bool {
-	return frameOffset >= 0 && frameOffset+DataHeaderLength <= buffer.Capacity()
+	return frameOffset >= 0 && frameOffset <= buffer.Capacity()-DataHeaderLength
 }
 
-func frameFieldInt32At(
-	buffer atomicbuffer.AtomicBuffer,
-	frameOffset int,
-	fieldOffset int,
-	volatile bool,
-) int32 {
+func frameFieldInt32(buffer atomicbuffer.AtomicBuffer, frameOffset, fieldOffset int) int32 {
 	if !frameHeaderInBounds(buffer, frameOffset) {
 		return 0
 	}
-	offset := frameOffset + fieldOffset
-	if volatile {
-		return buffer.VolatileInt32At(offset)
-	}
-	return buffer.Int32At(offset)
+	return buffer.Int32At(frameOffset + fieldOffset)
 }
 
 func frameFieldInt64(buffer atomicbuffer.AtomicBuffer, frameOffset, fieldOffset int) int64 {
@@ -73,17 +64,20 @@ func frameFieldInt64(buffer atomicbuffer.AtomicBuffer, frameOffset, fieldOffset 
 // Write* helpers return an error on OOB. They compose multi-field header setup
 // for publishers; setup mistakes must surface at initialization time.
 
-// FrameLength returns frame length with a plain load. For tests or post-commit
-// reads in the same goroutine only. Subscription poll on shared mmap must use
-// FrameLengthVolatile with PutFrameLengthRelease/Ordered.
+// FrameLength returns the frame length with a plain load. Do not use it on a
+// frame that another goroutine or process can write.
 func FrameLength(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetFrameLength, false)
+	return frameFieldInt32(buffer, frameOffset, OffsetFrameLength)
 }
 
-// FrameLengthVolatile acquire-loads frame length. Image/subscription poll loops
-// on shared term buffers must use this accessor.
+// FrameLengthVolatile loads the frame length with acquire order when the full
+// header fits. It pairs with PutFrameLengthRelease and PutFrameLengthOrdered. A
+// poll loop on a shared term buffer calls CommittedFrameLengthVolatile.
 func FrameLengthVolatile(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetFrameLength, true)
+	if !frameHeaderInBounds(buffer, frameOffset) {
+		return 0
+	}
+	return buffer.GetInt32Volatile(frameOffset + OffsetFrameLength)
 }
 
 func FrameVersion(buffer atomicbuffer.AtomicBuffer, frameOffset int) int8 {
@@ -109,19 +103,19 @@ func FrameType(buffer atomicbuffer.AtomicBuffer, frameOffset int) int16 {
 }
 
 func FrameTermOffset(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetTermOffset, false)
+	return frameFieldInt32(buffer, frameOffset, OffsetTermOffset)
 }
 
 func FrameSessionID(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetSessionID, false)
+	return frameFieldInt32(buffer, frameOffset, OffsetSessionID)
 }
 
 func FrameStreamID(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetStreamID, false)
+	return frameFieldInt32(buffer, frameOffset, OffsetStreamID)
 }
 
 func FrameTermID(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
-	return frameFieldInt32At(buffer, frameOffset, OffsetTermID, false)
+	return frameFieldInt32(buffer, frameOffset, OffsetTermID)
 }
 
 func FrameReservedValue(buffer atomicbuffer.AtomicBuffer, frameOffset int) int64 {
@@ -154,10 +148,10 @@ func IsPaddingFrameInTerm(buffer atomicbuffer.AtomicBuffer, frameOffset int) boo
 
 func partialCommittedFrameLengthVolatile(buffer atomicbuffer.AtomicBuffer, frameOffset int) int32 {
 	remaining := buffer.Capacity() - frameOffset
-	if remaining >= DataHeaderLength || remaining < atomicbuffer.SizeInt32 {
+	if frameOffset < 0 || remaining >= DataHeaderLength || remaining < atomicbuffer.SizeInt32 {
 		return 0
 	}
-	length := buffer.VolatileInt32At(frameOffset + OffsetFrameLength)
+	length := buffer.GetInt32Volatile(frameOffset + OffsetFrameLength)
 	if length <= 0 || int(length) > remaining {
 		return 0
 	}
