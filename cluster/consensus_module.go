@@ -667,7 +667,13 @@ func (m *ConsensusModule) Close() error {
 
 	var err error
 
-	// Stop reports first. A late DoWork error then skips the counter and
+	// Stop the services first, so the counter and Config.ErrorHandler still
+	// see a failed send.
+	if m.agent != nil {
+		m.agent.StopServicesAtCommit()
+	}
+
+	// Stop reports next. A late DoWork error then skips the counter and
 	// Config.ErrorHandler.
 	if m.errorHandler != nil {
 		m.errorHandler.close()
@@ -680,15 +686,12 @@ func (m *ConsensusModule) Close() error {
 	// Order inside the block:
 	//   - MarkClosed first. CLOSED is terminal, so the take cancel cannot
 	//     store ACTIVE.
-	//   - StopServicesAtCommit before SetServiceProxy(nil). The send needs a
-	//     bound proxy.
 	//   - SetClientIngress(nil) before SetElection(nil). A leader with no
 	//     election accepts connects.
 	//   - CloseSessionEgress after SetClientIngress(nil), so a new accept
 	//     cannot queue an egress publication.
 	if m.agent != nil {
 		m.agent.MarkClosed()
-		m.agent.StopServicesAtCommit()
 		m.agent.CloseSnapshotTake()
 		m.agent.SetArchiveConnection(nil)
 		m.agent.SetModuleStateCounter(nil)

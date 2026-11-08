@@ -688,26 +688,39 @@ func TestConsensusModule_Close_stopsServicesAtCommit(t *testing.T) {
 	tests := []struct {
 		name         string
 		serviceCount int
+		failSend     bool
 		wantStop     bool
+		wantErrors   int64
 	}{
 		{name: "one service", serviceCount: 1, wantStop: true},
 		{name: "zero services", serviceCount: 0, wantStop: false},
+		{name: "failed send counts", serviceCount: 1, failSend: true, wantErrors: 1},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			errorHandler, errorBuffer := newTestModuleErrorHandler(t, nil)
 			commit := new(atomic.Int64)
 			commit.Store(120)
-			agent := consensus.NewAgent(consensus.AgentConfig{ServiceCount: tc.serviceCount, Commit: commit})
+			agent := consensus.NewAgent(consensus.AgentConfig{
+				ServiceCount: tc.serviceCount,
+				Commit:       commit,
+				ErrorHandler: errorHandler.handleError,
+			})
 			pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+			if tc.failSend {
+				pub = aeron.NewTestPublicationForHooksWithLimit(t, 0, false)
+			}
+
 			proxy := consensus.NewServiceProxy()
 			proxy.SetPublication(pub)
 			agent.SetServiceProxy(proxy)
-			module := &ConsensusModule{agent: agent}
+			module := &ConsensusModule{agent: agent, errorHandler: errorHandler}
 
 			require.NoError(t, module.Close())
+			require.Equal(t, tc.wantErrors, moduleErrorCount(errorBuffer))
 
 			var frames [][]byte
 			off := 0

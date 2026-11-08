@@ -3,6 +3,7 @@
 package consensus
 
 import (
+	"fmt"
 	"math"
 	"sync/atomic"
 	"testing"
@@ -287,6 +288,37 @@ func TestStopServicesAtCommit(t *testing.T) {
 
 		a.StopServicesAtCommit()
 		require.Equal(t, 0, a.PendingServiceAckWaits())
+	})
+
+	t.Run("failed send reports once", func(t *testing.T) {
+		var reported []error
+		a := NewAgent(AgentConfig{
+			ServiceCount: 1,
+			Commit:       commit,
+			ErrorHandler: func(err error) { reported = append(reported, err) },
+		})
+		a.SetServiceProxy(boundServiceProxyWithLimit(t, 0, false))
+
+		a.StopServicesAtCommit()
+		require.Len(t, reported, 1)
+		require.ErrorIs(t, reported[0], errServiceTerminationSend)
+		require.ErrorContains(t, reported[0], fmt.Sprintf("code=%d", aeron.NotConnected))
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+	})
+
+	t.Run("closed publication does not report", func(t *testing.T) {
+		var reported []error
+		a := NewAgent(AgentConfig{
+			ServiceCount: 1,
+			Commit:       commit,
+			ErrorHandler: func(err error) { reported = append(reported, err) },
+		})
+		proxy, pub := boundServiceProxy(t)
+		require.NoError(t, pub.Close())
+		a.SetServiceProxy(proxy)
+
+		a.StopServicesAtCommit()
+		require.Empty(t, reported)
 	})
 }
 

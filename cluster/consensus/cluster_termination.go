@@ -21,6 +21,7 @@ var ErrClusterTerminated = errors.New("consensus: cluster terminated")
 
 var (
 	errTerminationPositionSend   = errors.New("consensus: send termination position")
+	errServiceTerminationSend    = errors.New("consensus: send service termination position")
 	errTerminationAckTermChanged = errors.New(
 		"consensus: termination ack not sent: leadership term changed",
 	)
@@ -103,7 +104,8 @@ func (a *Agent) TerminationPosition() int64 {
 }
 
 // StopServicesAtCommit publishes ServiceTerminationPosition at the commit
-// position. The call does not queue a wait.
+// position. The call does not queue a wait. It reports a failed send unless
+// the publication is closed.
 //
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines. Do not call while DoWork runs.
@@ -112,7 +114,10 @@ func (a *Agent) StopServicesAtCommit() {
 		return
 	}
 
-	_ = a.serviceProxy.PublishServiceTerminationPosition(a.CommitPosition(), false)
+	pos := a.serviceProxy.PublishServiceTerminationPosition(a.CommitPosition(), false)
+	if pos <= 0 && pos != aeron.Closed {
+		a.reportError(fmt.Errorf("%w: code=%d", errServiceTerminationSend, pos))
+	}
 }
 
 // startClusterTermination stores the publisher position and sends it to each
