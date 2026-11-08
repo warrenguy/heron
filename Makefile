@@ -263,7 +263,10 @@ $(eval $(call go-test-target,-stress,stress,-run Stress,Stress tests,$(STRESS_TE
 $(eval $(call go-test-target,-norace,bench$(comma)stress,,Release-store package unit and stress tests without the race detector,$(NORACE_TEST_PKGS),))
 
 # go test has no file filter: run the names the rapid tag adds.
-# A rapid name shared with a unit test fails; -run would match both.
+# A rapid name shared with a unit test fails the target. -run would match both.
+# Set RAPID_CHECKS to override the check count of every property test.
+RAPID_CHECKS ?=
+RAPID_TIMEOUT ?= $(TEST_TIMEOUT)
 .PHONY: test-rapid
 test-rapid: ## Property tests
 	@set -euo pipefail; export LC_ALL=C; \
@@ -279,9 +282,10 @@ test-rapid: ## Property tests
 	unit_names=$$(names $$unit); \
 	clash=$$(comm -12 <(printf '%s\n' "$$added") <(printf '%s\n' "$$unit_names")); \
 	[ -z "$$clash" ] || { echo "rapid test name shared with a unit test: $$clash" >&2; exit 1; }; \
-	go test -timeout=$(TEST_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
+	go test -timeout=$(RAPID_TIMEOUT) -race -tags=rapid,$(UNIT_TEST_TAGS) \
 		-count=1 -run "^($$(printf '%s\n' "$$added" | paste -sd '|'))$$" \
-		$(RAPID_TEST_PKGS) $(COVERAGE_TEST_ARGS)
+		$(RAPID_TEST_PKGS) $(if $(RAPID_CHECKS),-rapid.checks=$(RAPID_CHECKS)) \
+		$(COVERAGE_TEST_ARGS)
 
 ELECTION_SIM_RUNS ?= 1000
 ELECTION_SIM_TIMEOUT ?= 4m
