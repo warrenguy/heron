@@ -10,8 +10,8 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/cnctest"
 	"github.com/warrenguy/heron/internal/testutil"
 )
 

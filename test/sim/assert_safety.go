@@ -8,7 +8,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/election/electiontest"
+	"github.com/warrenguy/heron/internal/electiontest"
 )
 
 func init() {
