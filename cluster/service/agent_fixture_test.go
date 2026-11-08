@@ -412,15 +412,20 @@ func bindSessionAgent(
 ) (*sessionLog, *recordingService) {
 	tb.Helper()
 	svc := &recordingService{}
-	cfg := AgentConfig{Service: svc, ResponsePublications: adder}
+	log := bindSessionLog(tb, AgentConfig{Service: svc, ResponsePublications: adder}, role)
+	return log, svc
+}
+
+// bindSessionLog binds an agent from cfg and sets role.
+func bindSessionLog(tb testing.TB, cfg AgentConfig, role codecs.Role) *sessionLog {
+	tb.Helper()
 	agent, image, committed := bindImage(tb, cfg, 0)
 	agent.role = role
-	log := &sessionLog{
+	return &sessionLog{
 		takeLog: &takeLog{image: image, committed: committed},
 		tb:      tb,
 		agent:   agent,
 	}
-	return log, svc
 }
 
 // deliver writes payload, commits it, and runs one DoWork. Returns the work
