@@ -95,16 +95,17 @@ func newWireServiceSide(
 	app service.ClusteredService,
 ) wireServiceSide {
 	t.Helper()
-	return newWireServiceSideWithStartAck(t, cm, app, nil)
+	return newWireServiceSideWithConfig(t, cm, app, nil, nil)
 }
 
-// newWireServiceSideWithStartAck builds the service side with StartAck set
-// on the service agent. A nil startAck disables the start ack.
-func newWireServiceSideWithStartAck(
+// newWireServiceSideWithConfig builds the service side. A nil startAck
+// disables the start ack. A nil errorHandler drops reports.
+func newWireServiceSideWithConfig(
 	t testing.TB,
 	cm *consensus.Agent,
 	app service.ClusteredService,
 	startAck *service.StartAckConfig,
+	errorHandler func(error),
 ) wireServiceSide {
 	t.Helper()
 
@@ -135,6 +136,7 @@ func newWireServiceSideWithStartAck(
 		Control:           control,
 		ModuleProxy:       moduleProxy,
 		StartAck:          startAck,
+		ErrorHandler:      errorHandler,
 	})
 
 	return wireServiceSide{
@@ -224,7 +226,7 @@ func newWireHarnessWithStartAck(t testing.TB, startAck *service.StartAckConfig) 
 	svcApp := &wireRecordingService{}
 
 	return &wireHarness{
-		wireServiceSide: newWireServiceSideWithStartAck(t, cm, svcApp, startAck),
+		wireServiceSide: newWireServiceSideWithConfig(t, cm, svcApp, startAck, nil),
 		cm:              cm,
 		pub104:          pub104,
 		svcApp:          svcApp,

@@ -284,7 +284,7 @@ func (m *takeModel) popAddPoll() snapshotTakeFakeAddPoll {
 //   - a success ack carries the START recording id, after a STOP at or above
 //     the close position
 //   - an ack never carries the pre-proof id
-//   - a failure ack of -1, with the mark on the same tick as its send
+//   - a failure ack of -1, sent on the same tick as its report
 //   - with no term event, a failure before any publication add
 //   - the agent does not consume a log frame past the action while the take
 //     runs
@@ -304,11 +304,17 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		drawErr := errors.New("rapid take failure")
 		svc := &modelSnapshotService{err: drawErr}
 		proxy, pub := boundModuleProxy(t)
+		var reports []error
+		var reportAckID int64
 		agent, image, committed := bindImage(t, AgentConfig{
 			ServiceID:   1,
 			Service:     svc,
 			ModuleProxy: proxy,
 		}, 0)
+		agent.errorHandler = func(err error) {
+			reports = append(reports, err)
+			reportAckID = agent.NextAckID()
+		}
 		fake := InstallSnapshotTakeFakeForTest(t, agent)
 		fake.offerRetryTimeout = time.Duration(modelTimeoutNs)
 		fake.responseTimeout = time.Duration(modelTimeoutNs)
@@ -359,6 +365,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			}
 			addsBefore := len(fake.addStreamIDs)
 			hookCallsBefore := svc.calls
+			reports = nil
 			resolved := false
 			var cause error
 
@@ -418,16 +425,22 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 
 			requireSnapshotTakeCleanedUp(rt, agent, fake, modelCancelled)
 			require.Equal(rt, model.hookCalls, svc.calls-hookCallsBefore, "hook calls")
+
+			// A take that fails before the hook leaves its outcome queued.
+			// Drop it so the next take reads its own outcome.
+			svc.outcomes = nil
+
 			if !termEvent {
 				require.Len(rt, fake.addStreamIDs, addsBefore, "adds without a time unit")
 			}
 
-			if cause != nil {
-				require.ErrorIs(rt, agent.ServiceFailure(), cause)
-				require.Len(rt, svc.timers, timers, "timers after a failed take")
-				return
-			}
 			require.NoError(rt, agent.ServiceFailure())
+			if cause != nil {
+				requireOneNonFatalReport(t, reports, cause)
+				require.Equal(rt, acks[len(acks)-1].AckID, reportAckID)
+			} else {
+				require.Empty(rt, reports)
+			}
 			timers++
 			require.Len(rt, svc.timers, timers, "timers after the take")
 		}

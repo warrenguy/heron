@@ -35,7 +35,7 @@ func (conductor *Conductor) StoreClientHeartbeatForTest(nowNs, nowMs int64) int 
 }
 
 func (conductor *Conductor) SetTerminatingForTest(terminating bool) {
-	conductor.terminating = terminating
+	conductor.terminating.Store(terminating)
 }
 
 func (proxy *DriverProxy) Ring() *ringbuffer.ManyToOneRingBuffer {

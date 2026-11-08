@@ -734,6 +734,7 @@ func NewTestClientFromConductorFixture(
 	return &Client{
 		clientID:                testutil.TestClientID,
 		conductor:               fixture.Conductor,
+		terminationConductor:    fixture.Conductor,
 		driverProxy:             fixture.DriverProxy,
 		nanoClock:               fixture.NanoClock,
 		driverTimeout:           testutil.TestDriverTimeout,

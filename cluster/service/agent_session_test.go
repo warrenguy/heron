@@ -80,20 +80,24 @@ func TestAgent_SessionRegistry(t *testing.T) {
 	require.False(t, ok)
 	require.Nil(t, session)
 
-	// Clash: second open with same id marks sticky failure, aborts, no callback.
+	// Clash: adopt the frame, report, and break. The callback does not run again.
+	var got []error
+	agent.errorHandler = collectErrors(&got)
 	clashFields := openFields
 	clashFields.Timestamp = 51
 	clashPayload := encodeSessionOpen(t, clashFields)
 	clashSpan := writeAgentFrame(t, image, offset, clashPayload)
 	*committed = int64(offset + clashSpan)
 
-	require.Equal(t, 0, agent.DoWork(0)) // ABORT does not count fragment
-	require.ErrorIs(t, agent.ServiceFailure(), ErrSessionClash)
+	require.Equal(t, 1, agent.DoWork(0))
+	require.NoError(t, agent.ServiceFailure())
+	requireOneNonFatalReport(t, got, ErrSessionClash)
 	require.Len(t, svc.opens, 4)
 	require.Equal(t, 4, agent.SessionCount())
-	// Position frozen before clash frame.
-	require.Equal(t, int64(offset), agent.LogPosition())
-	require.Equal(t, 0, agent.DoWork(0))
+	require.Equal(t, int64(offset+clashSpan), agent.LogPosition())
+	require.Equal(t, int64(51), agent.ClusterTime())
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
 }
 
 func TestAgent_SessionClose_knownAndUnknown(t *testing.T) {
@@ -576,17 +580,104 @@ func TestAgent_CloseClientSession_failurePaths(t *testing.T) {
 			log.open(openID, 1)
 			agent.moduleProxy = tc.setup(t)
 
+			var got []error
+			agent.errorHandler = collectErrors(&got)
 			require.False(t, agent.CloseClientSession(openID))
 			session, ok := agent.ClientSession(openID)
 			require.True(t, ok)
 			require.False(t, session.IsClosing())
-			if tc.wantFailure == nil {
-				require.NoError(t, agent.ServiceFailure())
+			require.NoError(t, agent.ServiceFailure())
+			if tc.reported == nil {
+				require.Empty(t, got)
 				return
 			}
-			require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+			requireOneNonFatalReport(t, got, tc.reported)
 			require.False(t, session.Close())
-			require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
+			require.Len(t, got, 2)
+			require.NoError(t, agent.ServiceFailure())
 		})
 	}
+}
+
+func TestAgent_SessionOpen_fatalResponseAddStopsPoll(t *testing.T) {
+	adder := newFakeResponseAdder()
+	adder.offerErrs = map[int32]error{testResponseStreamID: aeron.ErrClientClosed}
+	log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+	var got []error
+	log.agent.errorHandler = collectErrors(&got)
+	fields := codecs.SessionOpenEventFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 1,
+		Timestamp:        50,
+		ResponseStreamID: testResponseStreamID,
+		ResponseChannel:  []byte(testResponseChannel),
+	}
+	first := log.write(t, encodeSessionOpen(t, fields))
+	fields.ClusterSessionID, fields.Timestamp = 2, 80
+	log.write(t, encodeSessionOpen(t, fields))
+
+	log.agent.DoWork(0)
+	require.Equal(t, first, log.agent.LogPosition())
+	require.Equal(t, int64(50), log.agent.ClusterTime())
+	require.Equal(t, first, log.image.Position())
+	require.Equal(t, 0, log.agent.SessionCount())
+	require.Empty(t, svc.opens)
+	require.Len(t, adder.offers, 1)
+	requireFailureReported(t, log.agent, got, ErrResponsePublicationAdd, aeron.ErrClientClosed)
+}
+
+func TestAgent_SessionClose_fatalAddPollStopsPoll(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+	var got []error
+	log.agent.errorHandler = collectErrors(&got)
+	log.open(1, 1)
+	queuePollError(adder, aeron.ErrClientClosed)
+	polls := len(adder.polls)
+	closeEnd := log.write(t, encodeSessionClose(t, codecs.SessionCloseEventFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 1,
+		Timestamp:        90,
+		CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+	}))
+	log.write(t, encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
+		ClusterSessionID: 1,
+		Timestamp:        91,
+	}, []byte("late")))
+
+	log.agent.DoWork(0)
+	require.Equal(t, []int64{1, 1}, adder.polls[polls:])
+	require.Equal(t, []int64{1}, adder.cancels)
+	requireFailureReported(t, log.agent, got, ErrResponsePublicationAdd, aeron.ErrClientClosed)
+	require.False(t, log.agent.HasSession(1))
+	require.Empty(t, svc.closes)
+	require.Empty(t, svc.messages)
+	require.Equal(t, closeEnd, log.agent.LogPosition())
+	require.Equal(t, closeEnd, log.image.Position())
+}
+
+func TestAgent_ResponseAdd_fatalPollStopsTick(t *testing.T) {
+	adder := newFakeResponseAdder()
+	log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+	var got []error
+	log.agent.errorHandler = collectErrors(&got)
+	log.open(1, 1)
+	log.open(2, 2)
+	require.Equal(t, 2, log.agent.PendingResponsePublicationAdds())
+	adder.next(1, responsePoll{err: aeron.ErrClientClosed})
+	pos := log.agent.LogPosition()
+	log.write(t, encodeSessionMessage(t, codecs.SessionMessageHeaderFields{
+		ClusterSessionID: 2,
+		Timestamp:        70,
+	}, []byte("late")))
+
+	log.agent.DoWork(0)
+	requireFailureReported(t, log.agent, got, ErrResponsePublicationAdd, aeron.ErrClientClosed)
+	require.Equal(t, 1, log.agent.PendingResponsePublicationAdds())
+	require.Equal(t, pos, log.agent.LogPosition())
+	require.Empty(t, svc.messages)
+
+	log.agent.Close()
+	require.Equal(t, 0, log.agent.PendingResponsePublicationAdds())
+	require.Equal(t, []int64{2}, adder.cancels)
 }

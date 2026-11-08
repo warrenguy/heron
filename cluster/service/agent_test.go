@@ -4,6 +4,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/internal/testutil"
@@ -267,15 +269,23 @@ func TestAgent_TimerPublish_failurePaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, op := range ops {
 				t.Run(op.name, func(t *testing.T) {
-					agent := NewAgent(AgentConfig{ModuleProxy: tc.setup(t)})
+					var got []error
+					agent := NewAgent(AgentConfig{
+						ModuleProxy:  tc.setup(t),
+						ErrorHandler: collectErrors(&got),
+					})
 					require.False(t, op.publish(agent))
-					if tc.wantFailure != nil {
-						require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
-						require.False(t, op.publish(agent))
-						require.ErrorIs(t, agent.ServiceFailure(), tc.wantFailure)
-					} else {
-						require.NoError(t, agent.ServiceFailure())
+					require.NoError(t, agent.ServiceFailure())
+
+					if tc.reported == nil {
+						require.Empty(t, got)
+						return
 					}
+
+					requireOneNonFatalReport(t, got, tc.reported)
+					require.False(t, op.publish(agent))
+					require.Len(t, got, 2)
+					require.NoError(t, agent.ServiceFailure())
 				})
 			}
 		})
@@ -1284,4 +1294,171 @@ func TestAgent_DoWork_zeroAllocs(t *testing.T) {
 		require.Equal(t, 1+calls, reports)
 		require.NoError(t, agent.ServiceFailure())
 	})
+}
+
+func TestIsFatal(t *testing.T) {
+	inner := errors.New("inner")
+	storage := &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
+	other := &archive.Exception{ErrorCode: archive.ErrorGeneric}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "ErrStart", err: ErrStart, want: true},
+		{name: "ErrLogSubscriptionAdd", err: ErrLogSubscriptionAdd},
+		{name: "ErrLogNotContiguous", err: ErrLogNotContiguous, want: true},
+		{name: "ErrSessionClash", err: ErrSessionClash},
+		{name: "ErrTimerPublish", err: ErrTimerPublish},
+		{name: "ErrCloseSessionPublish", err: ErrCloseSessionPublish},
+		{name: "ErrTakeSnapshot", err: ErrTakeSnapshot},
+		{name: "ErrActionPositionMismatch", err: ErrActionPositionMismatch, want: true},
+		{name: "ErrUnknownClusterAction", err: ErrUnknownClusterAction},
+		{name: "ErrResponsePublicationAdd", err: ErrResponsePublicationAdd},
+		{name: "ErrTransportTerminating", err: ErrTransportTerminating, want: true},
+		{name: "ErrUnknownSessionClose", err: ErrUnknownSessionClose},
+		{name: "ErrCloseUnknownSession", err: ErrCloseUnknownSession},
+		{name: "ErrUnknownTimeUnit", err: ErrUnknownTimeUnit},
+		{name: "ErrTerminate", err: ErrTerminate},
+		{name: "ErrTerminationPositionPassed", err: ErrTerminationPositionPassed, want: true},
+		{name: "ErrTerminationAckPublish", err: ErrTerminationAckPublish},
+		{name: "ErrLifecycleRefused", err: ErrLifecycleRefused},
+		{name: "ErrAckRequestPassed", err: ErrAckRequestPassed},
+		{name: "ErrAckPublish", err: ErrAckPublish, want: true},
+		{name: "ErrControlMessageSchema", err: ErrControlMessageSchema},
+		{name: "ErrControlMessageDecode", err: ErrControlMessageDecode},
+		{name: "ErrLogDispatchHeader", err: ErrLogDispatchHeader, want: true},
+		{name: "ErrLogDispatchSchema", err: ErrLogDispatchSchema, want: true},
+		{name: "ErrLogDispatchDecode", err: ErrLogDispatchDecode, want: true},
+		{name: "ErrSnapshotNoArchive", err: ErrSnapshotNoArchive},
+		{name: "ErrSnapshotTimeUnitUnknown", err: ErrSnapshotTimeUnitUnknown},
+		{name: "ErrSnapshotPublicationAdd", err: ErrSnapshotPublicationAdd},
+		{name: "ErrSnapshotRecordingStart", err: ErrSnapshotRecordingStart},
+		{name: "ErrSnapshotWrite", err: ErrSnapshotWrite},
+		{name: "ErrSnapshotRecordingStop", err: ErrSnapshotRecordingStop},
+		{name: "ErrClientClosed", err: aeron.ErrClientClosed, want: true},
+		{
+			name: "wrapped ErrClientClosed",
+			err:  fmt.Errorf("wrap: %w", aeron.ErrClientClosed),
+			want: true,
+		},
+		{name: "ErrConductorTerminating", err: aeron.ErrConductorTerminating, want: true},
+		{
+			name: "wrapped ErrConductorTerminating",
+			err:  fmt.Errorf("wrap: %w", aeron.ErrConductorTerminating),
+			want: true,
+		},
+		{name: "storage space", err: fmt.Errorf("wrap: %w", storage), want: true},
+		{name: "other archive code", err: fmt.Errorf("wrap: %w", other)},
+		{
+			name: "terminal ack wraps a non-fatal inner",
+			err:  fmt.Errorf("%w: %d: %w", ErrAckPublish, aeron.Closed, inner),
+			want: true,
+		},
+		{
+			name: "timer offer with a nil inner",
+			err:  fmt.Errorf("%w: %d", ErrTimerPublish, aeron.Closed),
+		},
+		{
+			name: "transport wraps a pending start",
+			err: fmt.Errorf(
+				"%w: %w",
+				ErrTransportTerminating,
+				fmt.Errorf("%w: %w", ErrStart, inner),
+			),
+			want: true,
+		},
+		{name: "plain", err: inner},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isFatal(tt.err))
+		})
+	}
+}
+
+func TestAgent_transportTerminating(t *testing.T) {
+	t.Run("before first tick", func(t *testing.T) {
+		svc := &recordingService{}
+		archiveControl := &countingArchiveControl{pollWork: 3}
+		var got []error
+		agent, image, committed := bindImage(t, AgentConfig{
+			Service:      svc,
+			ErrorHandler: collectErrors(&got),
+			Transport:    &terminatingReporter{terminating: true},
+		}, 0)
+		agent.archive = archiveControl
+		log := &takeLog{image: image, committed: committed}
+		log.timer(t, 1)
+
+		require.Equal(t, 0, agent.DoWork(0))
+		require.Equal(t, 0, svc.startCount)
+		require.Equal(t, 0, archiveControl.polls)
+		require.Nil(t, agent.take)
+		require.Equal(t, int64(0), agent.LogPosition())
+		require.Equal(t, int64(0), agent.adapter.Position())
+		requireFailureReported(t, agent, got, ErrTransportTerminating)
+	})
+
+	t.Run("failed start waits then wraps", func(t *testing.T) {
+		startErr := errors.New("start boom")
+		svc := &recordingService{startErr: startErr}
+		reporter := &terminatingReporter{}
+		var got []error
+		agent, _, _ := bindImage(t, AgentConfig{
+			Service:      svc,
+			ModuleProxy:  boundModuleProxyWithLimit(t, 0, false),
+			ErrorHandler: collectErrors(&got),
+			Transport:    reporter,
+			StartAck:     &StartAckConfig{RelevantID: 1},
+		}, 0)
+
+		agent.DoWork(0)
+		require.Equal(t, 1, svc.startCount)
+		require.NoError(t, agent.ServiceFailure())
+		require.Empty(t, got)
+
+		reporter.terminating = true
+		require.Equal(t, 0, agent.DoWork(0))
+		requireFailureReported(t, agent, got, ErrTransportTerminating, ErrStart, startErr)
+	})
+
+	t.Run("storage space take waits then wraps", func(t *testing.T) {
+		storage := &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
+		hookErr := fmt.Errorf("snap: %w", storage)
+		var got []error
+		take := bindDisconnectedTake(t, hookErr, collectErrors(&got))
+		reporter := &terminatingReporter{}
+		take.agent.transport = reporter
+		writeTermEventAndSnapshot(t, take.image, take.committed, 321)
+
+		take.agent.DoWork(0)
+		take.agent.DoWork(0)
+		require.NoError(t, take.agent.ServiceFailure())
+		require.Empty(t, got)
+		require.Equal(t, 1, take.agent.PendingCoordinationAcks())
+
+		reporter.terminating = true
+		require.Equal(t, 0, take.agent.DoWork(0))
+		requireFailureReported(t, take.agent, got, ErrTransportTerminating, storage)
+	})
+
+	nilTransports := []struct {
+		name      string
+		transport TerminationReporter
+	}{
+		{name: "nil transport"},
+		{name: "typed nil transport", transport: (*terminatingReporter)(nil)},
+	}
+
+	for _, tc := range nilTransports {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &recordingService{}
+			agent := NewAgent(AgentConfig{Service: svc, Transport: tc.transport})
+			require.Equal(t, 1, agent.DoWork(0))
+			require.Equal(t, 1, svc.startCount)
+			require.NoError(t, agent.ServiceFailure())
+		})
+	}
 }

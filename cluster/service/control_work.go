@@ -13,8 +13,8 @@ import (
 // NULL_VALUE (-1). Producers with no RelevantID set nullValue on the entry.
 const nullValue int64 = -1
 
-// ErrAckRequestPassed marks an ack request below the log position. The error is
-// fatal.
+// ErrAckRequestPassed reports an ack request below the log position. The error
+// is not fatal.
 var ErrAckRequestPassed = errors.New("service: ack request position passed")
 
 // ErrAckPublish marks a terminal service-ack offer code. The error is fatal.
@@ -29,16 +29,17 @@ var ErrControlMessageSchema = errors.New("service: control message schema id mis
 var ErrControlMessageDecode = errors.New("service: control message undecodable")
 
 // controlWork runs one control duty step:
-//  1. Poll Control when non-nil (defaultControlFragmentLimit); dispatch each
+//  1. Poll Control when non-nil (defaultControlFragmentLimit). Dispatch each
 //     whole message
-//  2. Sweep unready request entries for readiness or passed-position failure
+//  2. Sweep unready request entries for readiness or a passed request
 //  3. Drain at most one ready first queued ack when ModuleProxy has a bound
 //     publication
 //
 // Returns the work count: control messages delivered plus one on a successful
 // send.
 //
-// Concurrency: invoker-only. Called from Agent.DoWork.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines.
 func (a *Agent) controlWork() int {
 	work := 0
 	if a.control != nil {
@@ -54,11 +55,11 @@ func (a *Agent) controlWork() int {
 func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	_, templateID, schemaID, _, ok := codecs.DecodeMessageHeader(buf, offset)
 	if !ok {
-		a.reportError(fmt.Errorf("%w: short header", ErrControlMessageDecode))
+		a.handleError(fmt.Errorf("%w: short header", ErrControlMessageDecode))
 		return
 	}
 	if schemaID != clusterwire.MessageHeaderSbeSchemaID {
-		a.reportError(fmt.Errorf("%w: schema id %d", ErrControlMessageSchema, schemaID))
+		a.handleError(fmt.Errorf("%w: schema id %d", ErrControlMessageSchema, schemaID))
 		return
 	}
 
@@ -66,7 +67,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	case clusterwire.JoinLogSbeTemplateID:
 		fields, decOK := codecs.TryDecodeJoinLogAt(buf, offset)
 		if !decOK {
-			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
+			a.handleError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
 			return
 		}
 		a.handleJoinLog(logJoinEvent{
@@ -83,7 +84,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	case clusterwire.RequestServiceAckSbeTemplateID:
 		fields, decOK := codecs.TryDecodeRequestServiceAckAt(buf, offset)
 		if !decOK {
-			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
+			a.handleError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
 			return
 		}
 		a.handleRequestServiceAck(fields.LogPosition)
@@ -91,7 +92,7 @@ func (a *Agent) handleControlFragment(buf []byte, offset int) {
 	case clusterwire.ServiceTerminationPositionSbeTemplateID:
 		fields, decOK := codecs.TryDecodeServiceTerminationPositionAt(buf, offset)
 		if !decOK {
-			a.reportError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
+			a.handleError(fmt.Errorf("%w: template id %d", ErrControlMessageDecode, templateID))
 			return
 		}
 
@@ -117,15 +118,12 @@ func (a *Agent) handleRequestServiceAck(logPosition int64) {
 }
 
 // sweepRequestAckReadiness marks request entries ready when the agent log
-// position equals the requested position. Marks failure once when the log has
-// passed a requested position. Leaves entries unready when the log is still
-// below the request.
+// position equals the requested position. A passed request reports. The entry
+// turns ready at the agent log position. Leaves entries unready when the log
+// is still below the request.
 //
 // Also refreshes unreadyRequestBound and hasUnreadyRequestBound for the log poll
 // bound. One walk covers readiness and the lowest unready request position.
-//
-// A passed entry stays unready so the prefix gate blocks drain of later
-// entries.
 func (a *Agent) sweepRequestAckReadiness() {
 	pos := a.logPosition
 	lowest := int64(0)
@@ -140,7 +138,10 @@ func (a *Agent) sweepRequestAckReadiness() {
 			case pos == e.logPosition:
 				e.ready = true
 			case pos > e.logPosition:
-				a.markFailure(ErrAckRequestPassed)
+				err := fmt.Errorf("%w: requested %d, log position %d", ErrAckRequestPassed, e.logPosition, pos)
+				e.ready = true
+				e.logPosition = pos
+				a.handleError(err)
 			}
 		}
 		if !e.ready {
@@ -233,7 +234,7 @@ func (a *Agent) sendFirstCoordinationAck() int64 {
 	}
 
 	if entry.failure != nil {
-		a.markFailure(entry.failure)
+		a.handleError(entry.failure)
 	}
 	return result
 }

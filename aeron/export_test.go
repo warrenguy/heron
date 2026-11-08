@@ -1297,6 +1297,7 @@ func NewClientForTestWithDriverProxy(
 	client := &Client{
 		clientID:                clientID,
 		conductor:               conductorInstance,
+		terminationConductor:    conductorInstance,
 		driverProxy:             driverProxy,
 		nanoClock:               nanoClock,
 		driverTimeout:           driverTimeout,

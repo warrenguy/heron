@@ -46,11 +46,9 @@ func TestAgent_JoinLifecycle(t *testing.T) {
 // TestAgent_Join_doesNotBind asserts every path that leaves a delivered join
 // unbound.
 //
-// Each row runs two ticks. The first does start work only. The second makes no
-// progress. The join stays pending and the join ack stays unready throughout.
+// Each row runs two ticks. The first does start work only. The second does not
+// make progress. The join stays pending. The join ack stays unready.
 func TestAgent_Join_doesNotBind(t *testing.T) {
-	addErr := errors.New("add sub failed")
-
 	tests := []struct {
 		name         string
 		adder        func(tb testing.TB) SubscriptionAdder
@@ -101,9 +99,10 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 			wantFailure: ErrLogNotContiguous,
 		},
 		{
-			name:        "subscription add fails",
-			adder:       func(testing.TB) SubscriptionAdder { return &stubAdder{err: addErr} },
-			wantFailure: addErr,
+			name: "subscription add fails",
+			adder: func(testing.TB) SubscriptionAdder {
+				return &stubAdder{err: errors.New("add sub failed")}
+			},
 		},
 		{
 			name: "event position behind the recovery seed",
@@ -119,9 +118,11 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &recordingService{}
+			var got []error
 			agent := NewAgent(AgentConfig{
 				Service:       svc,
 				Subscriptions: tc.adder(t),
+				ErrorHandler:  collectErrors(&got),
 			})
 			if tc.seedPosition != 0 {
 				agent.seedRecovery(codecs.RecoveryStateKeyFields{
@@ -137,6 +138,7 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 			} else {
 				require.NoError(t, agent.ServiceFailure())
 			}
+
 			require.False(t, agent.IsLogBound())
 			require.True(t, agent.HasPendingJoin())
 			require.Equal(t, 1, agent.PendingCoordinationAcks())
@@ -147,6 +149,51 @@ func TestAgent_Join_doesNotBind(t *testing.T) {
 			require.False(t, agent.IsLogBound())
 		})
 	}
+}
+
+// TestAgent_Join_addRetryWaitsForInterval starts the wait on the tick after the
+// failed add. A newer join does not wait.
+func TestAgent_Join_addRetryWaitsForInterval(t *testing.T) {
+	var got []error
+	agent, adder := joinWithFailedSubscriptionAdd(
+		t,
+		collectErrors(&got),
+		errors.New("add sub failed"),
+	)
+	require.Equal(t, 1, adder.calls, "first add")
+	require.Len(t, got, 1, "first add reports")
+
+	// A failed add can block past the interval.
+	now := 10 * joinAddRetryIntervalNs
+	agent.DoWork(now)
+	require.Equal(t, 1, adder.calls, "tick after a blocking add")
+
+	now += joinAddRetryIntervalNs - 1
+	agent.DoWork(now)
+	require.Equal(t, 1, adder.calls, "inside interval")
+	require.Len(t, got, 1, "inside interval reports")
+
+	now++
+	agent.DoWork(now)
+	require.Equal(t, 2, adder.calls, "at interval")
+	require.Len(t, got, 2, "at interval reports")
+
+	agent.DoWork(now)
+	now += joinAddRetryIntervalNs - 1
+	agent.DoWork(now)
+	require.Equal(t, 2, adder.calls, "second wait")
+
+	agent.handleJoinLog(defaultJoinEvent(0))
+	agent.DoWork(now)
+	require.Equal(t, 3, adder.calls, "newer join")
+
+	sub, _ := newLogImage(t, testLogSessionID, testLogStreamID, 0)
+	adder.err, adder.sub = nil, sub
+	agent.DoWork(now)
+	now += joinAddRetryIntervalNs
+	agent.DoWork(now)
+	require.True(t, agent.IsLogBound())
+	require.NoError(t, agent.ServiceFailure())
 }
 
 func TestAgent_Join_supersession(t *testing.T) {
@@ -631,4 +678,78 @@ func TestAgent_Unbind_imageClosedWhileBound(t *testing.T) {
 	requireOffers(t, agent, MockedOffer, 1, 2, 3)
 	require.Equal(t, 3, agent.SessionCount())
 	require.NoError(t, agent.ServiceFailure())
+}
+
+func TestAgent_Unbind_fatalAddPollEndsEveryAdd(t *testing.T) {
+	adder := newFakeResponseAdder()
+	svc := &lifecycleRecordingService{}
+	var got []error
+	log := bindSessionLog(t, AgentConfig{
+		Service:              svc,
+		ResponsePublications: adder,
+		ErrorHandler:         collectErrors(&got),
+	}, codecs.RoleLeader)
+	log.open(1, 1)
+	log.open(2, 2)
+	adder.next(1, responsePoll{})
+	adder.next(2, responsePoll{})
+	adder.next(1, responsePoll{err: aeron.ErrClientClosed})
+	adder.next(2, responsePoll{err: errors.New("registration boom")})
+	polls := len(adder.polls)
+	roles := len(svc.roles)
+	background := len(svc.backgroundNows)
+
+	aeron.ImageInternalCloseForHooks(log.image)
+	log.agent.DoWork(0)
+	require.Equal(t, []int64{1, 2, 1, 2}, adder.polls[polls:])
+	require.Equal(t, []int64{1, 2}, adder.cancels)
+	require.False(t, log.agent.IsLogBound())
+	require.Empty(t, adder.inFlight)
+	requireFailureReported(t, log.agent, got, ErrResponsePublicationAdd, aeron.ErrClientClosed)
+	require.Len(t, svc.roles, roles)
+	require.Len(t, svc.backgroundNows, background)
+	require.Equal(t, codecs.RoleLeader, log.agent.Role())
+}
+
+func TestAgent_JoinEgress_fatalAddStopsLoop(t *testing.T) {
+	adder := newFakeResponseAdder()
+	adder.offerErrs = map[int32]error{11: aeron.ErrClientClosed}
+	svc := &lifecycleRecordingService{}
+	var got []error
+	sub, image := newLogImage(t, testLogSessionID, testLogStreamID, 0)
+	committed := int64(0)
+	proxy, pub := boundModuleProxy(t)
+	agent := NewAgent(AgentConfig{
+		Service:              svc,
+		CommittedPosition:    func() int64 { return committed },
+		Subscriptions:        &stubAdder{sub: sub},
+		ResponsePublications: adder,
+		ModuleProxy:          proxy,
+		ErrorHandler:         collectErrors(&got),
+	})
+	require.NoError(t, agent.restoreClientSession(sampleClientSession(1, testResponseChannel)))
+	require.NoError(t, agent.restoreClientSession(sampleClientSession(2, testResponseChannel)))
+	log := &takeLog{image: image, committed: &committed}
+	log.timer(t, 11)
+
+	event := defaultJoinEvent(0)
+	event.isStartup = false
+	agent.handleJoinLog(event)
+	agent.DoWork(0)
+
+	requireFailureReported(t, agent, got, ErrResponsePublicationAdd, aeron.ErrClientClosed)
+	require.Len(t, adder.offers, 1)
+	require.Equal(t, int32(11), adder.offers[0].streamID)
+	require.Equal(t, nullValue, agent.sessions[2].addCorrelationID)
+	require.Empty(t, svc.roles)
+	require.Empty(t, svc.backgroundNows)
+	require.Empty(t, svc.timers)
+	require.Equal(t, int64(0), agent.LogPosition())
+	require.Equal(t, int64(0), image.Position())
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.Empty(t, decodeServiceAcksFromPub(t, pub))
+
+	require.Equal(t, 0, agent.DoWork(0))
+	require.Equal(t, int64(0), agent.NextAckID())
+	require.Empty(t, decodeServiceAcksFromPub(t, pub))
 }

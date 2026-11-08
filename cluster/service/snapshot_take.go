@@ -12,27 +12,27 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
-// ErrSnapshotNoArchive marks a snapshot take with no archive client. The error
-// is fatal.
+// ErrSnapshotNoArchive reports a snapshot take with no archive client. The
+// error is not fatal.
 var ErrSnapshotNoArchive = errors.New("service: snapshot archive not configured")
 
-// ErrSnapshotTimeUnitUnknown marks a snapshot take with no known time unit. The
-// error is fatal.
+// ErrSnapshotTimeUnitUnknown reports a snapshot take with no known time unit.
+// The error is not fatal.
 var ErrSnapshotTimeUnitUnknown = errors.New("service: snapshot time unit unknown")
 
 // ErrSnapshotPublicationAdd wraps a snapshot publication add error. The error
-// is fatal.
+// is not fatal unless the transport client is closed or terminating.
 var ErrSnapshotPublicationAdd = errors.New("service: add snapshot publication")
 
 // ErrSnapshotRecordingStart wraps a snapshot recording start error. The error
-// is fatal.
+// is not fatal unless it wraps an archive STORAGE_SPACE error.
 var ErrSnapshotRecordingStart = errors.New("service: start snapshot recording")
 
-// ErrSnapshotWrite wraps a snapshot write error. The error is fatal.
+// ErrSnapshotWrite wraps a snapshot write error. The error is not fatal.
 var ErrSnapshotWrite = errors.New("service: write snapshot")
 
 // ErrSnapshotRecordingStop wraps a snapshot recording stop error. The error is
-// fatal.
+// not fatal.
 var ErrSnapshotRecordingStop = errors.New("service: stop snapshot recording")
 
 // snapshotArchiveControl is the archive client surface the agent holds.

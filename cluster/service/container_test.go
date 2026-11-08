@@ -20,11 +20,13 @@ type transportAdd struct {
 	channel  string
 }
 
-// fakeTransport records AddSubscription and AddPublication and returns hook
-// handles. A configured error skips handle creation for that add. A
-// positive pubErrAdds limits pubErr to the first pubErrAdds publication adds.
+// fakeTransport records AddSubscription and AddPublication. fakeTransport
+// returns hook handles. A configured error skips handle creation for that add.
+// A positive pubErrAdds limits pubErr to the first pubErrAdds publication adds.
 // An exclusive publication add and a response publication add never complete.
 type fakeTransport struct {
+	terminatingReporter
+
 	tb testing.TB
 
 	subCalls []transportAdd
@@ -651,6 +653,10 @@ func TestOpen_wiresControlIngressAndProxy(t *testing.T) {
 			ServiceID:   3,
 		},
 	}, decodeServiceAcksFromPub(t, client.pub))
+
+	client.terminating = true
+	require.Equal(t, 0, agent.DoWork(0))
+	requireFailureReported(t, agent, got[1:], ErrTransportTerminating)
 }
 
 func TestOpen_StartAckPassthrough(t *testing.T) {

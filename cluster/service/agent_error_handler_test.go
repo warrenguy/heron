@@ -55,6 +55,23 @@ func driveControlReject(t *testing.T, handler func(error), payload []byte) error
 	}}
 }
 
+func joinWithFailedSubscriptionAdd(
+	t *testing.T,
+	handler func(error),
+	addErr error,
+) (*Agent, *stubAdder) {
+	t.Helper()
+	adder := &stubAdder{err: addErr}
+	agent := NewAgent(AgentConfig{
+		Service:       &recordingService{},
+		Subscriptions: adder,
+		ErrorHandler:  handler,
+	})
+	agent.handleJoinLog(defaultJoinEvent(0))
+	require.Equal(t, 1, agent.DoWork(0))
+	return agent, adder
+}
+
 func queuePollError(adder *fakeResponseAdder, err error) {
 	adder.next(1, responsePoll{})
 	adder.next(1, responsePoll{err: err})
@@ -119,19 +136,32 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 		},
 		{
 			name:     "LogSubscriptionAdd",
-			fatal:    true,
 			sentinel: ErrLogSubscriptionAdd,
 			wrapped:  addSubErr,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
-				agent := NewAgent(AgentConfig{
-					Service:       &recordingService{},
-					Subscriptions: &stubAdder{err: addSubErr},
-					ErrorHandler:  handler,
-				})
-				agent.handleJoinLog(defaultJoinEvent(0))
-				require.Equal(t, 1, agent.DoWork(0))
-				agent.DoWork(0)
+				agent, adder := joinWithFailedSubscriptionAdd(t, handler, addSubErr)
+				return errorSiteRun{agent: agent, check: func(t *testing.T) {
+					t.Helper()
+					require.False(t, agent.IsLogBound())
+					require.True(t, agent.HasPendingJoin())
+					calls := adder.calls
+					agent.DoWork(0)
+					agent.DoWork(joinAddRetryIntervalNs - 1)
+					require.Equal(t, calls, adder.calls)
+					agent.DoWork(joinAddRetryIntervalNs)
+					require.Equal(t, calls+1, adder.calls)
+				}}
+			},
+		},
+		{
+			name:     "LogSubscriptionAddClosedClient",
+			fatal:    true,
+			sentinel: ErrLogSubscriptionAdd,
+			wrapped:  aeron.ErrClientClosed,
+			drive: func(t *testing.T, handler func(error)) errorSiteRun {
+				t.Helper()
+				agent, _ := joinWithFailedSubscriptionAdd(t, handler, aeron.ErrClientClosed)
 				return errorSiteRun{agent: agent, check: func(t *testing.T) {
 					t.Helper()
 					require.False(t, agent.IsLogBound())
@@ -163,13 +193,11 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 		},
 		{
 			name:     "SessionClash",
-			fatal:    true,
 			sentinel: ErrSessionClash,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
 				log := bindHandledLeader(t, nil, handler)
 				log.open(7, 50)
-				frozen := log.agent.LogPosition()
 				log.deliver(encodeSessionOpen(t, codecs.SessionOpenEventFields{
 					LeadershipTermID: 1,
 					ClusterSessionID: 7,
@@ -179,14 +207,14 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				}))
 				return errorSiteRun{agent: log.agent, check: func(t *testing.T) {
 					t.Helper()
-					require.Equal(t, frozen, log.agent.LogPosition())
+					require.Equal(t, int64(log.offset), log.agent.LogPosition())
+					require.Equal(t, int64(80), log.agent.ClusterTime())
 					require.Equal(t, 1, log.agent.SessionCount())
 				}}
 			},
 		},
 		{
 			name:     "TimerPublish",
-			fatal:    true,
 			sentinel: ErrTimerPublish,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
@@ -205,7 +233,6 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 		},
 		{
 			name:     "CloseSessionPublish",
-			fatal:    true,
 			sentinel: ErrCloseSessionPublish,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
@@ -251,7 +278,6 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 		},
 		{
 			name:     "AckRequestPassed",
-			fatal:    true,
 			sentinel: ErrAckRequestPassed,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
@@ -265,8 +291,10 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				h.agent.DoWork(0)
 				return errorSiteRun{agent: h.agent, check: func(t *testing.T) {
 					t.Helper()
-					require.Equal(t, 1, h.agent.PendingCoordinationAcks())
-					require.Len(t, decodeServiceAcksFromPub(t, h.pub), 1)
+					require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+					acks := decodeServiceAcksFromPub(t, h.pub)
+					require.Len(t, acks, 2)
+					require.Equal(t, int64(span), acks[1].LogPosition)
 				}}
 			},
 		},
@@ -326,7 +354,6 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 		},
 		{
 			name:     "UnknownClusterAction",
-			fatal:    true,
 			sentinel: ErrUnknownClusterAction,
 			drive: func(t *testing.T, handler func(error)) errorSiteRun {
 				t.Helper()
@@ -347,6 +374,7 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				return errorSiteRun{agent: agent, check: func(t *testing.T) {
 					t.Helper()
 					requireSnapshotActionAbort(t, agent, svc, span)
+					require.Equal(t, int64(span), agent.adapter.Position())
 				}}
 			},
 		},
@@ -570,6 +598,84 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				}}
 			},
 		},
+		{
+			name:     "ResponseAddOfferClosedClient",
+			fatal:    true,
+			sentinel: ErrResponsePublicationAdd,
+			wrapped:  aeron.ErrClientClosed,
+			drive:    driveFatalResponseOffer(aeron.ErrClientClosed),
+		},
+		{
+			name:     "ResponseAddOfferConductorTerminating",
+			fatal:    true,
+			sentinel: ErrResponsePublicationAdd,
+			wrapped:  aeron.ErrConductorTerminating,
+			drive:    driveFatalResponseOffer(aeron.ErrConductorTerminating),
+		},
+		{
+			name:     "ResponseAddPollClosedClient",
+			fatal:    true,
+			sentinel: ErrResponsePublicationAdd,
+			wrapped:  aeron.ErrClientClosed,
+			drive: func(t *testing.T, handler func(error)) errorSiteRun {
+				t.Helper()
+				adder := newFakeResponseAdder()
+				log := bindHandledLeader(t, adder, handler)
+				log.open(7, 50)
+				adder.next(1, responsePoll{err: aeron.ErrClientClosed})
+				log.agent.DoWork(0)
+				return errorSiteRun{agent: log.agent, check: func(t *testing.T) {
+					t.Helper()
+					requireSessionWithoutPublication(t, log.agent, 7)
+				}}
+			},
+		},
+		{
+			name:     "SessionCloseEndsAddClosedClient",
+			fatal:    true,
+			sentinel: ErrResponsePublicationAdd,
+			wrapped:  aeron.ErrClientClosed,
+			drive: func(t *testing.T, handler func(error)) errorSiteRun {
+				t.Helper()
+				adder := newFakeResponseAdder()
+				log := bindHandledLeader(t, adder, handler)
+				log.open(7, 1)
+				queuePollError(adder, aeron.ErrClientClosed)
+				log.deliver(encodeSessionClose(t, codecs.SessionCloseEventFields{
+					LeadershipTermID: 1,
+					ClusterSessionID: 7,
+					Timestamp:        2,
+					CloseReason:      clusterwire.CloseReason_CLIENT_ACTION,
+				}))
+				return errorSiteRun{agent: log.agent, check: func(t *testing.T) {
+					t.Helper()
+					require.False(t, log.agent.HasSession(7))
+					requireAddCancelled(t, log.agent, adder)
+				}}
+			},
+		},
+		{
+			name:     "ImageCloseEndsAddClosedClient",
+			fatal:    true,
+			sentinel: ErrResponsePublicationAdd,
+			wrapped:  aeron.ErrClientClosed,
+			drive: func(t *testing.T, handler func(error)) errorSiteRun {
+				t.Helper()
+				adder := newFakeResponseAdder()
+				log := bindHandledLeader(t, adder, handler)
+				log.open(7, 1)
+				queuePollError(adder, aeron.ErrClientClosed)
+				aeron.ImageInternalCloseForHooks(log.image)
+				log.agent.DoWork(0)
+				return errorSiteRun{agent: log.agent, check: func(t *testing.T) {
+					t.Helper()
+					require.False(t, log.agent.IsLogBound())
+					require.Equal(t, codecs.RoleLeader, log.agent.Role())
+					require.True(t, log.agent.HasSession(7))
+					requireAddCancelled(t, log.agent, adder)
+				}}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -579,7 +685,11 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				run.check(t)
 				if tc.fatal {
 					require.Equal(t, 0, run.agent.DoWork(1))
+					return
 				}
+
+				run.agent.DoWork(1)
+				require.NoError(t, run.agent.ServiceFailure())
 			}
 			t.Run("records", func(t *testing.T) {
 				var got []error
@@ -618,6 +728,30 @@ func TestAgent_ErrorHandler_everySite(t *testing.T) {
 				finish(t, run)
 			})
 		})
+	}
+}
+
+func driveFatalResponseOffer(cause error) func(t *testing.T, handler func(error)) errorSiteRun {
+	return func(t *testing.T, handler func(error)) errorSiteRun {
+		t.Helper()
+		adder := newFakeResponseAdder()
+		adder.offerErrs = map[int32]error{testResponseStreamID: cause}
+		log, svc := bindSessionAgent(t, adder, codecs.RoleLeader)
+		log.agent.errorHandler = handler
+		log.deliver(encodeSessionOpen(t, codecs.SessionOpenEventFields{
+			LeadershipTermID: 1,
+			ClusterSessionID: 7,
+			Timestamp:        50,
+			ResponseStreamID: testResponseStreamID,
+			ResponseChannel:  []byte(testResponseChannel),
+		}))
+		return errorSiteRun{agent: log.agent, check: func(t *testing.T) {
+			t.Helper()
+			require.Equal(t, 0, log.agent.SessionCount())
+			require.Empty(t, svc.opens)
+			require.Equal(t, int64(log.offset), log.agent.LogPosition())
+			require.Equal(t, int64(50), log.agent.ClusterTime())
+		}}
 	}
 }
 

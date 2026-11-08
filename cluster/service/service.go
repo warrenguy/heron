@@ -20,18 +20,17 @@ var _ SubscriptionAdder = (*aeron.Client)(nil)
 // ClusteredService is the deterministic user state machine fed from the
 // committed cluster log.
 //
-// Behaviour: no wall clock. Callbacks carry cluster time. Payload slices are
-// valid only for the callback. Implementations must copy what they retain.
+// Behaviour: callbacks carry cluster time, not wall-clock time. Payload slices
+// are valid only for the callback. Implementations must copy what they retain.
 //
-// Concurrency: invoker-only. Every method runs on the Agent.DoWork goroutine.
+// Concurrency: methods run inside [Agent.DoWork].
 type ClusteredService interface {
-	// Start runs once, before any log event. A non-nil error sets the
-	// queued start ack ready with RelevantID NULL_VALUE. The agent retries
-	// the start ack each tick until the ack sends, a terminal offer code
-	// returns, or [StartAckConfig.Timeout] passes. The agent then marks
-	// the service failure. The failure wraps [ErrStart] and the Start
-	// error. With no queued start ack, or no bound control publication,
-	// the agent marks the service failure at once. The duty cycle stops.
+	// Start runs once, before any log event. After a non-nil error, the
+	// agent tries the start ack under the rules of [StartAckConfig]. The
+	// agent then marks the service failure. The failure wraps [ErrStart] and
+	// the Start error. When the transport client terminates, the failure
+	// also wraps [ErrTransportTerminating]. With no queued start ack, the
+	// agent marks the service failure at once. The duty cycle stops.
 	//
 	// The agent refuses module requests and session offers inside Start.
 	// See [ErrLifecycleRefused].
@@ -81,7 +80,7 @@ type NewLeadershipTermEventHandler interface {
 // NewAgent detects the handler once with a type assertion.
 //
 // Behaviour: the agent records publication in the member's Archive. The
-// agent writes the begin marker, one row per open session and the end
+// agent writes the begin marker, one row per open session, and the end
 // marker. TakeSnapshot then offers the service state. The agent closes
 // publication after TakeSnapshot returns.
 //
@@ -90,15 +89,18 @@ type NewLeadershipTermEventHandler interface {
 // publication.MaxMessageLength. TakeSnapshot must not close publication.
 //
 // A non-nil error fails the take. The agent queues one ServiceAck with
-// RelevantID -1. The service failure marks once that ack sends. The mark
-// stops the duty cycle. With no bound ModuleProxy, the agent marks at once
-// and never sends that ack. Close marks the failure whose ack has not
-// sent, unless the agent has already failed. An earlier mark or a terminal
-// ack publish error also stops the duty cycle before that ack.
+// RelevantID -1. The error is fatal when it wraps one of these:
+//   - an archive STORAGE_SPACE exception
+//   - aeron.ErrClientClosed or aeron.ErrConductorTerminating
+//   - a sentinel of this package whose godoc states that the error is fatal
 //
-// Concurrency: invoker-only. TakeSnapshot blocks the duty cycle. Nothing
-// pumps the transport client meanwhile. A run past the transport client's
-// InterServiceTimeout terminates that client.
+// A non-fatal error reaches ErrorHandler as ErrTakeSnapshot. The service keeps
+// running. A fatal error marks the service failure. The mark stops the duty
+// cycle.
+//
+// Concurrency: methods run inside [Agent.DoWork]. TakeSnapshot blocks the
+// duty cycle. The agent does not pump the transport client meanwhile. A run
+// past the transport client's InterServiceTimeout terminates that client.
 type TakeSnapshotHandler interface {
 	TakeSnapshot(publication *aeron.ExclusivePublication) error
 }
@@ -130,15 +132,16 @@ type LoadSnapshotHandler interface {
 //
 // Behaviour: the agent calls RoleChange only when the value Role returns
 // changes. Role returns role during the call. A bind calls RoleChange with
-// the JoinLog role, after the agent updates session egress for the join. An
-// unbind calls RoleChange with codecs.RoleFollower, after the agent closes
-// every response publication. An unbind waits for a running snapshot take
-// to end. RoleChange does not run during a take.
+// the JoinLog role after the agent updates session egress for the join. An
+// unbind calls RoleChange with codecs.RoleFollower after the agent closes
+// every response publication. A fatal mark before either call skips that call.
+// Role stays unchanged. An unbind waits for a running snapshot take to end.
+// RoleChange does not run during a take.
 //
 // The agent refuses module requests and session offers inside RoleChange.
 // See [ErrLifecycleRefused].
 //
-// Concurrency: invoker-only.
+// Concurrency: methods run inside [Agent.DoWork].
 type RoleChangeHandler interface {
 	RoleChange(role codecs.Role)
 }
@@ -180,8 +183,10 @@ type BackgroundWorkHandler interface {
 // the queued acks when the module asked for the ack. After a Close panic, a
 // second Close runs the teardown.
 //
-// A non-nil error does not fail the service. The agent reports one error that
-// wraps ErrTerminate, unless the agent has already failed.
+// A non-nil error reports one error that wraps ErrTerminate. The error is
+// fatal when it wraps an error that [TakeSnapshotHandler] lists as fatal. A
+// fatal error marks the service failure. The termination ack does not send.
+// The stop continues after a non-fatal error.
 //
 // Concurrency: Terminate runs inside [Agent.DoWork] or [Agent.Close], on the
 // goroutine that runs DoWork.
@@ -202,43 +207,43 @@ type Cluster interface {
 	Role() codecs.Role
 
 	// ScheduleTimer requests one cluster timer for correlationID at deadline
-	// (cluster time, nanoseconds). An existing timer for the same correlationID
-	// is rescheduled. Reschedule and cancel race with expiry. A TimerEvent
+	// (cluster time, nanoseconds). A new request reschedules an existing timer for
+	// the same correlationID. Reschedule and cancel race with expiry. A TimerEvent
 	// already appended still arrives. Expiry is leader-only.
 	//
 	// Call from log-event callbacks.
 	//
 	// Returns:
-	//   - true when the request frame was sent
+	//   - true when the agent sent the request frame
 	//   - false inside Start, RoleChange, DoBackgroundWork, or Terminate. The
 	//     call reports [ErrLifecycleRefused]. Must not retry inside that
 	//     callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
-	//   - false when the offer returned a retriable code. Retry from a
+	//   - false when the offer returns a retriable code. Retry from a
 	//     later callback.
-	//   - false when a terminal publication code marks the service failure
-	//     and stops the duty cycle. Must not retry.
+	//   - false when the offer returns a terminal publication code. The agent
+	//     reports ErrTimerPublish. Must not retry.
 	ScheduleTimer(correlationID, deadline int64) bool
 
-	// CancelTimer requests cancellation of the timer for correlationID.
+	// CancelTimer asks the consensus module to cancel the timer for correlationID.
 	// Cancel races with expiry. A TimerEvent already appended still arrives.
 	//
 	// Call from log-event callbacks.
 	//
 	// Returns:
-	//   - true when the request frame was sent
+	//   - true when the agent sent the request frame
 	//   - false inside Start, RoleChange, DoBackgroundWork, or Terminate. The
 	//     call reports [ErrLifecycleRefused]. Must not retry inside that
 	//     callback.
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
-	//   - false when the offer returned a retriable code. Retry from a
+	//   - false when the offer returns a retriable code. Retry from a
 	//     later callback.
-	//   - false when a terminal publication code marks the service failure
-	//     and stops the duty cycle. Must not retry.
+	//   - false when the offer returns a terminal publication code. The agent
+	//     reports ErrTimerPublish. Must not retry.
 	CancelTimer(correlationID int64) bool
 
 	// CloseClientSession asks the consensus module to close the open session
@@ -261,10 +266,10 @@ type Cluster interface {
 	//   - false when the proxy is absent or the publication is unbound.
 	//     Retry from a later callback.
 	//   - false after the container closes. Must not retry.
-	//   - false when the offer returned a retriable code. Retry from a
+	//   - false when the offer returns a retriable code. Retry from a
 	//     later callback.
-	//   - false when a terminal publication code marks the service failure
-	//     and stops the duty cycle. Must not retry.
+	//   - false when the offer returns a terminal publication code. The agent
+	//     reports ErrCloseSessionPublish. Must not retry.
 	CloseClientSession(id int64) bool
 
 	// ClientSession returns the open session with id, or nil and false when

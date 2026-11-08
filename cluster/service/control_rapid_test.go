@@ -57,29 +57,8 @@ type pendingControlOp struct {
 //     ack carries the take's recording id. Join, request, and failed snapshot
 //     acks carry nullValue.
 //   - the ready prefix gate never sends past the first unready entry
-//   - a passed request position marks ServiceFailure and freezes the agent
-//
-// Each SNAPSHOT frame starts a take over the take fake with a drawn hook
-// outcome. The poll holds at that frame until the take resolves. A failed
-// hook readies its entry with its cause. The drain marks the cause after the
-// ack sends, or first on a terminal offer code. A retriable code holds the
-// entry and does not mark the cause. With no sender bound, the cause marks at
-// once. An earlier cause stays first.
-//
-// A drawn Start error sets the start entry ready. The model sets
-// RelevantID to NULL_VALUE. Each later tick drains only the start entry.
-// Each tick advances the clock by a drawn step. The first tick after Start
-// sets the start ack deadline. At the deadline the model marks the error,
-// and the ack stays queued. With no start entry, or with no sender on the
-// first tick, the model marks the error at once. The first tick runs on a
-// drawn sender.
-//
-// A delivered ServiceTerminationPosition stores the position and the flag. The
-// poll stops at that position. Once the log reaches it and no take runs, the
-// model stops. With the flag set, each queued entry acks at its own position.
-// The termination ack comes last at the stop position. A sender that fails
-// terminationSendAttempts times ends the drain with one report. A stop past the
-// position marks ErrTerminationPositionPassed, unless an earlier mark holds.
+//   - a passed request reports ErrAckRequestPassed. The sweep readies the
+//     entry at the agent log position. The tick continues.
 //
 // Ops: deliver RequestServiceAck; deliver JoinLog (including superseding an
 // unbound pending join); append a committed timer frame; append a committed
@@ -155,8 +134,12 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		modelLogPos := int64(0)
 		modelDrained := 0
 		modelFailed := false
-		// modelMark mirrors markFailure: the first cause wins.
+
+		// modelCause mirrors the fatal path of handleError: the first cause wins.
 		var modelCause error
+
+		// modelReports is the non-fatal handler log, in order.
+		var modelReports []error
 		// The agent marks ErrAckPublish for a closed sender. The mark wraps
 		// the entry cause when the entry holds a cause. The model does not
 		// store ErrAckPublish wrapping the entry cause.
@@ -167,22 +150,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				modelCause = cause
 			}
 		}
-		// modelMarkTake mirrors a take mark. modelTakeMarkSender records the
-		// sender at a first mark for the invariant on the failed entry.
-		modelTakeMarkSender := -1
-		modelMarkTake := func() {
-			if modelCause == nil {
-				modelTakeMarkSender = modelSender
-			}
-			modelMark(ErrTakeSnapshot)
-		}
-		markFailedEntry := func(e modelAckEntry) {
-			if e.kind == ackKindStart {
-				modelMark(startErr)
-				return
-			}
-			modelMarkTake()
-		}
+
 		modelStarted := false
 		// nowNs is the DoWork clock. tick advances it by a drawn step.
 		nowNs := int64(0)
@@ -270,9 +238,6 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		}
 
 		modelSweep := func() {
-			if modelFailed {
-				return
-			}
 			for i := range model {
 				e := &model[i]
 				if e.kind != ackKindRequest || e.ready {
@@ -282,7 +247,9 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				case modelLogPos == e.logPosition:
 					e.ready = true
 				case modelLogPos > e.logPosition:
-					modelMark(ErrAckRequestPassed)
+					e.ready = true
+					e.logPosition = modelLogPos
+					modelReports = append(modelReports, ErrAckRequestPassed)
 				}
 			}
 		}
@@ -302,25 +269,24 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			case modelSenderAccept:
 				modelDrained++
 				if entry.failed {
-					markFailedEntry(entry)
+					modelMark(startErr)
 				}
 			case modelSenderClosed:
 				if modelCause == nil {
 					modelClosedFirst = true
 				}
 				if entry.failed {
-					markFailedEntry(entry)
+					modelMark(startErr)
 				} else {
 					modelMark(ErrAckPublish)
 				}
 			}
 		}
 
-		// The hook runs on the tick after the consume tick. Returns true when
-		// a no-sender mark ends the tick.
-		modelTakeWork := func() bool {
+		// The hook runs on the tick after the consume tick.
+		modelTakeWork := func() {
 			if modelTake == nil {
-				return false
+				return
 			}
 			modelTake.ticks++
 			e := &model[modelTake.entry]
@@ -328,12 +294,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			case modelTake.ticks == 1 && modelTake.hookFails:
 				modelHookCalls++
 				e.ready = true
-				e.failed = true
+				modelReports = append(modelReports, ErrTakeSnapshot)
 				modelTake = nil
-				if modelSender == modelSenderNone {
-					modelMarkTake()
-					return true
-				}
 			case modelTake.ticks == 1:
 				modelHookCalls++
 			default:
@@ -341,7 +303,6 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 				e.relevantID = modelTake.recordingID
 				modelTake = nil
 			}
-			return false
 		}
 
 		modelPoll := func() {
@@ -450,10 +411,6 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 
 			modelSweep()
 
-			if modelFailed {
-				return
-			}
-
 			modelTerminating = true
 
 			if modelTerminationAck {
@@ -494,12 +451,9 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 		}
 
 		// modelDoWork matches Agent: start-work then ready, take work,
-		// control poll, sweep, drain, join bind, poll. Drain still runs after
-		// a sweep failure. Join and poll freeze after a sweep failure. After
-		// a Start error, each tick drains only the start entry. The first tick
-		// after Start sets the start ack deadline. The termination check runs
-		// after the poll. While the termination drain runs, each tick only
-		// drains.
+		// control poll, sweep, drain, join bind, poll, termination check.
+		// After a Start error, each tick drains only the start entry. While
+		// the termination drain runs, each tick only drains.
 		modelDoWork := func() {
 			if modelFailed || modelTerminated {
 				return
@@ -542,9 +496,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			if len(model) > 0 && model[0].kind == ackKindStart {
 				model[0].ready = true
 			}
-			if modelTakeWork() {
-				return
-			}
+			modelTakeWork()
 			n := min(len(pending), defaultControlFragmentLimit)
 			for _, op := range pending[:n] {
 				op.apply()
@@ -606,7 +558,7 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			require.Equal(rt, modelTerminateCalls, terminate.calls, "terminate calls")
 			require.Equal(rt, modelTerminated, agent.IsTerminated(), "terminated")
 
-			// handlerLog holds the ack reports, then at most one mark.
+			var reports []error
 			var fatalLog []error
 			ackReports := 0
 
@@ -617,7 +569,17 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 					continue
 				}
 
-				fatalLog = append(fatalLog, err)
+				if errors.Is(err, ErrFailed) {
+					fatalLog = append(fatalLog, err)
+					continue
+				}
+
+				reports = append(reports, err)
+			}
+
+			require.Len(rt, reports, len(modelReports))
+			for i, want := range modelReports {
+				require.ErrorIs(rt, reports[i], want)
 			}
 
 			require.Equal(rt, modelAckReports, ackReports, "termination ack reports")
@@ -636,19 +598,6 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 			}
 			require.Len(rt, svc.pubs, modelHookCalls, "hook calls")
 			failure := agent.ServiceFailure()
-			if errors.Is(failure, ErrTakeSnapshot) {
-				switch modelTakeMarkSender {
-				case modelSenderAccept:
-					require.Positive(rt, modelDrained, "take mark before any ack")
-					require.True(rt, model[modelDrained-1].failed, "take mark before failed ack")
-				case modelSenderClosed:
-					require.True(rt, model[modelDrained].failed, "terminal mark keeps failed entry")
-				case modelSenderNone:
-					require.True(rt, model[len(model)-1].failed, "no-sender mark keeps failed entry")
-				default:
-					rt.Fatalf("take mark with sender %d", modelTakeMarkSender)
-				}
-			}
 			if modelFailed {
 				require.Len(rt, fatalLog, 1)
 				require.Same(rt, failure, fatalLog[0])
