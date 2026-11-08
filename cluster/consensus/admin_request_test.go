@@ -138,7 +138,11 @@ func TestHandleAdminRequest(t *testing.T) {
 		toggle := newFakeToggle(neutral)
 		opened.agent.SetClusterControlToggle(toggle)
 		before := opened.egress.Position()
-		pollAdminRequest(t, opened, adminRequestFields(opened.session.id, clusterwire.AdminRequestType(7)))
+		pollAdminRequest(
+			t,
+			opened,
+			adminRequestFields(opened.session.id, clusterwire.AdminRequestType(7)),
+		)
 
 		require.Equal(t, before, opened.egress.Position())
 		require.Equal(t, neutral, toggle.Load())
@@ -233,7 +237,11 @@ func TestHandleAdminRequest(t *testing.T) {
 		opened.agent.authoriser = authoriser
 		toggle := newFakeToggle(neutral)
 		opened.agent.SetClusterControlToggle(toggle)
-		pollAdminRequest(t, opened, adminRequestFields(opened.session.id, clusterwire.AdminRequestType_SNAPSHOT))
+		pollAdminRequest(
+			t,
+			opened,
+			adminRequestFields(opened.session.id, clusterwire.AdminRequestType_SNAPSHOT),
+		)
 
 		require.Equal(t, int32(111), int32(clusterwire.AdminRequestSbeSchemaID))
 		require.Equal(t, int32(26), int32(clusterwire.AdminRequestSbeTemplateID))
