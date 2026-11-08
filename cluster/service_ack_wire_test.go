@@ -681,3 +681,49 @@ func TestServiceAckWire_StartAckPopsStartWait(t *testing.T) {
 	require.Equal(t, 0, h.cm.PendingServiceAckWaits())
 	require.Equal(t, 1, runs)
 }
+
+func TestConsensusModule_Close_stopsServicesAtCommit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		serviceCount int
+		wantStop     bool
+	}{
+		{name: "one service", serviceCount: 1, wantStop: true},
+		{name: "zero services", serviceCount: 0, wantStop: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			commit := new(atomic.Int64)
+			commit.Store(120)
+			agent := consensus.NewAgent(consensus.AgentConfig{ServiceCount: tc.serviceCount, Commit: commit})
+			pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+			proxy := consensus.NewServiceProxy()
+			proxy.SetPublication(pub)
+			agent.SetServiceProxy(proxy)
+			module := &ConsensusModule{agent: agent}
+
+			require.NoError(t, module.Close())
+
+			var frames [][]byte
+			off := 0
+			bridgePub(t, pub, &off, func(msg []byte) { frames = append(frames, msg) })
+
+			if !tc.wantStop {
+				require.Empty(t, frames)
+
+				return
+			}
+
+			require.Len(t, frames, 1)
+			fields, ok := codecs.TryDecodeServiceTerminationPositionAt(frames[0], 0)
+			require.True(t, ok)
+			require.Equal(t, int64(120), fields.LogPosition)
+			require.Equal(t, clusterwire.BooleanType_FALSE, fields.AckRequired)
+		})
+	}
+}

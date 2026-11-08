@@ -96,13 +96,14 @@ func ClusterRootBlockLengthBounds(
 
 	case clusterwire.CommitPositionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.CommitPositionSbeBlockLength)
-
 	case clusterwire.CatchupPositionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.CatchupPositionSbeBlockLength)
-
 	case clusterwire.StopCatchupSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.StopCatchupSbeBlockLength)
-
+	case clusterwire.TerminationPositionSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.TerminationPositionSbeBlockLength)
+	case clusterwire.TerminationAckSbeTemplateID:
+		return clusterFixedBlockLength(clusterwire.TerminationAckSbeBlockLength)
 	case clusterwire.TimerEventSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.TimerEventSbeBlockLength)
 	case clusterwire.SessionOpenEventSbeTemplateID:
@@ -157,10 +158,8 @@ func ClusterRootBlockLengthBounds(
 
 	case clusterwire.ClientSessionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.ClientSessionSbeBlockLength)
-
 	case clusterwire.ClusterSessionSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.ClusterSessionSbeBlockLength)
-
 	case clusterwire.TimerSbeTemplateID:
 		return clusterFixedBlockLength(clusterwire.TimerSbeBlockLength)
 
@@ -218,6 +217,8 @@ func ClusterVarFieldCount(templateID, actingVersion uint16) (count int, ok bool)
 		clusterwire.AppendPositionSbeTemplateID,
 		clusterwire.CommitPositionSbeTemplateID,
 		clusterwire.StopCatchupSbeTemplateID,
+		clusterwire.TerminationPositionSbeTemplateID,
+		clusterwire.TerminationAckSbeTemplateID,
 		clusterwire.TimerEventSbeTemplateID,
 		clusterwire.SessionCloseEventSbeTemplateID,
 		clusterwire.ClusterActionRequestSbeTemplateID,

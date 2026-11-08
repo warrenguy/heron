@@ -138,6 +138,31 @@ func decodeStopCatchupFields(
 	}
 }
 
+func decodeTerminationPositionFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) TerminationPositionFields {
+	var msg clusterwire.TerminationPosition
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return TerminationPositionFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		LogPosition:      msg.LogPosition(),
+	}
+}
+
+func decodeTerminationAckFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) TerminationAckFields {
+	var msg clusterwire.TerminationAck
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return TerminationAckFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		LogPosition:      msg.LogPosition(),
+		MemberID:         msg.MemberId(),
+	}
+}
+
 // tryDecodeClusterAt parses the cluster header at offset, checks the template
 // ID, and decodes the fixed block via decode. The path stays allocation-free:
 // T is a concrete field struct (no interface boxing) and decode is a
@@ -228,5 +253,19 @@ func TryDecodeCatchupPositionAt(buf []byte, offset int) (CatchupPositionFields, 
 func TryDecodeStopCatchupAt(buf []byte, offset int) (StopCatchupFields, bool) {
 	return tryDecodeClusterAt(
 		buf, offset, clusterwire.StopCatchupSbeTemplateID, 0, decodeStopCatchupFields,
+	)
+}
+
+// TryDecodeTerminationPositionAt decodes a fixed-length TerminationPosition.
+func TryDecodeTerminationPositionAt(buf []byte, offset int) (TerminationPositionFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.TerminationPositionSbeTemplateID, 0, decodeTerminationPositionFields,
+	)
+}
+
+// TryDecodeTerminationAckAt decodes a fixed-length TerminationAck.
+func TryDecodeTerminationAckAt(buf []byte, offset int) (TerminationAckFields, bool) {
+	return tryDecodeClusterAt(
+		buf, offset, clusterwire.TerminationAckSbeTemplateID, 0, decodeTerminationAckFields,
 	)
 }

@@ -96,4 +96,23 @@ type ConsensusEgress interface {
 	//
 	// Returns true when the publish was attempted.
 	PublishNewLeadershipTerm(answer CanvassAnswer) bool
+
+	// PeerMemberIDs returns the id of each other member, in member order.
+	// The slice never changes after construction. Callers must not modify it.
+	PeerMemberIDs() []int32
+
+	// PublishTerminationPosition sends TerminationPosition to memberID.
+	//
+	// Returns false when:
+	//   - the member is unknown or is this member
+	//   - the send does not complete
+	PublishTerminationPosition(memberID int32, leadershipTermID, logPosition int64) bool
+
+	// PublishTerminationAck sends TerminationAck to the leader.
+	//
+	// Returns false when:
+	//   - the leader is unknown
+	//   - this member is the leader
+	//   - the send does not complete
+	PublishTerminationAck(leadershipTermID, logPosition int64) bool
 }

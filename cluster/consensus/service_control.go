@@ -124,11 +124,14 @@ func (a *Agent) ServicePublishFailure() error {
 //
 // Callers should pass a committed position the services will observe exactly.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Returns an error when:
 //   - no service proxy is bound ([ErrServiceControlUnbound])
 //   - serviceAckFailure is marked (returns that failure)
+//   - the module state is TERMINATING, or the member has ended
+//     ([errTerminationInProgress])
 //   - a snapshot action wait or its module snapshot take is pending
 //     ([errSnapshotActionPending])
 //   - the publish returns a non-positive code after the attempt budget
@@ -141,6 +144,9 @@ func (a *Agent) RequestServiceAck(logPosition int64) error {
 	}
 	if a.serviceAckFailure != nil {
 		return a.serviceAckFailure
+	}
+	if a.moduleState == ModuleStateTerminating || a.termination != nil {
+		return errTerminationInProgress
 	}
 	if a.HasPendingSnapshotAction() {
 		return errSnapshotActionPending
@@ -179,8 +185,12 @@ func (a *Agent) AwaitServiceStart(logPosition int64, startHandler func()) error 
 // first queued entry has reached the wait position.
 //
 // The snapshot take and the service start check read first RelevantIDs, so
-// both run before removeServiceAckHead. [Agent.snapshotTakeWork] advances the
+// both run before popServiceAckWait. [Agent.snapshotTakeWork] advances the
 // take.
+//
+// A termination wait matches acks at the first queue 0 position, which may
+// sit past the wait position. Its pop skips the snapshot take and
+// dropAbandonedSnapshotLeftovers.
 //
 // A service start wait always runs the start handler. A NULL_VALUE RelevantID
 // then marks [ErrServiceStartFailed].
@@ -194,14 +204,44 @@ func (a *Agent) serviceControlWork() int {
 		return 0
 	}
 	head := a.serviceAckWaits[0]
-	ok, err := a.hasReachedServiceAcks(head)
+
+	reach := head
+	terminationPop := a.serviceTermination == serviceTerminationWaitQueued &&
+		len(a.serviceAckWaits) == 1
+	if terminationPop {
+		first, ok := a.serviceAcks.firstLogPosition()
+		if !ok {
+			return 0
+		}
+
+		if first < head {
+			a.markServiceAckFailure(fmt.Errorf(
+				"%w: termination ack at %d below termination position %d",
+				ErrServiceAckOutOfSequence, first, head,
+			))
+			return 0
+		}
+
+		reach = first
+	}
+
+	ok, err := a.hasReachedServiceAcks(reach)
 	if err != nil {
 		a.markServiceAckFailure(err)
 		return 0
 	}
+
 	if !ok {
 		return 0
 	}
+
+	if terminationPop {
+		a.popServiceAckWait()
+		a.serviceTermination = serviceTerminationIdle
+		a.handleServicesTerminated(reach)
+		return 1
+	}
+
 	startHandler := a.serviceStartHandler
 	nullServiceID := -1
 	if startHandler != nil {
@@ -211,16 +251,12 @@ func (a *Agent) serviceControlWork() int {
 	if snapshotPop {
 		a.buildSnapshotTake(head)
 	}
-	a.removeServiceAckHead()
+	a.popServiceAckWait()
 
-	// The pop keeps capacity, so the next append does not allocate.
-	a.serviceAckWaits = slices.Delete(a.serviceAckWaits, 0, 1)
-	if a.replayJoinWaitsAhead > 0 {
-		a.replayJoinWaitsAhead--
-	}
 	if snapshotPop {
 		a.snapshotWaitPosition = 0
 	}
+
 	if startHandler != nil {
 		a.serviceStartHandler = nil
 		startHandler()
@@ -234,6 +270,19 @@ func (a *Agent) serviceControlWork() int {
 	}
 	a.dropAbandonedSnapshotLeftovers(head)
 	return 1
+}
+
+// popServiceAckWait drops one matched ack from each queue, then the head wait.
+//
+// Call only after hasReachedServiceAcks returns true. The pop keeps capacity,
+// so the next append does not allocate.
+func (a *Agent) popServiceAckWait() {
+	a.removeServiceAckHead()
+	a.serviceAckWaits = slices.Delete(a.serviceAckWaits, 0, 1)
+
+	if a.replayJoinWaitsAhead > 0 {
+		a.replayJoinWaitsAhead--
+	}
 }
 
 // retryPendingJoinLog offers a stored retriable JoinLog publish.
@@ -270,7 +319,8 @@ func (a *Agent) publishOrQueueJoinLog(fields codecs.JoinLogFields) int {
 // Behaviour: a publish under a marked serviceAckFailure does not queue a wait,
 // because waits would never drain.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Ownership: on a retriable outcome the agent stores fields as pendingJoinLog.
 // The caller must not reuse the pointer after the call.
@@ -293,14 +343,13 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 		a.pendingJoinLog = fields
 		return 0
 	}
+
 	a.pendingJoinLog = nil
 	if a.replayJoinWaitsAhead == replayJoinUnpublished {
 		a.replayJoinWaitsAhead = 0
 	}
-	if a.servicePublishFailure == nil {
-		a.servicePublishFailure = fmt.Errorf("%w: code=%d", ErrServicePublish, pos)
-		a.failMember(a.servicePublishFailure)
-	}
+
+	a.markServicePublishFailure(pos)
 	return 0
 }
 

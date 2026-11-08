@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
 
 func TestProposeMaxCommit_monotonic_rapid(t *testing.T) {
@@ -161,6 +162,7 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 			stateBefore := a.ModuleState()
 			activeOrSuspended := stateBefore == ModuleStateActive ||
 				stateBefore == ModuleStateSuspended
+			terminating := stateBefore == ModuleStateTerminating
 
 			switch step {
 			case "tick":
@@ -186,6 +188,13 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 						LogPosition:      1,
 						LeaderMemberID:   2,
 					}, nowNs)
+
+					// TERMINATING refuses a new election.
+					if terminating {
+						require.Equal(rt, countBefore, a.ElectionCount())
+						break
+					}
+
 					require.Greater(rt, a.ElectionCount(), countBefore)
 					oracleTrigger = ElectionTriggerHigherTerm
 				}
@@ -247,9 +256,9 @@ func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 					CandidateTermID:     term + termDelta,
 					CandidateMemberID:   2,
 				})
-				a.handleSteadyConsensusFragment(buf, 0, nowNs)
+				a.handleSteadyConsensusFragment(clusterwire.RequestVoteSbeTemplateID, buf, 0, nowNs)
 				installed := a.ElectionCount() > countBefore
-				require.Equal(rt, !liveBefore && termDelta > 0, installed)
+				require.Equal(rt, !liveBefore && termDelta > 0 && !terminating, installed)
 				if installed {
 					oracleTrigger = ElectionTriggerVoteRequest
 					require.Equal(rt, RoleFollower, a.Role())
@@ -428,15 +437,24 @@ func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 				liveBefore := a.Election() != nil
 				countBefore := a.ElectionCount()
 				tick()
-				if !liveBefore {
-					// The heartbeat timeout may install first. The frame then
-					// goes to that runner.
-					require.Equal(rt, countBefore+1, a.ElectionCount())
-					require.Contains(rt, []ElectionTrigger{
-						ElectionTriggerVoteRequest,
-						ElectionTriggerLeaderHeartbeatTimeout,
-					}, a.LastElectionTrigger())
+
+				if liveBefore {
+					break
 				}
+
+				// TERMINATING refuses a new election.
+				if stateBefore == ModuleStateTerminating {
+					require.Equal(rt, countBefore, a.ElectionCount())
+					break
+				}
+
+				// The heartbeat timeout may install first. The frame then
+				// goes to that runner.
+				require.Equal(rt, countBefore+1, a.ElectionCount())
+				require.Contains(rt, []ElectionTrigger{
+					ElectionTriggerVoteRequest,
+					ElectionTriggerLeaderHeartbeatTimeout,
+				}, a.LastElectionTrigger())
 			case "setState":
 				next := rapid.SampledFrom(rapidSetModuleStates).Draw(rt, "moduleState")
 				a.setModuleState(next, "test")

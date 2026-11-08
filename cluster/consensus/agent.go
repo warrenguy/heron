@@ -397,10 +397,10 @@ type Agent struct {
 	// duty cycle.
 	serviceIngressHandler func(buf []byte, offset int)
 
-	// serviceProxy publishes JoinLog and RequestServiceAck (stream 104). Nil
-	// means no service control publication is wired. JoinLog publish is a
-	// silent no-op until a proxy is set. RequestServiceAck returns
-	// ErrServiceControlUnbound.
+	// serviceProxy publishes JoinLog, RequestServiceAck, and
+	// ServiceTerminationPosition (stream 104), or is nil while service control
+	// is unwired. While nil, JoinLog publish is a silent no-op and
+	// RequestServiceAck returns ErrServiceControlUnbound.
 	serviceProxy *ServiceProxy
 
 	// pendingJoinLog is one JoinLog awaiting a successful publish, or nil.
@@ -421,7 +421,7 @@ type Agent struct {
 
 	// serviceAckWaits holds log positions of published coordination points
 	// whose acks are not yet consumed. FIFO. The first entry pairs with the
-	// expected ack id of each service.
+	// expected ack id of each service. The termination wait sits last.
 	serviceAckWaits []int64
 
 	// serviceStartHandler runs once when the service start wait pops. Non-nil
@@ -521,6 +521,29 @@ type Agent struct {
 	// termination is the reason the member ended, or nil while the member runs.
 	// Full contract on [Agent.TerminationError].
 	termination *TerminationError
+
+	// terminationPosition is the leader publisher position at SHUTDOWN or
+	// ABORT, or the position a follower took from TerminationPosition. Else
+	// nullValue.
+	terminationPosition int64
+
+	// terminationLeadershipTermID is the term of the stored position, or
+	// nullValue.
+	terminationLeadershipTermID int64
+
+	// clusterTermination is non-nil on a leader once SHUTDOWN or ABORT starts.
+	clusterTermination *clusterTermination
+
+	// terminationTimeoutNs holds [AgentConfig.TerminationTimeoutNs] after
+	// defaults.
+	terminationTimeoutNs int64
+
+	// serviceTermination is the ServiceTerminationPosition publish step.
+	serviceTermination serviceTerminationStep
+
+	// terminationRecordingLog commits the term log position at a planned end.
+	// Nil skips the commit.
+	terminationRecordingLog TerminationRecordingLog
 }
 
 // AgentConfig is the constructor config. Nil interface fields are allowed for
@@ -617,6 +640,11 @@ type AgentConfig struct {
 	// and open-session idle close.
 	SessionTimeoutNs int64
 
+	// TerminationTimeoutNs bounds the leader wait for follower termination
+	// acks from TERMINATING entry. Zero -> DefaultTerminationTimeoutNs.
+	// Negative panics at NewAgent.
+	TerminationTimeoutNs int64
+
 	// ServiceCount sizes the ServiceAck tracker. Zero for a member without
 	// clustered services. A negative value panics at NewAgent.
 	ServiceCount int
@@ -629,6 +657,9 @@ type AgentConfig struct {
 	//     error after the take resolves
 	//   - the agent reports the first fatal mark or
 	//     [ErrLocalArchiveDisconnected], then ends the member
+	//   - the agent also reports a failed TerminationPosition send, a
+	//     TerminationAck it skips after a term change, and a failed
+	//     termination commit
 	//
 	// Concurrency: ErrorHandler runs inside [Agent.DoWork].
 	//
@@ -648,6 +679,8 @@ type AgentConfig struct {
 //   - AppendPositionNotReadyTimeoutNs zero becomes
 //     DefaultAppendPositionNotReadyTimeoutNs; negative panics
 //   - SessionTimeoutNs zero becomes DefaultSessionTimeoutNs; negative panics
+//   - TerminationTimeoutNs zero becomes DefaultTerminationTimeoutNs; negative
+//     panics
 //   - ServiceCount negative panics; zero builds a ServiceAck tracker with zero
 //     queues (hasReached returns true)
 //
@@ -684,6 +717,12 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if sessionTimeout < 0 {
 		panic("consensus: negative SessionTimeoutNs")
 	}
+
+	terminationTimeout := cmp.Or(cfg.TerminationTimeoutNs, DefaultTerminationTimeoutNs)
+	if terminationTimeout < 0 {
+		panic("consensus: negative TerminationTimeoutNs")
+	}
+
 	if cfg.ServiceCount < 0 {
 		panic("consensus: negative ServiceCount")
 	}
@@ -692,33 +731,36 @@ func NewAgent(cfg AgentConfig) *Agent {
 		auth = acceptAllAuthenticator{}
 	}
 	a := &Agent{
-		election:                  cfg.Election,
-		positions:                 cfg.Positions,
-		egress:                    cfg.Egress,
-		commit:                    cfg.Commit,
-		role:                      cfg.Role,
-		moduleState:               ModuleStateActive,
-		localLogRecordingID:       nullValue,
-		leadershipTermID:          cfg.LeadershipTermID,
-		thisMemberID:              cfg.ThisMemberID,
-		leaderMemberID:            cfg.LeaderMemberID,
-		leaderHeartbeatIntervalNs: interval,
-		leaderHeartbeatTimeoutNs:  timeout,
-		sessionTimeoutNs:          sessionTimeout,
-		ingress:                   cfg.Ingress,
-		appendSource:              cfg.AppendSource,
-		appendNotReadySinceNs:     nullValue,
-		appendNotReadyTimeoutNs:   appendTimeout,
-		logPublisher:              cfg.LogPublisher,
-		joinSource:                cfg.LogJoinSource,
-		termBaseLogPosition:       cfg.TermBaseLogPosition,
-		appVersion:                cfg.AppVersion,
-		catchupReplays:            make(map[int32]catchupReplay),
-		sessions:                  newSessionManager(),
-		authenticator:             auth,
-		serviceAcks:               newServiceAckTracker(cfg.ServiceCount),
-		timers:                    newTimerService(),
-		errorHandler:              cfg.ErrorHandler,
+		election:                    cfg.Election,
+		positions:                   cfg.Positions,
+		egress:                      cfg.Egress,
+		commit:                      cfg.Commit,
+		role:                        cfg.Role,
+		moduleState:                 ModuleStateActive,
+		localLogRecordingID:         nullValue,
+		leadershipTermID:            cfg.LeadershipTermID,
+		thisMemberID:                cfg.ThisMemberID,
+		leaderMemberID:              cfg.LeaderMemberID,
+		leaderHeartbeatIntervalNs:   interval,
+		leaderHeartbeatTimeoutNs:    timeout,
+		sessionTimeoutNs:            sessionTimeout,
+		terminationTimeoutNs:        terminationTimeout,
+		terminationPosition:         nullValue,
+		terminationLeadershipTermID: nullValue,
+		ingress:                     cfg.Ingress,
+		appendSource:                cfg.AppendSource,
+		appendNotReadySinceNs:       nullValue,
+		appendNotReadyTimeoutNs:     appendTimeout,
+		logPublisher:                cfg.LogPublisher,
+		joinSource:                  cfg.LogJoinSource,
+		termBaseLogPosition:         cfg.TermBaseLogPosition,
+		appVersion:                  cfg.AppVersion,
+		catchupReplays:              make(map[int32]catchupReplay),
+		sessions:                    newSessionManager(),
+		authenticator:               auth,
+		serviceAcks:                 newServiceAckTracker(cfg.ServiceCount),
+		timers:                      newTimerService(),
+		errorHandler:                cfg.ErrorHandler,
 
 		expiredTimerCountByCorrelationID: make(map[int64]int64),
 	}
@@ -1789,6 +1831,7 @@ func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.restoreUncommittedEntries(logPosition)
 	a.clearSessionsAfter(logPosition)
 	a.releaseSessionsForNewTerm()
+	a.clusterTermination = nil
 }
 
 // reseedLogSubscriptionForNewTerm replaces the log subscription when the log
@@ -2140,15 +2183,16 @@ func (a *Agent) adoptLogRecording(
 // Behaviour:
 //   - leader: sets the clock to nowNs minus one heartbeat interval, so the
 //     first steady tick publishes a commit heartbeat. Sets the timer wheel
-//     time to nowNs without expiring timers. A startup leader marks each open
-//     session closing with TIMEOUT. Any other leader rebinds open-session
-//     egress
+//     time to nowNs without expiring timers. Clears a stored termination
+//     position. A startup leader marks each open session closing with
+//     TIMEOUT. Any other leader rebinds open-session egress
 //   - any other role: sets the clock to nowNs. The quiet-tick trigger then
 //     waits one full leader heartbeat timeout
 //   - the clock starts at 0. Without this write, a duty cycle on an absolute
 //     clock re-enters an election on the next tick
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) ElectionComplete(nowNs int64) {
 	a.election = nil
 	if a.nodeControlToggle != nil {
@@ -2160,6 +2204,8 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 		}
 		a.timeOfLastLogUpdateNs = nowNs - a.leaderHeartbeatIntervalNs
 		a.timers.currentTime(nowNs)
+		a.terminationPosition = nullValue
+		a.terminationLeadershipTermID = nullValue
 		if a.isLeaderStartup {
 			a.markOpenSessionsClosing()
 		} else {
@@ -2173,12 +2219,15 @@ func (a *Agent) ElectionComplete(nowNs int64) {
 // DoWork runs one duty-cycle tick. Returns the work count.
 //
 // Every step that can install an election runs before the client ingress
-// poll. The pending JoinLog retry runs last, so PrepareForNewLeadership can
-// drop a superseded pending JoinLog before any offer.
+// poll. The pending JoinLog retry runs after the steady branch, so
+// PrepareForNewLeadership can drop a superseded pending JoinLog before any
+// offer. The ServiceTerminationPosition retry runs last, so a pending JoinLog
+// goes first.
 //
 // DoWork returns 0 once the member has ended. See [Agent.TerminationError].
 //
-// Concurrency: invoker-only. See [Agent].
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) DoWork(nowNs int64) int {
 	if a.termination != nil {
 		return 0
@@ -2243,6 +2292,11 @@ func (a *Agent) DoWork(nowNs int64) int {
 	}
 	noteDoWorkStep("retryPendingJoinLog")
 	work += a.retryPendingJoinLog()
+	if a.termination != nil {
+		return work
+	}
+	noteDoWorkStep("retryServiceTermination")
+	work += a.retryServiceTermination()
 	return work
 }
 
@@ -2258,30 +2312,46 @@ func (a *Agent) handleIngressFragment(buf []byte, offset int) {
 	a.handleConsensusFragment(buf, offset, a.ingressPollNowNs)
 }
 
-// handleConsensusFragment routes one consensus frame.
-//
-// When election is live: stamp leader-update clock for NewLeadershipTerm /
-// CommitPosition (term >= current), then
-// [ElectionRunner.HandleConsensusMessage]. When election is nil:
-// [Agent.handleSteadyConsensusFragment] dispatches the frame.
+// handleConsensusFragment routes one consensus frame. TerminationPosition and
+// TerminationAck go to the agent, even during an election. Every other frame
+// goes to the election when one runs, else to
+// [Agent.handleSteadyConsensusFragment].
 func (a *Agent) handleConsensusFragment(buf []byte, offset int, nowNs int64) {
-	if a.election != nil {
-		a.noteLeaderUpdateClockFromFragment(buf, offset, nowNs)
+	templateID, ok := consensusMessageTemplateID(buf, offset)
+
+	switch {
+	case ok && templateID == clusterwire.TerminationPositionSbeTemplateID:
+		if fields, decoded := codecs.TryDecodeTerminationPositionAt(buf, offset); decoded {
+			a.handleTerminationPosition(fields, nowNs)
+		}
+
+	case ok && templateID == clusterwire.TerminationAckSbeTemplateID:
+		if fields, decoded := codecs.TryDecodeTerminationAckAt(buf, offset); decoded {
+			a.handleTerminationAck(fields)
+		}
+
+	case a.election != nil:
+		if ok {
+			a.noteLeaderUpdateClockFromFragment(templateID, buf, offset, nowNs)
+		}
+
 		_ = a.election.HandleConsensusMessage(buf, offset)
-		return
+
+	case ok:
+		a.handleSteadyConsensusFragment(templateID, buf, offset, nowNs)
 	}
-	a.handleSteadyConsensusFragment(buf, offset, nowNs)
 }
 
-// noteLeaderUpdateClockFromFragment peeks MessageHeader and stamps
-// timeOfLastLeaderUpdateNs for NewLeadershipTerm or CommitPosition when
-// decoded leadershipTermID >= a.leadershipTermID. Used on the election
-// ingress path before HandleConsensusMessage (clock first, then dispatch).
-func (a *Agent) noteLeaderUpdateClockFromFragment(buf []byte, offset int, nowNs int64) {
-	templateID, ok := consensusMessageTemplateID(buf, offset)
-	if !ok {
-		return
-	}
+// noteLeaderUpdateClockFromFragment sets timeOfLastLeaderUpdateNs from a
+// NewLeadershipTerm or CommitPosition frame whose leadershipTermID >=
+// a.leadershipTermID. The election ingress path calls it before
+// HandleConsensusMessage.
+func (a *Agent) noteLeaderUpdateClockFromFragment(
+	templateID uint16,
+	buf []byte,
+	offset int,
+	nowNs int64,
+) {
 	switch templateID {
 	case clusterwire.NewLeadershipTermSbeTemplateID:
 		fields, ok := codecs.TryDecodeNewLeadershipTermAt(buf, offset)
@@ -2315,12 +2385,14 @@ func (a *Agent) stampLeaderUpdateClock(termID, nowNs int64) {
 }
 
 // handleSteadyConsensusFragment dispatches one consensus frame on a settled
-// member. Drops unknown templates and frames that fail to decode.
-func (a *Agent) handleSteadyConsensusFragment(buf []byte, offset int, nowNs int64) {
-	templateID, ok := consensusMessageTemplateID(buf, offset)
-	if !ok {
-		return
-	}
+// member. The caller reads templateID from a valid cluster MessageHeader.
+// Drops unknown templates and frames that fail to decode.
+func (a *Agent) handleSteadyConsensusFragment(
+	templateID uint16,
+	buf []byte,
+	offset int,
+	nowNs int64,
+) {
 	switch templateID {
 	case clusterwire.AppendPositionSbeTemplateID:
 		if fields, ok := codecs.TryDecodeAppendPositionAt(buf, offset); ok {
@@ -2568,14 +2640,19 @@ func (a *Agent) followerConsensusWork(nowNs int64) int {
 	appendPos, ready := a.resolveAppendPosition(nowNs)
 	work := 0
 	if a.isActiveOrSuspended() && a.logAdapter != nil {
-		a.logPollNowNs = nowNs
-		var bound int64
-		if ready {
-			bound = a.followerLogPollBound(appendPos)
+		if a.hasReachedTerminationPosition() {
+			a.terminateFollower()
+			work++
 		} else {
-			bound = a.logAdapter.Position()
+			a.logPollNowNs = nowNs
+			var bound int64
+			if ready {
+				bound = a.followerLogPollBound(appendPos)
+			} else {
+				bound = a.logAdapter.Position()
+			}
+			work += a.pollLogAndProposeMax(a.logAdapter, bound)
 		}
-		work += a.pollLogAndProposeMax(a.logAdapter, bound)
 	}
 	if ready {
 		work += a.updateFollowerPosition(nowNs, appendPos, AppendPositionFlagNone)

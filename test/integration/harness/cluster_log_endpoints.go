@@ -159,10 +159,22 @@ const (
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
 
+// Cluster termination endpoints. The pair reserves one three-member consensus
+// port block (17101-17305) and one shared cluster-log multicast endpoint. The
+// next block above starts at 18301 (ClusterControlPortBase).
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterTerminationPortBase    = 17100
+	ClusterTerminationLogEndpoint = "239.255.12.101:17104"
+)
+
 // Cluster control endpoints. The pair reserves one three-member consensus
 // port block (base+1 .. base+205) and one shared cluster-log multicast
 // endpoint. The reserved range is 18301-18505. The next block above starts
-// at 18601 (ClusterMultiServiceSnapshotRetentionPortBase).
+// at 18601 (ClusterMultiServiceSnapshotRetentionPortBase). The next block
+// below ends at 17305 (ClusterTerminationPortBase).
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -872,6 +884,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterJavaPortBase,
 			memberCount: ClusterJavaMemberCount,
 			logEndpoint: ClusterJavaMixedLogEndpoint,
+		},
+		{
+			name:        "cluster-termination",
+			portBase:    ClusterTerminationPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterTerminationLogEndpoint,
 		},
 	}
 }

@@ -15,8 +15,9 @@ import (
 // controlToggleModel models the toggle value, module state and log of one
 // settled leader.
 type controlToggleModel struct {
-	value int64
-	state ModuleState
+	value        int64
+	state        ModuleState
+	shutdownTake bool
 
 	actions []modelClusterAction
 }
@@ -63,10 +64,13 @@ func (m *controlToggleModel) slowTick() int {
 		m.appendTracked(clusterwire.ClusterAction_SUSPEND)
 		m.state = ModuleStateSuspended
 		return 1
-	case int64(ControlToggleSnapshot):
+
+	case int64(ControlToggleSnapshot), int64(ControlToggleShutdown):
 		m.actions = append(m.actions, modelClusterAction{action: clusterwire.ClusterAction_SNAPSHOT})
 		m.state = ModuleStateSnapshot
+		m.shutdownTake = m.value == int64(ControlToggleShutdown)
 		return 1
+
 	case int64(ControlToggleStandbySnapshot):
 		m.actions = append(m.actions, modelClusterAction{
 			action: clusterwire.ClusterAction_SNAPSHOT,
@@ -74,11 +78,19 @@ func (m *controlToggleModel) slowTick() int {
 		})
 		m.value = int64(ControlToggleNeutral)
 		return 1
+
+	case int64(ControlToggleAbort):
+		m.state = ModuleStateTerminating
+		return 1
 	}
 	return 0
 }
 
 func (m *controlToggleModel) snapshotEnd() {
+	if m.shutdownTake {
+		m.state = ModuleStateTerminating
+		return
+	}
 	m.state = ModuleStateActive
 	if m.value == int64(ControlToggleSnapshot) {
 		m.value = int64(ControlToggleNeutral)

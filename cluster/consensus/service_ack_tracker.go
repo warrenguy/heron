@@ -126,6 +126,15 @@ func (t *serviceAckTracker) removeHead() {
 	}
 }
 
+// firstLogPosition returns the log position of the first entry in queue 0.
+// It returns false when there are zero services or queue 0 is empty.
+func (t *serviceAckTracker) firstLogPosition() (int64, bool) {
+	if len(t.queues) == 0 || len(t.queues[0]) == 0 {
+		return 0, false
+	}
+	return t.queues[0][0].logPosition, true
+}
+
 // afterOfferSequenceError runs the receive-time sequence check through
 // hasReached.
 //
@@ -138,14 +147,12 @@ func (t *serviceAckTracker) removeHead() {
 //   - nil when every first entry matches at that log position
 //   - ErrServiceAckOutOfSequence when a non-empty first entry mismatches
 func (t *serviceAckTracker) afterOfferSequenceError() error {
-	if len(t.queues) == 0 {
+	pos, ok := t.firstLogPosition()
+	if !ok {
 		return nil
 	}
-	q := t.queues[0]
-	if len(q) == 0 {
-		return nil
-	}
-	_, err := t.hasReached(q[0].logPosition)
+
+	_, err := t.hasReached(pos)
 	return err
 }
 

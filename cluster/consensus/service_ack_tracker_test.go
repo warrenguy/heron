@@ -511,3 +511,28 @@ func TestServiceAckTracker_firstRelevantIDs(t *testing.T) {
 	require.Equal(t, []int64{7, -1}, ids)
 	require.Empty(t, newServiceAckTracker(0).firstRelevantIDs())
 }
+
+func TestServiceAckTracker_firstLogPosition(t *testing.T) {
+	t.Parallel()
+
+	requireFirst := func(phase string, tr *serviceAckTracker, wantPos int64, wantOK bool) {
+		t.Helper()
+
+		pos, ok := tr.firstLogPosition()
+		require.Equal(t, wantOK, ok, phase)
+		require.Equal(t, wantPos, pos, phase)
+	}
+
+	requireFirst("zero services", newServiceAckTracker(0), 0, false)
+
+	tr := newServiceAckTracker(2)
+	requireFirst("empty queues", tr, 0, false)
+
+	require.True(t, tr.offer(1, serviceAck{ackID: 0, logPosition: 90}))
+	requireFirst("queue 0 empty", tr, 0, false)
+
+	require.True(t, tr.offer(0, serviceAck{ackID: 0, logPosition: 40}))
+	require.True(t, tr.offer(0, serviceAck{ackID: 1, logPosition: 80}))
+	requireFirst("queue 0 head", tr, 40, true)
+	require.Equal(t, 2, tr.queueDepth(0))
+}

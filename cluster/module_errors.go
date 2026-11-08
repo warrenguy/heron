@@ -107,6 +107,7 @@ func moduleAgentConfig(
 		LeaderHeartbeatIntervalNs: electionCfg.LeaderHeartbeatIntervalNs,
 		LeaderHeartbeatTimeoutNs:  electionCfg.LeaderHeartbeatTimeoutNs,
 		SessionTimeoutNs:          cfg.SessionTimeoutNs,
+		TerminationTimeoutNs:      cfg.TerminationTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
 		Authenticator:             cfg.Authenticator,
 		ServiceCount:              cfg.ServiceCount,

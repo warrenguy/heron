@@ -204,3 +204,33 @@ func (p *AeronPublisher) StopCatchup(
 		codecs.EncodeStopCatchup,
 	)
 }
+
+func (p *AeronPublisher) TerminationPosition(
+	dst PublicationTarget,
+	fields codecs.TerminationPositionFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publishClaim(
+		p,
+		dst,
+		clusterwire.TerminationPositionSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeTerminationPosition,
+	)
+}
+
+func (p *AeronPublisher) TerminationAck(
+	dst PublicationTarget,
+	fields codecs.TerminationAckFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publishClaim(
+		p,
+		dst,
+		clusterwire.TerminationAckSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeTerminationAck,
+	)
+}

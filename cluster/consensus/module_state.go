@@ -29,17 +29,21 @@ var moduleStateNames = [...]string{
 }
 
 const (
-	moduleStateReasonSnapshotAction        = "snapshot action"
-	moduleStateReasonSnapshotComplete      = "snapshot complete"
-	moduleStateReasonSnapshotCancelled     = "snapshot cancelled"
-	moduleStateReasonSnapshotWaitRetired   = "snapshot wait retired"
-	moduleStateReasonClosed                = "closed"
-	moduleStateReasonUnexpectedTermination = "unexpected termination"
-	moduleStateReasonControlSuspend        = "ClusterControl.SUSPEND"
-	moduleStateReasonControlResume         = "ClusterControl.RESUME"
-	moduleStateReasonReplaySuspend         = "ReplayClusterAction.SUSPENDED"
-	moduleStateReasonReplayResume          = "ReplayClusterAction.ACTIVE"
-	moduleStateReasonRollback              = "rollback"
+	moduleStateReasonSnapshotAction           = "snapshot action"
+	moduleStateReasonSnapshotComplete         = "snapshot complete"
+	moduleStateReasonSnapshotCancelled        = "snapshot cancelled"
+	moduleStateReasonSnapshotWaitRetired      = "snapshot wait retired"
+	moduleStateReasonClosed                   = "closed"
+	moduleStateReasonUnexpectedTermination    = "unexpected termination"
+	moduleStateReasonControlSuspend           = "ClusterControl.SUSPEND"
+	moduleStateReasonControlResume            = "ClusterControl.RESUME"
+	moduleStateReasonControlAbort             = "ClusterControl.ABORT"
+	moduleStateReasonTerminationAfterSnapshot = "termination after snapshot"
+	moduleStateReasonTerminationPosition      = "termination position"
+	moduleStateReasonExpectedTermination      = "expected termination"
+	moduleStateReasonReplaySuspend            = "ReplayClusterAction.SUSPENDED"
+	moduleStateReasonReplayResume             = "ReplayClusterAction.ACTIVE"
+	moduleStateReasonRollback                 = "rollback"
 )
 
 func (s ModuleState) String() string {

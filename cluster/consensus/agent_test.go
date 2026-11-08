@@ -166,6 +166,20 @@ type recordingEgress struct {
 	// refuseTerm, when true, PublishNewLeadershipTerm returns false.
 	// Default false so acceptance tests see true without configuring.
 	refuseTerm bool
+
+	peerIDs []int32
+
+	terminationPositions []terminationPublish
+	terminationAcks      []terminationPublish
+
+	refuseTerminationFor map[int32]bool
+	refuseTerminationAck bool
+}
+
+type terminationPublish struct {
+	memberID int32
+	term     int64
+	position int64
 }
 
 func (e *recordingEgress) PublishCommitPosition(commitPosition, leadershipTermID int64) {
@@ -202,6 +216,36 @@ func (e *recordingEgress) PublishStopCatchup(leadershipTermID int64, followerMem
 func (e *recordingEgress) PublishNewLeadershipTerm(answer CanvassAnswer) bool {
 	e.answers = append(e.answers, answer)
 	return !e.refuseTerm
+}
+
+func (e *recordingEgress) PeerMemberIDs() []int32 { return e.peerIDs }
+
+func (e *recordingEgress) PublishTerminationPosition(
+	memberID int32,
+	leadershipTermID, logPosition int64,
+) bool {
+	if e.refuseTerminationFor[memberID] {
+		return false
+	}
+
+	e.terminationPositions = append(e.terminationPositions, terminationPublish{
+		memberID: memberID,
+		term:     leadershipTermID,
+		position: logPosition,
+	})
+	return true
+}
+
+func (e *recordingEgress) PublishTerminationAck(leadershipTermID, logPosition int64) bool {
+	if e.refuseTerminationAck {
+		return false
+	}
+
+	e.terminationAcks = append(e.terminationAcks, terminationPublish{
+		term:     leadershipTermID,
+		position: logPosition,
+	})
+	return true
 }
 
 func TestProposeMaxCommit_monotonic(t *testing.T) {
@@ -451,6 +495,22 @@ func TestNewAgent_negativeHeartbeatIntervalPanics(t *testing.T) {
 func TestNewAgent_negativeHeartbeatTimeoutPanics(t *testing.T) {
 	require.Panics(t, func() {
 		_ = NewAgent(AgentConfig{LeaderHeartbeatTimeoutNs: -1})
+	})
+}
+
+func TestNewAgent_terminationTimeout(t *testing.T) {
+	a := NewAgent(AgentConfig{})
+	require.Equal(t, DefaultTerminationTimeoutNs, a.terminationTimeoutNs)
+	require.Equal(t, int64(nullValue), a.terminationPosition)
+	require.Equal(t, int64(nullValue), a.terminationLeadershipTermID)
+
+	const custom int64 = 42
+	a = NewAgent(AgentConfig{TerminationTimeoutNs: custom})
+	require.Equal(t, custom, a.terminationTimeoutNs)
+	require.Equal(t, int64(nullValue), a.terminationPosition)
+
+	require.PanicsWithValue(t, "consensus: negative TerminationTimeoutNs", func() {
+		_ = NewAgent(AgentConfig{TerminationTimeoutNs: -1})
 	})
 }
 

@@ -299,13 +299,14 @@ func (a *Agent) buildSnapshotTake(logPosition int64) {
 //
 // Returns one per completed state, plus one for a failure.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) snapshotTakeWork(nowNs int64) int {
 	work := 0
 	for a.snapshotTake != nil {
 		completed, err := a.stepSnapshotTake(a.snapshotTake, nowNs)
 		if err != nil {
-			a.failSnapshotTake(err)
+			a.failSnapshotTake(err, nowNs)
 			return work + 1
 		}
 		if !completed {
@@ -505,7 +506,7 @@ func (a *Agent) awaitSnapshotStop(take *snapshotTake, nowNs int64) (bool, error)
 	if err := take.recordingLog.Force(take.recordingLogSyncLevel); err != nil {
 		result.ForceErr = fmt.Errorf("%w: %w", ErrSnapshotRecordingLogForce, err)
 	}
-	a.resolveSnapshotTake(result)
+	a.resolveSnapshotTake(result, nowNs)
 	return true, nil
 }
 
@@ -558,12 +559,12 @@ func (t *snapshotTake) appendRecordingLogRows() error {
 
 // failSnapshotTake reports cause before it ends SNAPSHOT. A report that ends
 // the member then does not pass through ACTIVE.
-func (a *Agent) failSnapshotTake(cause error) {
+func (a *Agent) failSnapshotTake(cause error, nowNs int64) {
 	take := a.snapshotTake
 	cleanupSnapshotTake(take)
 	a.storeSnapshotTakeResult(take.result(nullValue, cause))
 	a.reportError(cause)
-	a.endSnapshotState(moduleStateReasonSnapshotComplete)
+	a.endSnapshotTake(nowNs)
 }
 
 func (a *Agent) storeSnapshotTakeResult(result SnapshotTakeResult) {
@@ -572,9 +573,10 @@ func (a *Agent) storeSnapshotTakeResult(result SnapshotTakeResult) {
 	a.hasLastSnapshotTake = true
 }
 
-func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult) {
+func (a *Agent) resolveSnapshotTake(result SnapshotTakeResult, nowNs int64) {
 	a.storeSnapshotTakeResult(result)
-	a.endSnapshotState(moduleStateReasonSnapshotComplete)
+	a.endSnapshotTake(nowNs)
+
 	if result.ForceErr != nil {
 		a.reportError(result.ForceErr)
 	}

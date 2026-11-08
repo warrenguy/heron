@@ -8,10 +8,11 @@ import (
 )
 
 // ServiceProxy publishes module-to-service control frames on the service
-// stream (default 104). Frames are JoinLog (template 40) and
-// RequestServiceAck (template 108).
+// stream (default 104). Frames are JoinLog (template 40), RequestServiceAck
+// (template 108), and ServiceTerminationPosition (template 42).
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Ownership: the caller owns the Publication. ServiceProxy does not close the
 // publication on replace.
@@ -150,6 +151,31 @@ func (p *ServiceProxy) PublishRequestServiceAck(logPosition int64) int64 {
 				0,
 				uint16(clusterwire.RequestServiceAckSbeSchemaVersion),
 				codecs.RequestServiceAckFields{LogPosition: logPosition},
+			)
+			return encOK
+		},
+	)
+}
+
+// PublishServiceTerminationPosition encodes ServiceTerminationPosition
+// (template 42) and offers it.
+//
+// Returns the same values as [ServiceProxy.PublishRequestServiceAck].
+func (p *ServiceProxy) PublishServiceTerminationPosition(
+	logPosition int64,
+	ackRequired bool,
+) int64 {
+	return p.publishEncoded(
+		codecs.ServiceTerminationPositionEncodedLen(),
+		func(scratch []byte) bool {
+			_, encOK := codecs.EncodeServiceTerminationPosition(
+				scratch,
+				0,
+				uint16(clusterwire.ServiceTerminationPositionSbeSchemaVersion),
+				codecs.ServiceTerminationPositionFields{
+					LogPosition: logPosition,
+					AckRequired: booleanTypeFromBool(ackRequired),
+				},
 			)
 			return encOK
 		},

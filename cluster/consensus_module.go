@@ -338,6 +338,7 @@ func OpenConsensusModule(
 	module.agent.SetSnapshotRecordingControl(snapshotControl)
 	module.agent.SetSnapshotPublicationAdder(snapshotPublicationAdder{client: module.client})
 	module.agent.SetSnapshotRecordingLog(recovery.RecordingLog(), cfg.RecordingLogFileSyncLevel)
+	module.agent.SetTerminationRecordingLog(recovery.RecordingLog())
 	module.agent.SetSnapshotStream(cfg.SnapshotChannel, cfg.SnapshotStreamID)
 
 	if snapshots := recovery.Plan().Snapshots; len(snapshots) > 0 {
@@ -647,6 +648,9 @@ func (m *ConsensusModule) trackLogReplication(r *logReplication) {
 
 // Close tears the member down in reverse open order.
 //
+// Close sends ServiceTerminationPosition at the commit position. Close does
+// not wait for a service ack.
+//
 // The log recording stop abandons a pending async stop. The blocking drain
 // runs only when a start channel is still kept.
 //
@@ -676,12 +680,15 @@ func (m *ConsensusModule) Close() error {
 	// Order inside the block:
 	//   - MarkClosed first. CLOSED is terminal, so the take cancel cannot
 	//     store ACTIVE.
+	//   - StopServicesAtCommit before SetServiceProxy(nil). The send needs a
+	//     bound proxy.
 	//   - SetClientIngress(nil) before SetElection(nil). A leader with no
 	//     election accepts connects.
 	//   - CloseSessionEgress after SetClientIngress(nil), so a new accept
 	//     cannot queue an egress publication.
 	if m.agent != nil {
 		m.agent.MarkClosed()
+		m.agent.StopServicesAtCommit()
 		m.agent.CloseSnapshotTake()
 		m.agent.SetArchiveConnection(nil)
 		m.agent.SetModuleStateCounter(nil)
@@ -690,6 +697,7 @@ func (m *ConsensusModule) Close() error {
 		m.agent.SetSnapshotRecordingControl(nil)
 		m.agent.SetSnapshotPublicationAdder(nil)
 		m.agent.SetSnapshotRecordingLog(nil, recordinglog.FileSyncNone)
+		m.agent.SetTerminationRecordingLog(nil)
 		m.agent.SetClientIngress(nil)
 		m.agent.SetServiceIngress(nil)
 		m.agent.SetServiceProxy(nil)

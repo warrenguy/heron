@@ -4,6 +4,7 @@ package consensus
 
 import (
 	"math"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -245,6 +246,50 @@ func TestServiceProxy_PublishRequestServiceAck_happy(t *testing.T) {
 	require.Equal(t, logPos, got.LogPosition)
 }
 
+func TestServiceProxy_PublishServiceTerminationPosition(t *testing.T) {
+	const logPos int64 = 4242
+
+	for _, ack := range []bool{false, true} {
+		p, pub := boundServiceProxy(t)
+		require.Positive(t, p.PublishServiceTerminationPosition(logPos, ack))
+		requireServiceTerminationFrame(t, pub, logPos, ack)
+	}
+}
+
+func TestStopServicesAtCommit(t *testing.T) {
+	t.Parallel()
+
+	commit := new(atomic.Int64)
+	commit.Store(80)
+
+	t.Run("publishes at commit without a wait", func(t *testing.T) {
+		a := NewAgent(AgentConfig{ServiceCount: 1, Commit: commit})
+		proxy, pub := boundServiceProxy(t)
+		a.SetServiceProxy(proxy)
+
+		a.StopServicesAtCommit()
+		requireServiceTerminationFrame(t, pub, 80, false)
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+	})
+
+	t.Run("no services skips publish", func(t *testing.T) {
+		a := NewAgent(AgentConfig{Commit: commit})
+		proxy, pub := boundServiceProxy(t)
+		a.SetServiceProxy(proxy)
+		before := pub.Position()
+
+		a.StopServicesAtCommit()
+		require.Equal(t, before, pub.Position())
+	})
+
+	t.Run("no proxy skips publish", func(t *testing.T) {
+		a := NewAgent(AgentConfig{ServiceCount: 1, Commit: commit})
+
+		a.StopServicesAtCommit()
+		require.Equal(t, 0, a.PendingServiceAckWaits())
+	})
+}
+
 // Asserts every publish method against the shared failure matrix: nil receiver,
 // unbound publisher, retriable exhaustion, and terminal close. Failed publishes
 // do not mutate publication state, so one setup serves both calls.
@@ -294,6 +339,7 @@ func TestServiceProxy_publishFailurePaths(t *testing.T) {
 			p := tt.setup(t)
 			require.Equal(t, tt.wantCode, p.PublishJoinLog(fields))
 			require.Equal(t, tt.wantCode, p.PublishRequestServiceAck(99))
+			require.Equal(t, tt.wantCode, p.PublishServiceTerminationPosition(99, true))
 		})
 	}
 }

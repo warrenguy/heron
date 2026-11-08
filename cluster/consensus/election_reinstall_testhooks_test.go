@@ -29,6 +29,16 @@ func openLogImage(endOfStreamPosition int64) logStopAdapter {
 	}
 }
 
+// reachedLogImage binds an open image. Its subscriber position and its
+// end-of-stream word are both logStopEndOfStream.
+func reachedLogImage(tb testing.TB) *LogAdapter {
+	tb.Helper()
+	adapter, image := boundLogAdapter(tb)
+	aeron.ImageSetSubscriberPositionForHooks(image, logStopEndOfStream)
+	aeron.ImageSetEndOfStreamPositionForHooks(image, logStopEndOfStream)
+	return adapter
+}
+
 // closedLogImage binds a closed image. Its subscriber position is
 // logStopEndOfStream. Its end-of-stream word is endOfStreamPosition.
 func closedLogImage(endOfStreamPosition int64) logStopAdapter {
@@ -77,15 +87,18 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 	const followedLeader int32 = 1
 
 	type logStopCase struct {
-		name           string
-		role           Role
-		leaderMemberID int32
-		adapter        logStopAdapter
-		stopSignalled  bool
-		stopPosition   int64
-		state          ModuleState
-		wantTrigger    ElectionTrigger
-		wantGraceful   int32
+		name                string
+		role                Role
+		leaderMemberID      int32
+		adapter             logStopAdapter
+		stopSignalled       bool
+		stopPosition        int64
+		state               ModuleState
+		setTermination      bool
+		terminationPosition int64
+		wantTerminated      bool
+		wantTrigger         ElectionTrigger
+		wantGraceful        int32
 	}
 	tests := []logStopCase{
 		{
@@ -294,6 +307,54 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			wantTrigger:    ElectionTriggerLogImageClosed,
 			wantGraceful:   followedLeader,
 		},
+		{
+			name:                "closed_image_at_termination_position",
+			role:                RoleFollower,
+			leaderMemberID:      followedLeader,
+			adapter:             closedLogImage(logStopEndOfStream),
+			state:               ModuleStateActive,
+			setTermination:      true,
+			terminationPosition: logStopEndOfStream,
+			wantTerminated:      true,
+			wantTrigger:         ElectionTriggerNone,
+		},
+		{
+			name:                "closed_image_below_termination_position",
+			role:                RoleFollower,
+			leaderMemberID:      followedLeader,
+			adapter:             closedLogImage(logStopEndOfStream),
+			state:               ModuleStateActive,
+			setTermination:      true,
+			terminationPosition: logStopEndOfStream + 1,
+			wantTrigger:         ElectionTriggerLogImageClosed,
+			wantGraceful:        followedLeader,
+		},
+		{
+			name:                "stop_at_termination_position",
+			role:                RoleFollower,
+			leaderMemberID:      followedLeader,
+			adapter:             reachedLogImage,
+			stopSignalled:       true,
+			stopPosition:        logStopEndOfStream,
+			state:               ModuleStateActive,
+			setTermination:      true,
+			terminationPosition: logStopEndOfStream,
+			wantTerminated:      true,
+			wantTrigger:         ElectionTriggerNone,
+		},
+		{
+			name:                "stop_below_termination_position",
+			role:                RoleFollower,
+			leaderMemberID:      followedLeader,
+			adapter:             reachedLogImage,
+			stopSignalled:       true,
+			stopPosition:        logStopEndOfStream,
+			state:               ModuleStateActive,
+			setTermination:      true,
+			terminationPosition: logStopEndOfStream + 1,
+			wantTrigger:         ElectionTriggerLogRecordingStopped,
+			wantGraceful:        followedLeader,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,12 +371,28 @@ func TestElectionReinstall_logStopTriggers(t *testing.T) {
 			a.SetElectionFactory(fac.factory())
 			a.setModuleState(tc.state, "test")
 
+			if tc.setTermination {
+				a.terminationPosition = tc.terminationPosition
+				a.terminationLeadershipTermID = a.leadershipTermID
+			}
+
 			work := a.DoWork(nowNs)
 			require.False(t, control.stopSignalled, "mark consumed")
-			require.Equal(t, tc.state, a.ModuleState())
+
+			// A log at the termination position skips the election. The same
+			// DoWork call then terminates the member.
+			if tc.wantTerminated {
+				requireTerminated(t, a, ErrClusterTerminated, true)
+				require.Positive(t, work)
+			} else {
+				require.Equal(t, tc.state, a.ModuleState())
+			}
 
 			if tc.wantTrigger == ElectionTriggerNone {
-				require.Zero(t, work)
+				if !tc.wantTerminated {
+					require.Zero(t, work)
+				}
+
 				require.Nil(t, a.Election())
 				require.Zero(t, a.ElectionCount())
 				require.Equal(t, tc.role, a.Role())

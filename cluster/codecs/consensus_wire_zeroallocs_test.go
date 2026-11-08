@@ -125,6 +125,37 @@ func TestTryDecodeClusterAt_ZeroAllocs(t *testing.T) {
 			},
 		},
 		{
+			name: "TerminationPosition",
+			wire: func(t *testing.T) []byte {
+				return encodeClusterWire(t, func(buf []byte) (int, bool) {
+					return codecs.EncodeTerminationPosition(
+						buf, 0, actingVersion, codecs.TerminationPositionFields{
+							LeadershipTermID: 1,
+							LogPosition:      2,
+						},
+					)
+				})
+			},
+			decode: func(buf []byte, offset, _ int) {
+				_, _ = codecs.TryDecodeTerminationPositionAt(buf, offset)
+			},
+		},
+		{
+			name: "TerminationAck",
+			wire: func(t *testing.T) []byte {
+				return encodeClusterWire(t, func(buf []byte) (int, bool) {
+					return codecs.EncodeTerminationAck(buf, 0, actingVersion, codecs.TerminationAckFields{
+						LeadershipTermID: 1,
+						LogPosition:      2,
+						MemberID:         3,
+					})
+				})
+			},
+			decode: func(buf []byte, offset, _ int) {
+				_, _ = codecs.TryDecodeTerminationAckAt(buf, offset)
+			},
+		},
+		{
 			name: "NewLeadershipTermEvent",
 			wire: func(t *testing.T) []byte {
 				return encodeClusterWire(t, func(buf []byte) (int, bool) {

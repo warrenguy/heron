@@ -78,6 +78,9 @@ func TestNormalize_defaults(t *testing.T) {
 	// SessionTimeoutNs stays zero: Normalize applies no default; NewAgent maps
 	// zero to DefaultSessionTimeoutNs. Negative fails Validate.
 	require.Zero(t, cfg.SessionTimeoutNs)
+	// Normalize leaves TerminationTimeoutNs at zero. NewAgent maps zero to
+	// DefaultTerminationTimeoutNs.
+	require.Zero(t, cfg.TerminationTimeoutNs)
 }
 
 func TestValidate_sessionTimeoutNsZeroOK(t *testing.T) {
@@ -87,6 +90,16 @@ func TestValidate_sessionTimeoutNsZeroOK(t *testing.T) {
 	cfg := topologyConfig(0)
 	require.NoError(t, cfg.Validate())
 	cfg.SessionTimeoutNs = 1
+	require.NoError(t, cfg.Validate())
+}
+
+func TestValidate_terminationTimeoutNsZeroOK(t *testing.T) {
+	t.Parallel()
+
+	// topologyConfig leaves TerminationTimeoutNs at zero.
+	cfg := topologyConfig(0)
+	require.NoError(t, cfg.Validate())
+	cfg.TerminationTimeoutNs = 1
 	require.NoError(t, cfg.Validate())
 }
 
@@ -729,6 +742,13 @@ func TestValidate_errors(t *testing.T) {
 				cfg.SessionTimeoutNs = -1
 			},
 			want: "cluster: SessionTimeoutNs must not be negative",
+		},
+		{
+			name: "negative TerminationTimeoutNs",
+			mutate: func(cfg *cluster.Config) {
+				cfg.TerminationTimeoutNs = -1
+			},
+			want: "cluster: TerminationTimeoutNs must not be negative",
 		},
 		{
 			name: "invalid Election config",
