@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/election/electiontest"
+	"github.com/warrenguy/heron/internal/electiontest"
 )
 
 const defaultMaxSteps = 100_000

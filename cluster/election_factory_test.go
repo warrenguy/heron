@@ -9,8 +9,8 @@ import (
 
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/election/electiontest"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/electiontest"
 )
 
 // mapTermLookup is a RecordingLogLookup for factory mapping tests.

@@ -2,7 +2,7 @@ package consensus_test
 
 import (
 	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election/electiontest"
+	"github.com/warrenguy/heron/internal/electiontest"
 )
 
 var _ consensus.AgentHandler = (*electiontest.NoopAgentHandler)(nil)
