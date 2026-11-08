@@ -1,6 +1,7 @@
 package client
 
 import (
+	"cmp"
 	"errors"
 
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -14,9 +15,8 @@ const (
 )
 
 func sessionConnectClientInfo(clientName string) []byte {
-	if clientName == "" {
-		clientName = defaultClusterClientName
-	}
+	clientName = cmp.Or(clientName, defaultClusterClientName)
+
 	return []byte("name=" + clientName + " " + clusterConnectClientLabel)
 }
 

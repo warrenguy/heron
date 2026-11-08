@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"cmp"
 	"fmt"
 	"time"
 
@@ -124,26 +125,18 @@ func (cfg Config) resourceLingerDuration() time.Duration {
 }
 
 func normalizeConfig(cfg Config) Config {
-	if cfg.DriverTimeout == 0 {
-		cfg.DriverTimeout = defaultDriverTimeout
-	}
-	if cfg.KeepAliveInterval == 0 {
-		cfg.KeepAliveInterval = defaultKeepAliveInterval
-	}
-	if cfg.IdleSleepDuration == 0 {
-		cfg.IdleSleepDuration = defaultIdleSleepDuration
-	}
-	if cfg.PollTimeout == 0 {
-		cfg.PollTimeout = defaultPollTimeout
-	}
-	if cfg.PublicationOfferTimeout == 0 {
-		cfg.PublicationOfferTimeout = cfg.PollTimeout
-	}
+	cfg.DriverTimeout = cmp.Or(cfg.DriverTimeout, defaultDriverTimeout)
+	cfg.KeepAliveInterval = cmp.Or(cfg.KeepAliveInterval, defaultKeepAliveInterval)
+	cfg.IdleSleepDuration = cmp.Or(cfg.IdleSleepDuration, defaultIdleSleepDuration)
+	cfg.PollTimeout = cmp.Or(cfg.PollTimeout, defaultPollTimeout)
+	cfg.PublicationOfferTimeout = cmp.Or(cfg.PublicationOfferTimeout, cfg.PollTimeout)
+
 	if cfg.EpochClock == nil {
 		cfg.EpochClock = func() int64 {
 			return time.Now().UnixMilli()
 		}
 	}
+
 	if cfg.NanoClock == nil {
 		cfg.NanoClock = func() int64 {
 			return time.Now().UnixNano()

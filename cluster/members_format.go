@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strconv"
@@ -80,10 +81,7 @@ func BuildClusterMembersString(cfg MembersStringConfig) (string, error) {
 		return "", errors.New("cluster: IngressHostnames and ClusterHostnames must be the same length")
 	}
 
-	portBase := cfg.PortBase
-	if portBase == 0 {
-		portBase = DefaultPortBase
-	}
+	portBase := cmp.Or(cfg.PortBase, DefaultPortBase)
 
 	var b strings.Builder
 	for i, ingressHost := range cfg.IngressHostnames {

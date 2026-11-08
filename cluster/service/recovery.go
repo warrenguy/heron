@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"time"
@@ -84,15 +85,10 @@ var _ recoveryTransport = (*aeron.Client)(nil)
 
 // defaultRecoveryConfig returns a copy of recovery with the defaults set.
 func defaultRecoveryConfig(recovery RecoveryConfig) *RecoveryConfig {
-	if recovery.Timeout == 0 {
-		recovery.Timeout = DefaultRecoveryTimeout
-	}
-	if recovery.ReplayChannel == "" {
-		recovery.ReplayChannel = DefaultReplayChannel
-	}
-	if recovery.ReplayStreamID == 0 {
-		recovery.ReplayStreamID = DefaultReplayStreamID
-	}
+	recovery.Timeout = cmp.Or(recovery.Timeout, DefaultRecoveryTimeout)
+	recovery.ReplayChannel = cmp.Or(recovery.ReplayChannel, DefaultReplayChannel)
+	recovery.ReplayStreamID = cmp.Or(recovery.ReplayStreamID, DefaultReplayStreamID)
+
 	return &recovery
 }
 
