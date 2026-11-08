@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // Golden wire bytes for client session messages at actingVersion 17.

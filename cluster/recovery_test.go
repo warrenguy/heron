@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // termBaseStride is the log-position step between consecutive term bases in

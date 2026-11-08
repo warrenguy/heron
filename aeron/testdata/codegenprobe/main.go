@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 type publisher interface {

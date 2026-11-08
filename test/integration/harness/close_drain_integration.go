@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 const (

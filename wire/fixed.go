@@ -2,7 +2,7 @@
 // payload.
 package wire
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 // CheckLength reports whether length is at least minimum.
 //

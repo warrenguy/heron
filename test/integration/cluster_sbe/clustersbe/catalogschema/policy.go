@@ -3,7 +3,7 @@ package catalogschema
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 const (

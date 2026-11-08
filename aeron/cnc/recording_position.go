@@ -3,7 +3,7 @@ package cnc
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 var errRecordingPositionSourceIdentityTooLong = errors.New(

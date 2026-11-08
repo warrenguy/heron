@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/record"
 )
 
 type MessageHandler func(

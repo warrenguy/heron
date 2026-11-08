@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 func TestClaimFillCommit_success(t *testing.T) {

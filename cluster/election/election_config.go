@@ -3,7 +3,7 @@ package election
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 type ElectionConfig struct {

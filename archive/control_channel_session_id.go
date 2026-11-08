@@ -3,7 +3,7 @@ package archive
 import (
 	"strconv"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 // usesControlChannelSessionID reports whether connect puts session-id on the

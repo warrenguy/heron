@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // fragmentTB is the testing surface used by fragmented-message helpers. Embeds

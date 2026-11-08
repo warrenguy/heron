@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 	ipcChannel      = "aeron:ipc?term-length=64k"
 )
 
-var pingPayload = []byte("heron-cluster-echo-ping")
+var pingPayload = []byte("luas-cluster-echo-ping")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

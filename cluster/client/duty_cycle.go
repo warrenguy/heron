@@ -1,6 +1,6 @@
 package client
 
-import "github.com/warrenguy/heron/idlestrategy"
+import "github.com/warrenguy/luas/idlestrategy"
 
 // SpinOnce runs one duty-cycle iteration: DoWork, PollEgress, then idle pacing via
 // the session config IdleStrategy. Returns the PollEgress work count.

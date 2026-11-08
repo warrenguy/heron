@@ -3,10 +3,10 @@ package cluster
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // Snapshots[0] is the consensus module snapshot. The later rows hold service

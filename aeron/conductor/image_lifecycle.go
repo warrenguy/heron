@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 var (

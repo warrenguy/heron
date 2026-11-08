@@ -5,7 +5,7 @@ package election
 import (
 	"os"
 
-	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/luas/mmap"
 )
 
 func callInitialiseOnCreate(_ string, buf []byte, version int32) (int, int, error) {

@@ -5,10 +5,10 @@ package harness
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 const (

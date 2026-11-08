@@ -4,7 +4,7 @@
   "remoteUser": "vscode",
   "updateRemoteUserUID": false,
   "containerEnv": {
-    "HERON_TIER": "docker"
+    "LUAS_TIER": "docker"
   },
   "features": {
     "ghcr.io/devcontainers/features/java:1": {

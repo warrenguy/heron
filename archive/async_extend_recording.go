@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs/archivewire"
+import "github.com/warrenguy/luas/archive/codecs/archivewire"
 
 // AsyncExtendRecording is one non-blocking extend recording request.
 //

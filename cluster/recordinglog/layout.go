@@ -1,6 +1,6 @@
 package recordinglog
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 const (
 	recordingIDOffset         = 0

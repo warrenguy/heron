@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/warrenguy/heron/test/bench/harness"
+	"github.com/warrenguy/luas/test/bench/harness"
 )
 
 var (

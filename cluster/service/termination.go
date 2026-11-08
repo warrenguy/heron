@@ -3,7 +3,7 @@ package service
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 // terminationSendAttempts caps the failed sends of one termination drain. One

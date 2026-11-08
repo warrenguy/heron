@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // scenarioRestart crashes one node after progress, restarts it, then expects

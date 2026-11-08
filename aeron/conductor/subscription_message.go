@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 var ErrSubscriptionMessageOutOfBounds = errors.New("conductor: subscription message out of bounds")

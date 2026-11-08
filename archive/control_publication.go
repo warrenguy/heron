@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/aeron"
+import "github.com/warrenguy/luas/aeron"
 
 // ControlPublication is the archive control request handle.
 //

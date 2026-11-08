@@ -3,11 +3,11 @@ package client
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 // appIngressBlockedCode returns a non-zero publication code when app ingress must
@@ -84,14 +84,14 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 }
 
 // Offer prepends a SessionMessageHeader and offers payload via the leader ingress
-// publication. Heron offers once on ingressScratch.
+// publication. Offer makes one offer on ingressScratch and does not retry.
 //
-// The application goroutine must call client.DoWork between spins and re-invoke on
-// BackPressured or AdminAction (invoker-only transport; no internal retry).
-// Returns aeron publication status codes; no Go error on the hot path.
+// Call from the goroutine that runs client.DoWork. That goroutine must call
+// client.DoWork between spins and re-invoke on BackPressured or AdminAction.
+// Returns aeron publication status codes. The hot path does not return a Go error.
 //
-// EncodeIngressHeader failure maps to NotConnected; ingressScratch is sized at
-// construct so encode cannot fail on valid session state. Exclusive publications
+// EncodeIngressHeader failure maps to NotConnected. Construction sizes
+// ingressScratch, so encode cannot fail on valid session state. Exclusive publications
 // return UnsupportedMessageLength when header+payload exceeds maxPayloadLength;
 // concurrent publications may fragment larger totals via OfferWithOffset.
 //
@@ -297,19 +297,21 @@ func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
 }
 
 // SendKeepAlive offers one SessionKeepAlive control frame via leader ingress.
-// Java sendKeepAlive retries tryClaim in a bounded loop; Heron offers once. The
-// application goroutine must call client.DoWork between spins and re-invoke on
-// BackPressured or AdminAction (invoker-only transport; no internal retry).
+// Java sendKeepAlive retries tryClaim in a bounded loop; Luas offers once and does
+// not retry.
+//
+// Call from the goroutine that runs client.DoWork. That goroutine must call
+// client.DoWork between spins and re-invoke on BackPressured or AdminAction.
 //
 // Returns the publication stream position on success (>0) or Aeron publication
-// status codes on failure; no Go error on the hot path. Session-guard codes
+// status codes on failure. The hot path does not return a Go error. Session-guard codes
 // (Closed, blocked NotConnected) return without tracking. When CONNECTED with a
 // disconnected ingress publication, returns NotConnected and tracks via
 // leaderIngressPublication, same as Offer and TryClaim.
 //
 // During leadership transition keep-alive may fail; keep calling PollEgress with
-// DoWork between spins. Recovery keep-alives are sent from pollLeaderRecovery, not
-// this API.
+// DoWork between spins. pollLeaderRecovery sends recovery keep-alives. This method
+// does not.
 //
 // For paced retry, see SendKeepAliveUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) SendKeepAlive() int64 {
@@ -341,22 +343,24 @@ func (ac *AeronCluster) offerSnapshotRequest(
 
 // SendSnapshotRequest offers one AdminRequest (template 26, SNAPSHOT, empty
 // payload) on the leader ingress publication. Java equivalent:
-// AeronCluster.sendAdminRequestToTakeASnapshot; Heron offers once on
+// AeronCluster.sendAdminRequestToTakeASnapshot; Luas offers once on
 // controlScratch. Requires elevated cluster privileges; the consensus module may
 // respond with AdminResponseCode_UNAUTHORISED_ACCESS.
 //
-// correlationID is caller-supplied and echoed on egress AdminResponse. Use
+// The caller supplies correlationID. Egress AdminResponse echoes it. Use
 // Aeron().NextCorrelationID() or an application sequence; the client does not
 // allocate or track correlation ids for admin.
 //
 // Returns publication stream position on success (>0) or Aeron publication status
-// codes on failure (BackPressured, NotConnected, Closed, etc.); no Go error on the
-// hot path. Session-guard codes (Closed, blocked NotConnected) return without
+// codes on failure (BackPressured, NotConnected, Closed, etc.). The hot path does
+// not return a Go error. Session-guard codes (Closed, blocked NotConnected) return without
 // tracking. When CONNECTED with a disconnected ingress publication, returns
 // NotConnected and tracks via leaderIngressPublication, same as Offer and
-// SendKeepAlive. Single offer only; caller must invoke Aeron().DoWork() between
-// spins and re-invoke on BackPressured or AdminAction (invoker-only transport; no
-// internal retry).
+// SendKeepAlive.
+//
+// Makes one offer and does not retry. Call from the goroutine that runs
+// Aeron().DoWork(). That goroutine must call Aeron().DoWork() between spins and
+// re-invoke on BackPressured or AdminAction.
 //
 // During leadership transition admin may fail; keep calling PollEgress with DoWork
 // between spins. Only SessionStateConnected with connected leader ingress proceeds.

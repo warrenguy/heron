@@ -3,7 +3,7 @@ package ringbuffer
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 const counterStride = 128

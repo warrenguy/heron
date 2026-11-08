@@ -14,16 +14,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/service"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/service"
 )
 
 // ProcessMemberEnv is the environment variable that carries a ProcessMemberSpec.
 // An empty value means this process is the test, not a child member.
-const ProcessMemberEnv = "HERON_PROCESS_MEMBER"
+const ProcessMemberEnv = "LUAS_PROCESS_MEMBER"
 
 // ProcessMemberSpec is the JSON value of ProcessMemberEnv.
 //

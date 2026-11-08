@@ -3,9 +3,9 @@ package clustersbe
 import (
 	"slices"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 // Cross-language hex contract: Java encode must match catalog.hex

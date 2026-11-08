@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/internal/transportfault"
 )
 
 // ConnectState mirrors Java Client.AsyncConnect step values.

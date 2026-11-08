@@ -5,9 +5,9 @@
 package archivejava
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 const (
@@ -24,10 +24,10 @@ const (
 )
 
 const (
-	ClusterDir           = "/tmp/heron-cluster-0"
+	ClusterDir           = "/tmp/luas-cluster-0"
 	RecordingLogFileName = "recording.log"
-	ArchiveDir           = "/tmp/heron-archive"
-	ReadyMarker          = ".heron-archive-ready"
+	ArchiveDir           = "/tmp/luas-archive"
+	ReadyMarker          = ".luas-archive-ready"
 	ComposeAeronDir      = "/dev/shm/aeron"
 )
 
@@ -45,18 +45,18 @@ const (
 )
 
 const (
-	ComposeGateEnvKey  = "HERON_ARCHIVE_JAVA_COMPOSE"
+	ComposeGateEnvKey  = "LUAS_ARCHIVE_JAVA_COMPOSE"
 	composeSkipRunMake = "requires docker compose; run make "
 	ComposeSkipHint    = "archive java " + composeSkipRunMake + "smoke-archive-java"
 
 	// ArchiveDirEnvKey is the ArchiveNode env key for the archive data directory.
-	ArchiveDirEnvKey = "HERON_ARCHIVE_DIR"
+	ArchiveDirEnvKey = "LUAS_ARCHIVE_DIR"
 
 	// ControlChannelEnvKey is the ArchiveNode env key for the UDP control channel.
-	ControlChannelEnvKey = "HERON_ARCHIVE_CONTROL_CHANNEL"
+	ControlChannelEnvKey = "LUAS_ARCHIVE_CONTROL_CHANNEL"
 
 	// ReplicationChannelEnvKey is the ArchiveNode env key for the replication channel.
-	ReplicationChannelEnvKey = "HERON_ARCHIVE_REPLICATION_CHANNEL"
+	ReplicationChannelEnvKey = "LUAS_ARCHIVE_REPLICATION_CHANNEL"
 )
 
 const TermMinLength = logbuffer.TermMinLength

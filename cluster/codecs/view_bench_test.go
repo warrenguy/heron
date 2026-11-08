@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 func BenchmarkReadVarSlice(b *testing.B) {

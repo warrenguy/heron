@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 const (

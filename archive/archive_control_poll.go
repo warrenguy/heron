@@ -1,10 +1,10 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // ControlPollTargets routes archive control fragments during a demux poll.

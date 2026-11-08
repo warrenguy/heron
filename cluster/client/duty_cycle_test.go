@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 func setupSpinOnceOpRecorder(t *testing.T) *egressAdapterOpLog {

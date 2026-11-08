@@ -7,8 +7,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/mmap"
 )
 
 // MappedLogBuffer exposes the terms and the metadata of a log as AtomicBuffer

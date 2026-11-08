@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 // Config holds parsed CLI settings for the cluster auction client example.

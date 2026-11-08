@@ -9,12 +9,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 const (

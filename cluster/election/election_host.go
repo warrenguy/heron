@@ -1,9 +1,9 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 // RecordingSignal is [archivewire.RecordingSignal].

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/luas/cluster"
 )
 
 // Multicast endpoints for live cluster-log tests.
@@ -447,7 +447,7 @@ const (
 	// freeUDPClaimDir holds one flock file per claimed port. Ports are
 	// host-wide, so every go test binary shares one fixed path. Files stay
 	// after unlock so the next opener locks the same inode.
-	freeUDPClaimDir = "/tmp/heron-udp-claim"
+	freeUDPClaimDir = "/tmp/luas-udp-claim"
 )
 
 // ClientEgressOffset is the unused slot after the last topology offset.
@@ -471,7 +471,7 @@ func FreeUDPPort(t testing.TB) int {
 //
 // Candidates sit at or above 16000 and outside the live kernel ephemeral
 // range, so a port-0 bind never takes one. An exclusive flock under
-// /tmp/heron-udp-claim holds each port until t finishes. Parallel tests,
+// /tmp/luas-udp-claim holds each port until t finishes. Parallel tests,
 // including other go test binaries, skip a held port. The probe socket
 // closes before return so the media driver can bind.
 func FreeUDPPorts(t testing.TB, n int) []int {

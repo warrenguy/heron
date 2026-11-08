@@ -1,8 +1,8 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/internal/transportfault"
 )
 
 // ConnectResult holds archive control handles and session ids after a successful

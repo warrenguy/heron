@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // ReplicationWatch samples a returning member's election once per tick.

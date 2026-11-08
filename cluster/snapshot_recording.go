@@ -1,11 +1,11 @@
 package cluster
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 var (

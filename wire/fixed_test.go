@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
-	"github.com/warrenguy/heron/wire"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/internal/testutil"
+	"github.com/warrenguy/luas/wire"
 )
 
 const atomicbufferBoundsPanic = "atomicbuffer: offset out of bounds"

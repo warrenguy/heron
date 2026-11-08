@@ -5,7 +5,7 @@ package cluster
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/internal/testhook"
+	"github.com/warrenguy/luas/internal/testhook"
 )
 
 // directoryLockBlockedHooks keys hooks by cluster.lock path. Concurrent

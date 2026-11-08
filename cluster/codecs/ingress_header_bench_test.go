@@ -3,7 +3,7 @@ package codecs_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 func BenchmarkEncodeIngressHeader(b *testing.B) {

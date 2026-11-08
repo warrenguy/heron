@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive/codecs"
 )
 
 var errNilDescriptorPoller = errors.New(

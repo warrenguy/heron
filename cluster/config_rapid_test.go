@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // normalizedFileSyncLevels are the levels Normalize keeps after filling zero.

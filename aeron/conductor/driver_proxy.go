@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 const (

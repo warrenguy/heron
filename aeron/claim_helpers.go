@@ -1,7 +1,7 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 // ClaimFillCommit reserves exclusive-publication space, runs fill, and commits.

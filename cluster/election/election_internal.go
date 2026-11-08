@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 func hasUpdateIntervalExpired(nowNs, lastUpdateNs, intervalNs int64) bool {

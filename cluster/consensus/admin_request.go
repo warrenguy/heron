@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // ErrUnknownAdminRequestType reports an admin request with an unknown type

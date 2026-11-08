@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 func appendClonedFragmentHandler(dst *[][]byte) aeron.FragmentHandler {

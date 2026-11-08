@@ -1,7 +1,7 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
 )
 
 type ControlResponseFields struct {

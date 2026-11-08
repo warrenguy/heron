@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 func TestEncodeRecoveryStateKey_rapid(t *testing.T) {

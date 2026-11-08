@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 func TestElectionStateFromCode_valid(t *testing.T) {

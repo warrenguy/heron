@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 func TestStartWithConfig_defaultsApplied(t *testing.T) {
@@ -58,9 +58,9 @@ func TestStartWithConfig_childCmdEnvOverride(t *testing.T) {
 }
 
 func TestBuildDriverCmdEnv_table(t *testing.T) {
-	const parentDir = "/tmp/heron-aeron-parent"
-	const mergedDir = "/tmp/heron-aeron-merged"
-	const passThroughKey = "HERON_BUILD_DRIVER_CMD_ENV_TEST"
+	const parentDir = "/tmp/luas-aeron-parent"
+	const mergedDir = "/tmp/luas-aeron-merged"
+	const passThroughKey = "LUAS_BUILD_DRIVER_CMD_ENV_TEST"
 	const passThroughValue = "keep-me"
 
 	tests := []struct {
@@ -92,11 +92,11 @@ func TestBuildDriverCmdEnv_table(t *testing.T) {
 			},
 			merged: DriverEnv{
 				envIPCTermBufferLength: termBufferLength,
-				envDir:                 "/tmp/heron-aeron-rollover",
+				envDir:                 "/tmp/luas-aeron-rollover",
 			},
 			want: map[string]string{
 				envIPCTermBufferLength: termBufferLength,
-				envDir:                 "/tmp/heron-aeron-rollover",
+				envDir:                 "/tmp/luas-aeron-rollover",
 			},
 			noStale: map[string]string{
 				envIPCTermBufferLength: "131072",

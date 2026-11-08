@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // MPSC stress uses plain stores; do not run under -race (false positives). See Unblock godoc.

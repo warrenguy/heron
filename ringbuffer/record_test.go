@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 func TestMaxMsgLength(t *testing.T) {

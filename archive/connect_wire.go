@@ -3,11 +3,11 @@ package archive
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
 )
 
-const archiveConnectClientLabel = "heron"
+const archiveConnectClientLabel = "luas"
 
 func archiveConnectClientInfo(clientName string) []byte {
 	if clientName == "" {

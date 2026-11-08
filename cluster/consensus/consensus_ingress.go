@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/aeron"
+import "github.com/warrenguy/luas/aeron"
 
 // defaultConsensusIngressFragmentLimit is the max fragments drained per
 // [Agent.pollConsensusIngress] poll (matches typical Aeron adapter limits).

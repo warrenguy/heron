@@ -5,7 +5,7 @@ package aeron
 import (
 	"sync"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 // BenchPublicationLimitPosition is the default publication-limit counter seed for offer benches.

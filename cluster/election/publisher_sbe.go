@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // SbePublisher encodes consensus messages to SBE wire and records each send.

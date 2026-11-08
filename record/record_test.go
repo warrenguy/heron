@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/record"
+	"github.com/warrenguy/luas/record"
 )
 
 func TestRecord(t *testing.T) {

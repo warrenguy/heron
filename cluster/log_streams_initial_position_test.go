@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 func TestLogChannelWithInitialPosition(t *testing.T) {

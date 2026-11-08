@@ -5,7 +5,7 @@ package scenarios
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // DefaultCatalogWeight is the sum of soak scenario weights.

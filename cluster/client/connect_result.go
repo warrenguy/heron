@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/internal/transportfault"
 )
 
 // ConnectResult holds session handles and ids after a successful connect handshake.

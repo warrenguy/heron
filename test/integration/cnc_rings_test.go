@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/internal/cnctest"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/internal/cnctest"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 func TestCncRingsLive(t *testing.T) {

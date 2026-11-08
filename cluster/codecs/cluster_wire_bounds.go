@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
+import "github.com/warrenguy/luas/cluster/codecs/clusterwire"
 
 func clusterFixedBlockLength(blockLength uint16) (minBlock, maxBlock uint16, ok bool) {
 	return blockLength, blockLength, true

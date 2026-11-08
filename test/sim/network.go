@@ -3,7 +3,7 @@ package sim
 import (
 	"math/rand/v2"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // DeliverPayload is the scheduled inbound message for EventDeliver.

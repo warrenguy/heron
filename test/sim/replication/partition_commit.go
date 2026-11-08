@@ -5,8 +5,8 @@ package replication
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // majorityIsolateEdges cuts minority member 1 from majority {0,2}.

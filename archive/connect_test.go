@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/conductor"
 )
 
 // connectTestHarnessDriver registers an await-loop step observer that completes pending

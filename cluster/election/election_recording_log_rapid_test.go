@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 type replayTermModel struct {

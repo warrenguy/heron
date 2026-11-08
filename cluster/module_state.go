@@ -3,9 +3,9 @@ package cluster
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 const moduleStateCounterLabel = "Consensus Module state - clusterId=0"

@@ -10,13 +10,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/service"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 const (

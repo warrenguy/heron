@@ -3,8 +3,8 @@ package aeron
 import (
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // SubscriberPosition wraps one driver subscriber-position counter slot in the

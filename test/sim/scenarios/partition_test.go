@@ -5,7 +5,7 @@ package scenarios
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // majorityIsolateEdges cuts minority member 1 from majority {0,2}.

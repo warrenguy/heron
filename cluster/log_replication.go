@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 const (

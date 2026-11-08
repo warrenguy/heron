@@ -5,8 +5,8 @@ package replication
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // scenarioFollowerLagCommit elects, raises append, stepwise injects followers.

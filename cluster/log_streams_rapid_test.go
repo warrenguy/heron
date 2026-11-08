@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 // TestLogStreams_openAndTeardown_rapid checks the open, bind, and close

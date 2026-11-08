@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs"
+import "github.com/warrenguy/luas/archive/codecs"
 
 // AsyncListRecording is one non-blocking list recording request.
 //

@@ -1,8 +1,8 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
 )
 
 // Proxy encodes archive control requests. Proxy offers each request on the

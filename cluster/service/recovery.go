@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 // DefaultRecoveryTimeout is the default [RecoveryConfig.Timeout]. Matches

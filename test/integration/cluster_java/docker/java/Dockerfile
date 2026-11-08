@@ -15,8 +15,8 @@ FROM eclipse-temurin:26-jre AS runtime
 
 WORKDIR /app
 COPY --from=builder \
-	/src/test/integration/cluster_java/target/heron-cluster-java-*.jar \
-	./heron-cluster-java.jar
+	/src/test/integration/cluster_java/target/luas-cluster-java-*.jar \
+	./luas-cluster-java.jar
 COPY --chmod=+x test/integration/cluster_java/docker/java/entrypoint-cluster.sh ./entrypoint-cluster.sh
 
 ENTRYPOINT ["./entrypoint-cluster.sh"]

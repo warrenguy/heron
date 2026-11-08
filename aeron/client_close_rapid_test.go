@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/aeron/internal/testutil"
 )
 
 func TestClient_firstDoWorkSeedsServiceTimestamps_rapid(t *testing.T) {

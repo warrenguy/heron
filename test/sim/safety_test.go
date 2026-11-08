@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // IsSelfLeaderState is true for leader states where this member treats itself

@@ -3,7 +3,7 @@ package consensus
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // DefaultLeaderHeartbeatTimeoutNs bounds the settled quiet wait before a

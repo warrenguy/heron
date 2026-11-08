@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/mmap"
 )
 
 type MappedCncFile struct {

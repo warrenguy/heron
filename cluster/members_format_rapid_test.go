@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 func drawHostname(t *rapid.T, label string) string {

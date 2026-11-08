@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Build or start the upstream Aeron basic-auction-cluster (not Heron aeronmd or Go client).
+# Build or start the upstream Aeron basic-auction-cluster (not Luas aeronmd or Go client).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERON_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+LUAS_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
-source "${HERON_ROOT}/scripts/lib/versions.sh"
+source "${LUAS_ROOT}/scripts/lib/versions.sh"
 
-AERON_SRC="${AERON_SRC:-${HERON_ROOT}/../aeron}"
-VERSIONS="${HERON_ROOT}/specs/versions.yaml"
+AERON_SRC="${AERON_SRC:-${LUAS_ROOT}/../aeron}"
+VERSIONS="${LUAS_ROOT}/specs/versions.yaml"
 
 usage() {
 	cat <<EOF
@@ -19,7 +19,7 @@ Usage: $(basename "$0") <check|build|start> [args...]
   start   Run upstream basic-auction-cluster (pass 0|1|2 for a single node)
 
 Environment:
-  AERON_SRC   Aeron repository root (default: ${HERON_ROOT}/../aeron)
+  AERON_SRC   Aeron repository root (default: ${LUAS_ROOT}/../aeron)
   JAVA_HOME   Required for upstream cluster scripts
 EOF
 }
@@ -38,7 +38,7 @@ require_aeron_prereqs() {
 	AERON_CHECKOUT_REF="$(<"${AERON_SRC}/version.txt")"
 	if [[ "${AERON_CHECKOUT_REF}" != "${AERON_REF}" ]]; then
 		echo "cluster-auction-client: Aeron version.txt ${AERON_CHECKOUT_REF} !=" \
-			"heron pin ${AERON_REF}" >&2
+			"luas pin ${AERON_REF}" >&2
 		return 1
 	fi
 }

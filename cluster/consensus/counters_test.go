@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 func TestClusterCounterTypeIDsMatchAeron(t *testing.T) {

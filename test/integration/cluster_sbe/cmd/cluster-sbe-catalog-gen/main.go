@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
+	"github.com/warrenguy/luas/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 const (

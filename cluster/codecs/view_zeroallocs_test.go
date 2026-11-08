@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 func TestReadVarSlice_ZeroAllocs(t *testing.T) {

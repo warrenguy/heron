@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 type controlledPollFrameKind int

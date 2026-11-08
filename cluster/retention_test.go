@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 const (

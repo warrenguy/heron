@@ -3,10 +3,10 @@ package archive
 import (
 	"context"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/internal/transportfault"
 )
 
 // Client is a connected archive control session over one control-response

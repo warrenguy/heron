@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // Wire offsets mirrored locally only for malformed-buffer edge cases.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 func ProjectCatalogToFields(

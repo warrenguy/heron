@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/archive/codecs/archivewire"
+import "github.com/warrenguy/luas/archive/codecs/archivewire"
 
 // LogRecordingControl starts, extends, or stops this member's cluster log
 // recording. The control also resolves stop positions for prepare and

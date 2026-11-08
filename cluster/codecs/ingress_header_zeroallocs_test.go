@@ -3,8 +3,8 @@ package codecs_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 func TestEncodeIngressHeader_ZeroAllocs(t *testing.T) {

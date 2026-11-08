@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/luas/cluster"
 )
 
 func TestCalculatePort(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 var (

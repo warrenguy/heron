@@ -2,7 +2,7 @@
 
 package aeron
 
-import "github.com/warrenguy/heron/internal/testhook"
+import "github.com/warrenguy/luas/internal/testhook"
 
 // pollAfterPaddingAdvanceHooks is keyed by *Image. Concurrent Poll peers must
 // not observe another test's hook.

@@ -5,8 +5,8 @@ package harness
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 func resetTermWithTimer(b *testing.B, reset func()) {

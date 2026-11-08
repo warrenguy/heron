@@ -7,11 +7,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/broadcast"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 func (conductor *Conductor) DriverProxyForTest() *DriverProxy {

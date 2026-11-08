@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/luas/aeron/conductor"
 )
 
 // Counter is a driver counter allocated with AddCounter.

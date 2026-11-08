@@ -3,14 +3,14 @@ set -euo pipefail
 
 : "${AERON_DIR:?AERON_DIR required}"
 
-# HERON_CLUSTER_* env vars are optional; ClusterNode reads them from container env.
+# LUAS_CLUSTER_* env vars are optional; ClusterNode reads them from container env.
 
 JAVA_OPTS=(
 	--add-opens java.base/jdk.internal.misc=ALL-UNNAMED
 	-Daeron.dir="${AERON_DIR}"
 	-Daeron.term.buffer.length="${AERON_TERM_BUFFER_LENGTH:-65536}"
 	-Daeron.ipc.term.buffer.length="${AERON_IPC_TERM_BUFFER_LENGTH:-65536}"
-	-Dheron.debug=true
+	-Dluas.debug=true
 	# Aeron's 10s defaults are too tight for CI.
 	-Daeron.driver.timeout="${AERON_DRIVER_TIMEOUT:-30000}"
 	-Daeron.client.liveness.timeout="${AERON_CLIENT_LIVENESS_TIMEOUT:-30s}"
@@ -28,5 +28,5 @@ fi
 
 exec java \
 	"${JAVA_OPTS[@]}" \
-	-cp /app/heron-cluster-java.jar \
-	heron.clusterjava.ClusterNode
+	-cp /app/luas-cluster-java.jar \
+	luas.clusterjava.ClusterNode

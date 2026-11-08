@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 // moduleSnapshotLoadFragmentLimit matches upstream ConsensusModuleAgent

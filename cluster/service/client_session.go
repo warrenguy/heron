@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/buffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/internal/buffer"
 )
 
 // MockedOffer is the Offer result on a member that is not the leader.

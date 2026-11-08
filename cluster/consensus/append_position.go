@@ -3,7 +3,7 @@ package consensus
 import (
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/cnc"
 )
 
 // AppendPositionSource supplies the local log append high-water.

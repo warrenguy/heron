@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 type UnavailableImage struct {
 	CorrelationID              int64

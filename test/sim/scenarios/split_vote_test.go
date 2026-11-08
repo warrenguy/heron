@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // scenarioSplitVote randomizes nomination delay with light loss so ballots can

@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/aeron/cnc"
+import "github.com/warrenguy/luas/aeron/cnc"
 
 const (
 	AddPublication            = 0x01

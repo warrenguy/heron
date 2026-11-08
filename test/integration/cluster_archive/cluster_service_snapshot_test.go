@@ -12,19 +12,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	archivecodecs "github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/archive"
+	archivecodecs "github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/cluster/service"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 const (

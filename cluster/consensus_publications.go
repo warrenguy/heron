@@ -7,8 +7,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // ExclusivePublicationAdder registers exclusive publications on a media driver.

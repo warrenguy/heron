@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/test/integration/archive_java/archivejava"
 )
 
 func TestHarnessConstants(t *testing.T) {
@@ -33,10 +33,10 @@ func TestHarnessConstants(t *testing.T) {
 			got:  archivejava.LocalControlStreamID,
 			want: archive.DefaultLocalControlStreamID,
 		},
-		{name: "ClusterDir", got: archivejava.ClusterDir, want: "/tmp/heron-cluster-0"},
+		{name: "ClusterDir", got: archivejava.ClusterDir, want: "/tmp/luas-cluster-0"},
 		{name: "RecordingLogFileName", got: archivejava.RecordingLogFileName, want: "recording.log"},
-		{name: "ArchiveDir", got: archivejava.ArchiveDir, want: "/tmp/heron-archive"},
-		{name: "ReadyMarker", got: archivejava.ReadyMarker, want: ".heron-archive-ready"},
+		{name: "ArchiveDir", got: archivejava.ArchiveDir, want: "/tmp/luas-archive"},
+		{name: "ReadyMarker", got: archivejava.ReadyMarker, want: ".luas-archive-ready"},
 		{name: "ComposeAeronDir", got: archivejava.ComposeAeronDir, want: "/dev/shm/aeron"},
 		{name: "MessageCount", got: archivejava.MessageCount, want: 16},
 		{name: "PayloadSize", got: archivejava.PayloadSize, want: 64},
@@ -54,7 +54,7 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ComposeGateEnvKey",
 			got:  archivejava.ComposeGateEnvKey,
-			want: "HERON_ARCHIVE_JAVA_COMPOSE",
+			want: "LUAS_ARCHIVE_JAVA_COMPOSE",
 		},
 		{
 			name: "ComposeSkipHint",
@@ -64,17 +64,17 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ArchiveDirEnvKey",
 			got:  archivejava.ArchiveDirEnvKey,
-			want: "HERON_ARCHIVE_DIR",
+			want: "LUAS_ARCHIVE_DIR",
 		},
 		{
 			name: "ControlChannelEnvKey",
 			got:  archivejava.ControlChannelEnvKey,
-			want: "HERON_ARCHIVE_CONTROL_CHANNEL",
+			want: "LUAS_ARCHIVE_CONTROL_CHANNEL",
 		},
 		{
 			name: "ReplicationChannelEnvKey",
 			got:  archivejava.ReplicationChannelEnvKey,
-			want: "HERON_ARCHIVE_REPLICATION_CHANNEL",
+			want: "LUAS_ARCHIVE_REPLICATION_CHANNEL",
 		},
 	}
 

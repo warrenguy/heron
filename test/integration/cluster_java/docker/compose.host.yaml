@@ -3,7 +3,7 @@
 # the embedded driver. Mounts /dev/shm (parent), not /dev/shm/aeron: the driver
 # deletes and recreates the aeron subdirectory on startup.
 
-x-project-name: &project-name heron-cluster-echo
+x-project-name: &project-name luas-cluster-echo
 name: *project-name
 
 services:

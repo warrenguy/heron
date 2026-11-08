@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 // snapshotRecordingCounters returns each member's type-100 counter value.

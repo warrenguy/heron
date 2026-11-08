@@ -1,7 +1,7 @@
 // Package harness provides integration-test fixtures for Aeron clients, CnC
 // wiring, and media drivers.
 //
-// HERON_SHARED_MEDIA_DRIVER selects shared driver mode:
+// LUAS_SHARED_MEDIA_DRIVER selects shared driver mode:
 //   - "0": shared mode off
 //   - unset or any other value, including "", "false", and "1": shared mode on
 //
@@ -9,7 +9,7 @@
 // shared driver. Shared(t) falls back to Start(t). Shared(t) also falls back
 // when TestMain did not start a shared driver.
 //
-// HERON_SHARED_MEDIA_DRIVER_KEEP=1 keeps the shared driver after the run. The
+// LUAS_SHARED_MEDIA_DRIVER_KEEP=1 keeps the shared driver after the run. The
 // aeronmd process and the CnC directory remain. Use it to debug stale CnC
 // state.
 //

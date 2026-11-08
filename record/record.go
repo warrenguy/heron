@@ -7,7 +7,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 const (

@@ -1,7 +1,7 @@
 # Security Policy
 
 Please report vulnerabilities privately through
-[GitHub private vulnerability reporting](https://github.com/warrenguy/heron/security/advisories/new),
+[GitHub private vulnerability reporting](https://github.com/warrenguy/luas/security/advisories/new),
 not in a public issue.
 
 Bugs in the Aeron media driver, Archive or Cluster belong

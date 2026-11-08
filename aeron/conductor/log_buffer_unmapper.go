@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/aeron/logbuffer"
+import "github.com/warrenguy/luas/aeron/logbuffer"
 
 // logBufferUnmapQueueLength caps the unmap queue. A full queue unmaps on the
 // caller goroutine.

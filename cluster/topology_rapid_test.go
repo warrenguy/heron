@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 func TestTopology_memberPointerIdentity_rapid(t *testing.T) {

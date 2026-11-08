@@ -1,8 +1,8 @@
 package consensus
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 // FragmentPoller delivers committed fragments from a subscription.

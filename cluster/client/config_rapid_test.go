@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 const rapidMaxDuration = time.Hour

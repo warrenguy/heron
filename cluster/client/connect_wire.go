@@ -4,14 +4,14 @@ import (
 	"cmp"
 	"errors"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 const (
 	defaultClusterClientName  = "cluster-client"
-	clusterConnectClientLabel = "heron"
+	clusterConnectClientLabel = "luas"
 )
 
 func sessionConnectClientInfo(clientName string) []byte {

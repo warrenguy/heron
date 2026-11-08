@@ -1,8 +1,8 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 const (

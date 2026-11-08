@@ -4,7 +4,7 @@ import (
 	"errors"
 	"iter"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 var errLocalSocketAddressStringTooLong = errors.New(

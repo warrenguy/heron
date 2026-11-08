@@ -3,7 +3,7 @@ package conductor
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 const fuzzWireMaxOffset = 8

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/luas/cluster"
 )
 
 // TestModuleErrors_countAndMatchAt asserts the store keeps reports per member

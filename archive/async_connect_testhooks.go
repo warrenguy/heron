@@ -5,8 +5,8 @@ package archive
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/conductor"
 )
 
 func (ac *AsyncConnect) pollAddControlResponseSubscription(

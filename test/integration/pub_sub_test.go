@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 func finishPubSubIPCTest(t *testing.T, md *harness.MediaDriver, clientErrors ...*atomic.Bool) {

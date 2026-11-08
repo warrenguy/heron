@@ -1,8 +1,8 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive/codecs"
 )
 
 // recordingSignalFanout sends each recording signal to the session handler,

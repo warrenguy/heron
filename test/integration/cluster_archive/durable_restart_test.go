@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 // Await bounds shared by the durable scenarios. Quiet localhost completes most

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 // ErrTransportTerminating reports that [Runner.Run] stopped because the

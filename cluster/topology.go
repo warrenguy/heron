@@ -6,8 +6,8 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // BuildChannelWithEndpoint returns channel with endpoint= set to endpoint.

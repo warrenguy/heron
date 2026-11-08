@@ -3,7 +3,7 @@ package broadcast_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/luas/broadcast"
 )
 
 func benchmarkWarmBroadcast(

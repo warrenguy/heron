@@ -5,8 +5,8 @@ package archive
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/testhook"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/internal/testhook"
 )
 
 type connectAsyncConnectObserver func(*AsyncConnect)

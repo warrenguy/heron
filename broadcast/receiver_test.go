@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/broadcast"
-	"github.com/warrenguy/heron/record"
+	"github.com/warrenguy/luas/broadcast"
+	"github.com/warrenguy/luas/record"
 )
 
 func TestBroadcastReceiverCapacity(t *testing.T) {

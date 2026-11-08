@@ -3,8 +3,8 @@ package consensus
 import (
 	"slices"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 var _ sessionEventSink = (*Agent)(nil)

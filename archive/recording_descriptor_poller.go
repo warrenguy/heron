@@ -1,9 +1,9 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
 )
 
 // RecordingDescriptorPoller holds list-recording capture state for the archive control

@@ -4,7 +4,7 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // ClusterMinRootBlockLength returns the minimum root block length for templateID at

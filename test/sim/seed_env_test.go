@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 func TestSeedFromEnv(t *testing.T) {
@@ -22,7 +22,7 @@ func TestSeedFromEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HERON_SIM_SEED", tc.env)
+			t.Setenv("LUAS_SIM_SEED", tc.env)
 			require.Equal(t, tc.want, SeedFromEnv(t, tc.defaultSeed))
 		})
 	}

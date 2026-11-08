@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 // TestClusterModule_wiresLogTruncateControl asserts a durable member set opens

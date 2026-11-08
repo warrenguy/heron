@@ -9,18 +9,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 const (
-	javaClientCredentials   = "heron-java-client-credentials"
-	javaClientChallenge     = "heron-java-client-challenge"
-	javaClientResponse      = "heron-java-client-response"
-	javaClientWrongResponse = "heron-java-client-wrong-response"
-	javaClientPrincipal     = "heron-java-client-principal"
+	javaClientCredentials   = "luas-java-client-credentials"
+	javaClientChallenge     = "luas-java-client-challenge"
+	javaClientResponse      = "luas-java-client-response"
+	javaClientWrongResponse = "luas-java-client-wrong-response"
+	javaClientPrincipal     = "luas-java-client-principal"
 	javaClientPayloadPrefix = "jc"
 	javaClientRejectDetail  = "ERROR - session failed authentication"
 	javaClientRejectClass   = "AuthenticationException"

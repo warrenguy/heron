@@ -19,8 +19,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 func main() {

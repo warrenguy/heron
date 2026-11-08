@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/internal/transportfault"
 )
 
 // ConnectState mirrors Java AsyncConnect.State step values.

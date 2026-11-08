@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 // Asserts TrackCatchupCompletion against a reference model over random

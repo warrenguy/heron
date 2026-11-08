@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 // LogFileName is decoded now; caller must mmap before Offer succeeds.
 type PublicationBuffersReady struct {

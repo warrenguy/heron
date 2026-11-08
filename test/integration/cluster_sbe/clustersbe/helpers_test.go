@@ -3,7 +3,7 @@
 package clustersbe_test
 
 import (
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
+	"github.com/warrenguy/luas/test/integration/cluster_sbe/clustersbe"
 )
 
 var fixturesByNameMap = func() map[string]clustersbe.WireFixture {

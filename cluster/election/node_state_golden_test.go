@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/mmap"
 )
 
 type nodeStateCandidateTermExpect struct {
@@ -79,7 +79,7 @@ func readNodeStatePrefixFromDir(t *testing.T, dir string, prefixLen int) []byte 
 	return prefix
 }
 
-func heronNodeStatePrefixForFixture(
+func luasNodeStatePrefixForFixture(
 	t *testing.T,
 	fixture nodeStateGoldenFixture,
 	prefixLen int,
@@ -109,7 +109,7 @@ func TestNodeStateFile_matchesJavaGolden(t *testing.T) {
 			t.Parallel()
 
 			golden := readNodeStateGoldenPrefix(t, fixture.File, m.PrefixLength)
-			got := heronNodeStatePrefixForFixture(t, fixture, m.PrefixLength)
+			got := luasNodeStatePrefixForFixture(t, fixture, m.PrefixLength)
 			requireNodeStatePrefixEqual(t, got, golden, m.PrefixLength)
 		})
 	}

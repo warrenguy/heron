@@ -13,14 +13,14 @@ import (
 
 func TestBuildArchiveCmdEnv_table(t *testing.T) {
 	const (
-		parentAeronDir    = "/tmp/heron-aeron-parent"
-		mergedAeronDir    = "/tmp/heron-aeron-merged"
-		parentArchiveDir  = "/tmp/heron-archive-parent"
-		mergedArchiveDir  = "/tmp/heron-archive-merged"
+		parentAeronDir    = "/tmp/luas-aeron-parent"
+		mergedAeronDir    = "/tmp/luas-aeron-merged"
+		parentArchiveDir  = "/tmp/luas-archive-parent"
+		mergedArchiveDir  = "/tmp/luas-archive-merged"
 		parentControl     = "aeron:udp?endpoint=127.0.0.1:1"
 		mergedControl     = "aeron:udp?endpoint=127.0.0.1:2"
 		parentReplication = "aeron:udp?endpoint=127.0.0.1:3"
-		passThroughKey    = "HERON_BUILD_ARCHIVE_CMD_ENV_TEST"
+		passThroughKey    = "LUAS_BUILD_ARCHIVE_CMD_ENV_TEST"
 		passThroughValue  = "keep-me"
 	)
 

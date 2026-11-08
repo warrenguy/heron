@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/cluster/consensus"
 )
 
 func TestToggleCounterKeysAndLabels(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/archive/codecs"
+	"github.com/warrenguy/luas/archive/codecs"
 )
 
 func TestReadVarSlice_rapid(t *testing.T) {

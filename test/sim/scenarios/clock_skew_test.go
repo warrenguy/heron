@@ -5,7 +5,7 @@ package scenarios
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // scenarioClockSkew advances epoch clocks mid-run then expects soft liveness.

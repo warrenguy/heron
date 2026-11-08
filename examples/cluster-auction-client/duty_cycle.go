@@ -11,10 +11,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/examples/cluster-auction-client/auctionwire"
 )
 
 var auctionLog = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds)

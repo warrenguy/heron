@@ -3,7 +3,7 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 const benchNanoClockNs int64 = 1700000000123

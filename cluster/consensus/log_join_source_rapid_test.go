@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 // drawFakeLogJoinImages builds fake SubscriptionImages with a drawn image set.

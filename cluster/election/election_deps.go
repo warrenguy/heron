@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // StateObserver receives each applied election state transition. Production
@@ -53,7 +53,7 @@ type ElectionDeps struct {
 	// must not re-enter Election methods, Host or Handler mutators, or duty-cycle
 	// entry, except [consensus.Agent.TerminateOnError].
 	//
-	// [github.com/warrenguy/heron/cluster.Config.ErrorHandler] states the rules
+	// [github.com/warrenguy/luas/cluster.Config.ErrorHandler] states the rules
 	// that every module error handler follows.
 	ErrorHandler func(error)
 }

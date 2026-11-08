@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 func TestJoinExternal_liveCnc(t *testing.T) {

@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // fragmentDeliveryImage stands in for the polled Image on every test header.

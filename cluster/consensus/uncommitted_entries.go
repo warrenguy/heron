@@ -3,7 +3,7 @@ package consensus
 import (
 	"slices"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // uncommittedTimer is one TimerEvent the leader appended above commit.

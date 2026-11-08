@@ -3,7 +3,7 @@ package conductor
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 func decodeStringASCIIInBody(

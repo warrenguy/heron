@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 const testClusterMembersOracle = "0,localhost:9002,localhost:9003,localhost:9004,localhost:9005," +

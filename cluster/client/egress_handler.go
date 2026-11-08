@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 var errEgressHandlerMessageNotConfigured = errors.New(

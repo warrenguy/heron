@@ -3,7 +3,7 @@ package aeron
 import (
 	"bytes"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // FragmentHandlerBytes receives one committed fragment payload during Poll.

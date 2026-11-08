@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/aeron/conductor"
+	aerontestutil "github.com/warrenguy/luas/aeron/internal/testutil"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 type closeAllRapidOpKind int

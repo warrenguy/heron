@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 type addCall struct {

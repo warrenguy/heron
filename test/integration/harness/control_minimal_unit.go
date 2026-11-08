@@ -3,8 +3,8 @@
 package harness
 
 import (
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 func findPendingClientClose(

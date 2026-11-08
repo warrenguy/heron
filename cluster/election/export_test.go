@@ -2,7 +2,7 @@
 
 package election
 
-import "github.com/warrenguy/heron/cluster/consensus"
+import "github.com/warrenguy/luas/cluster/consensus"
 
 var (
 	InitialiseOnCreate          = initialiseOnCreate

@@ -4,8 +4,8 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/timerwheel"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/timerwheel"
 )
 
 // timerPollLimit caps expiries per timerService.poll call.

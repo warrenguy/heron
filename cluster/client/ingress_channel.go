@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 const (

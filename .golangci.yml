@@ -18,13 +18,13 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/warrenguy/heron
+        - github.com/warrenguy/luas
     gofumpt:
       extra:
         group-params: true
         clothe-returns: true
         balance-calls: true
-      module-path: github.com/warrenguy/heron
+      module-path: github.com/warrenguy/luas
 
 linters:
   default: standard

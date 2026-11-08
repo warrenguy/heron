@@ -1,7 +1,7 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/election/nodewire"
+	"github.com/warrenguy/luas/cluster/election/nodewire"
 )
 
 func scanForTemplateOffset(

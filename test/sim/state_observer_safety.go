@@ -5,7 +5,7 @@ package sim
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // safetyObserver wraps the timeline StateObserver with safety checks on each

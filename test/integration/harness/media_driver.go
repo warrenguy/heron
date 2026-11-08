@@ -19,8 +19,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 var termBufferLength = strconv.Itoa(logbuffer.TermMinLength)
@@ -237,7 +237,7 @@ func resolveAeronmdOrSkip(t testing.TB) string {
 //
 // Ownership: caller owns Stop.
 func startEphemeralMediaDriver(aeronmdPath string, overrides DriverEnv) (*MediaDriver, error) {
-	return startDriverInTempDir(aeronmdPath, "heron-aeron-*", overrides)
+	return startDriverInTempDir(aeronmdPath, "luas-aeron-*", overrides)
 }
 
 // startDriverInTempDir launches aeronmd in a fresh MkdirTemp(pattern)

@@ -1,21 +1,21 @@
 # Overlay - use with --profile failover.
 #
-# Project name comes from HERON_COMPOSE_PROJECT (per-run from the smoke script,
-# e.g. heron-cluster-java-failover-$$). Default is for manual compose without
+# Project name comes from LUAS_COMPOSE_PROJECT (per-run from the smoke script,
+# e.g. luas-cluster-java-failover-$$). Default is for manual compose without
 # the script.
 # Go container must see the same value as COMPOSE_PROJECT_NAME for leader kill.
 
-name: ${HERON_COMPOSE_PROJECT:-heron-cluster-java-failover}
+name: ${LUAS_COMPOSE_PROJECT:-luas-cluster-java-failover}
 
-x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+x-app-user: &app-user "${LUAS_COMPOSE_UID:-1000}:${LUAS_COMPOSE_GID:-1000}"
 
 x-aeron-term-env: &aeron-term-env
   AERON_TERM_BUFFER_LENGTH: "65536"
   AERON_IPC_TERM_BUFFER_LENGTH: "65536"
 
 x-cluster-env: &cluster-env
-  HERON_CLUSTER_MEMBER_COUNT: "3"
-  HERON_CLUSTER_HOSTNAMES: "cluster-0,cluster-1,cluster-2"
+  LUAS_CLUSTER_MEMBER_COUNT: "3"
+  LUAS_CLUSTER_HOSTNAMES: "cluster-0,cluster-1,cluster-2"
   <<: *aeron-term-env
 
 x-failover-service: &failover-service
@@ -59,7 +59,7 @@ services:
     hostname: cluster-0
     environment:
       <<: *cluster-env
-      HERON_CLUSTER_MEMBER_ID: "0"
+      LUAS_CLUSTER_MEMBER_ID: "0"
       AERON_DIR: /dev/shm/aeron-0
     volumes:
       - aeron-media-0:/dev/shm
@@ -73,7 +73,7 @@ services:
     hostname: cluster-1
     environment:
       <<: *cluster-env
-      HERON_CLUSTER_MEMBER_ID: "1"
+      LUAS_CLUSTER_MEMBER_ID: "1"
       AERON_DIR: /dev/shm/aeron-1
     volumes:
       - aeron-media-1:/dev/shm
@@ -86,7 +86,7 @@ services:
     hostname: cluster-2
     environment:
       <<: *cluster-env
-      HERON_CLUSTER_MEMBER_ID: "2"
+      LUAS_CLUSTER_MEMBER_ID: "2"
       AERON_DIR: /dev/shm/aeron-2
     volumes:
       - aeron-media-2:/dev/shm
@@ -131,9 +131,9 @@ services:
     environment:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron
-      HERON_CLUSTER_JAVA_FAILOVER_COMPOSE: "1"
-      HERON_CLUSTER_JAVA_COMPOSE_DIR: /app/compose
-      COMPOSE_PROJECT_NAME: ${HERON_COMPOSE_PROJECT:-heron-cluster-java-failover}
+      LUAS_CLUSTER_JAVA_FAILOVER_COMPOSE: "1"
+      LUAS_CLUSTER_JAVA_COMPOSE_DIR: /app/compose
+      COMPOSE_PROJECT_NAME: ${LUAS_COMPOSE_PROJECT:-luas-cluster-java-failover}
     volumes:
       - aeron-media-client:/dev/shm
       - /var/run/docker.sock:/var/run/docker.sock

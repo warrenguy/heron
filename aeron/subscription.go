@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/aeron/conductor"
 )
 
 // Subscription manages registration and the image set for one stream.

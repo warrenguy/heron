@@ -3,7 +3,7 @@ package conductor
 import (
 	"math"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
 )
 
 // PublicationHandle breaks the conductor and aeron import cycle for the

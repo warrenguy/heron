@@ -2,7 +2,7 @@
 
 package archive
 
-import "github.com/warrenguy/heron/aeron"
+import "github.com/warrenguy/luas/aeron"
 
 func ownedConnectClientFactoryForConfig(
 	cfg Config,

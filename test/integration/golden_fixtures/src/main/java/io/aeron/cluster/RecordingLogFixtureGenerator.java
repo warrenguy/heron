@@ -12,7 +12,7 @@ import java.util.List;
 
 import org.agrona.IoUtil;
 
-import static heron.goldenfixtures.Json.quote;
+import static luas.goldenfixtures.Json.quote;
 
 /**
  * Writes cluster/recordinglog golden fixtures via the Aeron RecordingLog write API.

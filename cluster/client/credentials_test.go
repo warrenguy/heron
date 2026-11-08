@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 type stubCredentialsSupplier struct {

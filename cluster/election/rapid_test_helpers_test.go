@@ -2,7 +2,7 @@
 
 package election_test
 
-import "github.com/warrenguy/heron/internal/testutil"
+import "github.com/warrenguy/luas/internal/testutil"
 
 const rapidChecksSBEDefault = 500
 

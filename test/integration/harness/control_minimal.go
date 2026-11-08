@@ -3,9 +3,9 @@ package harness
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 func decodeMatchingClientClose(

@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/warrenguy/heron/internal/testhook"
-	"github.com/warrenguy/heron/mmap"
+	"github.com/warrenguy/luas/internal/testhook"
+	"github.com/warrenguy/luas/mmap"
 )
 
 // initialiseOnCreateHooks is keyed by node-state file path. Concurrent

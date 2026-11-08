@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // CalculatePort returns the UDP port for a member's port block slot:

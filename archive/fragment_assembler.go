@@ -1,8 +1,8 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // FragmentAssembler reassembles BEGIN/middle/END fragmented DATA frames into

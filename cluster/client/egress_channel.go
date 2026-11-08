@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 // applyUDPRejoinFalse returns egressChannel with rejoin=false on UDP media.

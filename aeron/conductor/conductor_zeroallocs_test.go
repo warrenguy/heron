@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/internal/testutil"
+	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 func TestConductor_DoWork_ZeroAllocs(t *testing.T) {

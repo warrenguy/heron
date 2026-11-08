@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs"
+import "github.com/warrenguy/luas/archive/codecs"
 
 // handleRecordingSignalFromFragment decodes a RecordingSignalEvent and dispatches it
 // to handler. A controlSessionFilter other than 0 drops signals from other control

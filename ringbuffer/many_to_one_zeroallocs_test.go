@@ -3,9 +3,9 @@ package ringbuffer_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/internal/testutil"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 func TestManyToOneRingBuffer_ZeroAllocs(t *testing.T) {

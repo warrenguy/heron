@@ -4,7 +4,7 @@
 # (echo offer/egress round-trip plus admin SNAPSHOT on the same session); cluster runs
 # embedded ClusteredMediaDriver.
 #
-# Per-run compose project (-p heron-cluster-java-$$) so concurrent smokes do not
+# Per-run compose project (-p luas-cluster-java-$$) so concurrent smokes do not
 # share stacks. force-recreate avoids reusing a leftover one-shot go under the
 # same project if a prior trap failed. EXIT/INT/TERM run compose down for this
 # project only.
@@ -15,7 +15,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
 # Unique project per process: concurrent smokes; no shared containers/volumes.
-COMPOSE_PROJECT="heron-cluster-java-$$"
+COMPOSE_PROJECT="luas-cluster-java-$$"
 COMPOSE_CMD=(
 	docker compose
 	-p "${COMPOSE_PROJECT}"
@@ -31,16 +31,16 @@ compose_cleanup() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-	echo "heron: docker required" >&2
+	echo "luas: docker required" >&2
 	exit 1
 fi
 
 GO_VERSION="$(awk '/^go / {print $2; exit}' "${ROOT}/go.mod")"
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
-HERON_COMPOSE_UID="$(id -u)"
-export HERON_COMPOSE_UID
-HERON_COMPOSE_GID="$(id -g)"
-export HERON_COMPOSE_GID
+LUAS_COMPOSE_UID="$(id -u)"
+export LUAS_COMPOSE_UID
+LUAS_COMPOSE_GID="$(id -g)"
+export LUAS_COMPOSE_GID
 
 trap compose_cleanup EXIT
 trap 'exit 130' INT
@@ -64,10 +64,10 @@ else
 	compose wait go
 fi || {
 	status=$?
-	echo "heron: cluster java smoke failed" >&2
+	echo "luas: cluster java smoke failed" >&2
 	smoke_logs >&2
 	exit "${status}"
 }
 
-echo "heron: cluster java smoke passed"
+echo "luas: cluster java smoke passed"
 smoke_logs

@@ -5,7 +5,7 @@ package archive
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 func TestResolveResponseChannel_udpSubscription(t *testing.T) {

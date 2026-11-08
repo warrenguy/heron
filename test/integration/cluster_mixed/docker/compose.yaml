@@ -3,14 +3,14 @@
 # or ex-leader-rejoin.
 #
 # Per-run env from the smoke script:
-# - HERON_COMPOSE_PROJECT
-# - HERON_CLUSTER_MIXED_SUBNET
-# - HERON_CLUSTER_MIXED_IP{0,1,2}
-# - HERON_CLUSTER_HOSTNAMES (optional; defaults to the three IP vars)
+# - LUAS_COMPOSE_PROJECT
+# - LUAS_CLUSTER_MIXED_SUBNET
+# - LUAS_CLUSTER_MIXED_IP{0,1,2}
+# - LUAS_CLUSTER_HOSTNAMES (optional; defaults to the three IP vars)
 #
 # Unset env keeps the 172.30.0.0/24 manual topology.
 #
-# HERON_CLUSTER_HOSTNAMES must match the bridge ipv4_address values.
+# LUAS_CLUSTER_HOSTNAMES must match the bridge ipv4_address values.
 # When only the IP vars are set, the member list defaults from those IPs.
 # Compose does not cross-check an explicit HOSTNAMES override against the IPs.
 #
@@ -21,18 +21,18 @@
 #
 # Multicast log interface=172.30.0.0/16 covers every subnet.
 
-name: ${HERON_COMPOSE_PROJECT:-heron-cluster-mixed}
+name: ${LUAS_COMPOSE_PROJECT:-luas-cluster-mixed}
 
-x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+x-app-user: &app-user "${LUAS_COMPOSE_UID:-1000}:${LUAS_COMPOSE_GID:-1000}"
 
 x-aeron-term-env: &aeron-term-env
   AERON_TERM_BUFFER_LENGTH: "65536"
   AERON_IPC_TERM_BUFFER_LENGTH: "65536"
 
 x-mixed-cluster-env: &mixed-cluster-env
-  HERON_CLUSTER_MIXED: "1"
-  HERON_CLUSTER_MEMBER_COUNT: "3"
-  HERON_CLUSTER_HOSTNAMES: ${HERON_CLUSTER_HOSTNAMES:-${HERON_CLUSTER_MIXED_IP0:-172.30.0.10},${HERON_CLUSTER_MIXED_IP1:-172.30.0.11},${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}}
+  LUAS_CLUSTER_MIXED: "1"
+  LUAS_CLUSTER_MEMBER_COUNT: "3"
+  LUAS_CLUSTER_HOSTNAMES: ${LUAS_CLUSTER_HOSTNAMES:-${LUAS_CLUSTER_MIXED_IP0:-172.30.0.10},${LUAS_CLUSTER_MIXED_IP1:-172.30.0.11},${LUAS_CLUSTER_MIXED_IP2:-172.30.0.12}}
   <<: *aeron-term-env
 
 x-java-healthcheck: &java-healthcheck
@@ -61,10 +61,10 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: ${HERON_CLUSTER_MIXED_SUBNET:-172.30.0.0/24}
+        - subnet: ${LUAS_CLUSTER_MIXED_SUBNET:-172.30.0.0/24}
 
 services:
-  # Holds the member-2 address (HERON_CLUSTER_MIXED_IP2). The Go test joins this
+  # Holds the member-2 address (LUAS_CLUSTER_MIXED_IP2). The Go test joins this
   # driver and shares its network namespace. The C driver listens on the member-2
   # consensus and log endpoints named in the members string.
   aeronmd:
@@ -73,7 +73,7 @@ services:
     hostname: aeronmd
     networks:
       cluster-mixed:
-        ipv4_address: ${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}
+        ipv4_address: ${LUAS_CLUSTER_MIXED_IP2:-172.30.0.12}
     environment:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron-go
@@ -98,14 +98,14 @@ services:
     hostname: cluster-0
     networks:
       cluster-mixed:
-        ipv4_address: ${HERON_CLUSTER_MIXED_IP0:-172.30.0.10}
+        ipv4_address: ${LUAS_CLUSTER_MIXED_IP0:-172.30.0.10}
     environment:
       <<: *mixed-cluster-env
-      HERON_CLUSTER_MEMBER_ID: "0"
+      LUAS_CLUSTER_MEMBER_ID: "0"
       AERON_DIR: /dev/shm/aeron-j0
     volumes:
       - aeron-media:/dev/shm
-      - cluster-data-0:/tmp/heron-cluster-0
+      - cluster-data-0:/tmp/luas-cluster-0
     healthcheck:
       <<: *java-healthcheck
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-j0/cnc.dat"]
@@ -117,14 +117,14 @@ services:
     hostname: cluster-1
     networks:
       cluster-mixed:
-        ipv4_address: ${HERON_CLUSTER_MIXED_IP1:-172.30.0.11}
+        ipv4_address: ${LUAS_CLUSTER_MIXED_IP1:-172.30.0.11}
     environment:
       <<: *mixed-cluster-env
-      HERON_CLUSTER_MEMBER_ID: "1"
+      LUAS_CLUSTER_MEMBER_ID: "1"
       AERON_DIR: /dev/shm/aeron-j1
     volumes:
       - aeron-media:/dev/shm
-      - cluster-data-1:/tmp/heron-cluster-1
+      - cluster-data-1:/tmp/luas-cluster-1
     healthcheck:
       <<: *java-healthcheck
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-j1/cnc.dat"]
@@ -141,24 +141,24 @@ services:
     environment:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron-go
-      HERON_ARCHIVE_DIR: /tmp/heron-archive-go
+      LUAS_ARCHIVE_DIR: /tmp/luas-archive-go
       # Distinct UDP bind. Go control client uses local IPC, not this channel.
-      HERON_ARCHIVE_CONTROL_CHANNEL: "aeron:udp?endpoint=127.0.0.1:9210"
+      LUAS_ARCHIVE_CONTROL_CHANNEL: "aeron:udp?endpoint=127.0.0.1:9210"
     volumes:
       - aeron-media:/dev/shm
-      - archive-data-go:/tmp/heron-archive-go
+      - archive-data-go:/tmp/luas-archive-go
     depends_on:
       aeronmd:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/heron-archive-go/.heron-archive-ready"]
+      test: ["CMD-SHELL", "test -f /tmp/luas-archive-go/.luas-archive-ready"]
       interval: 1s
       timeout: 5s
       retries: 20
       start_period: 15s
 
   # Go member 2. Shares the aeronmd network namespace: the member-2 endpoints
-  # on HERON_CLUSTER_MIXED_IP2 must listen in the C driver process.
+  # on LUAS_CLUSTER_MIXED_IP2 must listen in the C driver process.
   #
   # Volumes stay independent. The overlay sets command, gate env, and start order.
   go:
@@ -180,16 +180,16 @@ services:
       <<: *aeron-term-env
       AERON_DIR: /dev/shm/aeron-go
       # Member list matches the Java peers.
-      HERON_CLUSTER_HOSTNAMES: ${HERON_CLUSTER_HOSTNAMES:-${HERON_CLUSTER_MIXED_IP0:-172.30.0.10},${HERON_CLUSTER_MIXED_IP1:-172.30.0.11},${HERON_CLUSTER_MIXED_IP2:-172.30.0.12}}
+      LUAS_CLUSTER_HOSTNAMES: ${LUAS_CLUSTER_HOSTNAMES:-${LUAS_CLUSTER_MIXED_IP0:-172.30.0.10},${LUAS_CLUSTER_MIXED_IP1:-172.30.0.11},${LUAS_CLUSTER_MIXED_IP2:-172.30.0.12}}
     volumes:
       - aeron-media:/dev/shm
-      - cluster-data-2:/tmp/heron-cluster-2
+      - cluster-data-2:/tmp/luas-cluster-2
     healthcheck:
       interval: 1s
       timeout: 5s
       retries: 60
       start_period: 5s
-      test: ["CMD-SHELL", "test -f /dev/shm/heron-mixed/member-ready"]
+      test: ["CMD-SHELL", "test -f /dev/shm/luas-mixed/member-ready"]
 
 volumes:
   aeron-media:

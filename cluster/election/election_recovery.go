@@ -1,6 +1,6 @@
 package election
 
-import "github.com/warrenguy/heron/cluster/recordinglog"
+import "github.com/warrenguy/luas/cluster/recordinglog"
 
 // ApplyRecoveryPlan seeds cfg term and positions from a recordinglog.RecoveryPlan.
 //

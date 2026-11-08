@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // stopArchiveDouble scripts StopRecordingByIdentity and ListRecording.

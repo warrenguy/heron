@@ -3,7 +3,7 @@ package consensus
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // clusterActionFlagsStandbySnapshot marks a SNAPSHOT action for a standby

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 func callIdleZero(strategy idlestrategy.IdleStrategy, count int) {

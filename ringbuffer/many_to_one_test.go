@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
-	"github.com/warrenguy/heron/ringbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/record"
+	"github.com/warrenguy/luas/ringbuffer"
 )
 
 const (

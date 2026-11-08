@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/test/integration/cluster_sbe/clustersbe"
 )
 
 func TestWireFixtures_oracle(t *testing.T) {

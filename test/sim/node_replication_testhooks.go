@@ -2,7 +2,7 @@
 
 package sim
 
-import "github.com/warrenguy/heron/cluster/election"
+import "github.com/warrenguy/luas/cluster/election"
 
 // SetLeaderAppend raises the synthetic leader append high-water on election.
 // The Agent append source reads election live; no counter re-sync needed.

@@ -13,7 +13,7 @@ import (
 // tests live in shared_testmain_external_test.go.
 func TestAcceptSharedDriver_testMainGlobals(t *testing.T) {
 	if sharedMediaDriverDisabled() {
-		t.Skip("HERON_SHARED_MEDIA_DRIVER=0")
+		t.Skip("LUAS_SHARED_MEDIA_DRIVER=0")
 	}
 	if !sharedTestMainSeen.Load() {
 		t.Skip("aeronmd not found; run make test-integration (requires Docker)")

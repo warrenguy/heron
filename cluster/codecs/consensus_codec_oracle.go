@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
+import "github.com/warrenguy/luas/cluster/codecs/clusterwire"
 
 var (
 	CanvassProtocolVersionMinVersion = uint16(

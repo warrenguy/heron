@@ -5,7 +5,7 @@ package replication
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 // scenarioSingleNodeCommit elects N=1, raises append, asserts Agent commit.

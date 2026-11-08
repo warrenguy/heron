@@ -32,7 +32,7 @@ type ScenarioSpec struct {
 
 // SoakConfig configures a weighted serial catalog run.
 type SoakConfig struct {
-	// BaseSeed defaults to 1. HERON_SIM_SEED at runner start overrides base
+	// BaseSeed defaults to 1. LUAS_SIM_SEED at runner start overrides base
 	// (shifts all derived seeds; does not collapse run indices).
 	BaseSeed uint64
 
@@ -90,7 +90,7 @@ func NonZeroSeed(seed uint64) uint64 {
 	return seed
 }
 
-// RunCatalog executes every weighted seed serially (no t.Parallel).
+// RunCatalog executes every weighted seed serially, without t.Parallel.
 //
 // ErrMaxSteps and safety errors hard-fail the seed with DumpOnFail via Run.
 func (r SoakRunner) RunCatalog(t *testing.T, cfg SoakConfig) {
@@ -100,10 +100,10 @@ func (r SoakRunner) RunCatalog(t *testing.T, cfg SoakConfig) {
 	if base == 0 {
 		base = 1
 	}
-	if v := os.Getenv("HERON_SIM_SEED"); v != "" {
+	if v := os.Getenv("LUAS_SIM_SEED"); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
-			t.Fatalf("%s: invalid HERON_SIM_SEED %q: %v", r.LogPrefix, v, err)
+			t.Fatalf("%s: invalid LUAS_SIM_SEED %q: %v", r.LogPrefix, v, err)
 		}
 		base = n
 	}

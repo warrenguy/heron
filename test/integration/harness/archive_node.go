@@ -19,16 +19,16 @@ import (
 )
 
 const (
-	envArchiveDir                = "HERON_ARCHIVE_DIR"
-	envArchiveControlChannel     = "HERON_ARCHIVE_CONTROL_CHANNEL"
-	envArchiveReplicationChannel = "HERON_ARCHIVE_REPLICATION_CHANNEL"
-	envArchiveJar                = "HERON_ARCHIVE_JAR"
+	envArchiveDir                = "LUAS_ARCHIVE_DIR"
+	envArchiveControlChannel     = "LUAS_ARCHIVE_CONTROL_CHANNEL"
+	envArchiveReplicationChannel = "LUAS_ARCHIVE_REPLICATION_CHANNEL"
+	envArchiveJar                = "LUAS_ARCHIVE_JAR"
 
 	// ArchiveReadyMarker is the ready-file name under ArchiveNode.Dir.
-	ArchiveReadyMarker  = ".heron-archive-ready"
+	ArchiveReadyMarker  = ".luas-archive-ready"
 	archiveReadyTimeout = 60 * time.Second
 
-	archiveNodeMainClass = "heron.archivejava.ArchiveNode"
+	archiveNodeMainClass = "luas.archivejava.ArchiveNode"
 	javaAddOpens         = "java.base/jdk.internal.misc=ALL-UNNAMED"
 
 	// archiveRuntimeMissing is the host-fix phrase for a missing Archive jar or
@@ -275,7 +275,7 @@ func javaMainCommand(ctx context.Context, javaPath, jarPath, mainClass string) *
 // function pointer.
 var (
 	defaultArchiveJar = sync.OnceValues(func() (string, error) {
-		if path := repoBinFile("heron-archive-java.jar"); path != "" {
+		if path := repoBinFile("luas-archive-java.jar"); path != "" {
 			return path, nil
 		}
 		return "", errArchiveJarNotFound

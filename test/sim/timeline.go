@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // TimelineEntry records one simulation event for replay and failure dumps.
@@ -147,9 +147,9 @@ func formatNodesDump(s *ElectionSim) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// dumpElectionSim logs state and, when HERON_SIM_SAVE=1, writes under
-// FailureDumpsDir. Returns the dump directory path on successful save; "" when
-// save is off or write fails (write errors are logged only).
+// dumpElectionSim logs state and, when LUAS_SIM_SAVE=1, writes under
+// FailureDumpsDir. Returns the dump directory path on successful save. Returns ""
+// when save is off or the write fails. Only logs a write error.
 func dumpElectionSim(tb testing.TB, s *ElectionSim) string {
 	tb.Helper()
 	header := formatDumpHeader(s)
@@ -163,12 +163,12 @@ func dumpElectionSim(tb testing.TB, s *ElectionSim) string {
 		tb.Log(line)
 	}
 
-	if os.Getenv("HERON_SIM_SAVE") != "1" {
+	if os.Getenv("LUAS_SIM_SAVE") != "1" {
 		return ""
 	}
 	dir, err := saveDumpToDisk(tb, s, header, timeline, nodes)
 	if err != nil {
-		tb.Logf("sim: HERON_SIM_SAVE write failed: %v", err)
+		tb.Logf("sim: LUAS_SIM_SAVE write failed: %v", err)
 		return ""
 	}
 	return dir

@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"github.com/warrenguy/luas/test/integration/cluster_java/clusterjava"
 )
 
 func TestClusterComposeDirOverride(t *testing.T) {

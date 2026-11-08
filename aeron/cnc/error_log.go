@@ -1,6 +1,6 @@
 package cnc
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 const ErrorLogEntryHeaderLength = 24
 

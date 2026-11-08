@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/java_interop/javainterop"
+	"github.com/warrenguy/luas/test/integration/java_interop/javainterop"
 )
 
 func TestOfferStallTimeout_table(t *testing.T) {

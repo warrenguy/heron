@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/archive/codecs/archivewire"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 // Catchup poll failures. The election restarts on each.
@@ -664,7 +664,7 @@ type AgentConfig struct {
 	//
 	// Concurrency: ErrorHandler runs inside [Agent.DoWork].
 	//
-	// [github.com/warrenguy/heron/cluster.Config.ErrorHandler] states the rules
+	// [github.com/warrenguy/luas/cluster.Config.ErrorHandler] states the rules
 	// that every module error handler follows.
 	ErrorHandler func(error)
 }

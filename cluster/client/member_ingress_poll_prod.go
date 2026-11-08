@@ -2,7 +2,7 @@
 
 package client
 
-import "github.com/warrenguy/heron/aeron"
+import "github.com/warrenguy/luas/aeron"
 
 func (ingress *MemberIngress) asyncPollAdd(
 	cfg Config,

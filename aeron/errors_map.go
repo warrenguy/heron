@@ -11,7 +11,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/luas/aeron/conductor"
 )
 
 // mapConductorError maps driver liveness failures to DriverTimeoutError.

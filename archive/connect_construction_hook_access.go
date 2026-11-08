@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/testhook"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/internal/testhook"
 )
 
 var connectConstructionHooksMap = testhook.NewRegistry[

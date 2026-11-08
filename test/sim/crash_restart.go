@@ -5,7 +5,7 @@ package sim
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"github.com/warrenguy/luas/cluster/election"
 )
 
 // CrashNode marks id dead: snapshots log identity, clears election host

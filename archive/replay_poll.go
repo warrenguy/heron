@@ -3,7 +3,7 @@ package archive
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 var errFindReplayImageNilSubscription = errors.New(

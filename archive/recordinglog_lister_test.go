@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
 func TestMapListRecordingError(t *testing.T) {

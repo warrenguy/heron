@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 type SubscriptionReady struct {
 	CorrelationID          int64

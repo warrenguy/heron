@@ -5,7 +5,7 @@ package clusterjava
 import (
 	"time"
 
-	"github.com/warrenguy/heron/cluster/client"
+	"github.com/warrenguy/luas/cluster/client"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 
 const (
 	// FailoverBaseDirPrefix matches ClusterConstants.FAILOVER_BASE_DIR_PREFIX.
-	FailoverBaseDirPrefix = "/dev/shm/heron-cluster-"
+	FailoverBaseDirPrefix = "/dev/shm/luas-cluster-"
 )
 
 const (

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election/nodewire"
+	"github.com/warrenguy/luas/cluster/election/nodewire"
 )
 
 func TestValidateFramedRecord_rejectsTruncatedCandidateTermBody(t *testing.T) {

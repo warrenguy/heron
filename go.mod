@@ -1,4 +1,4 @@
-module github.com/warrenguy/heron
+module github.com/warrenguy/luas
 
 go 1.26.4
 

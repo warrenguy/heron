@@ -3,7 +3,7 @@ package client
 import (
 	"time"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs"
 )
 
 const (

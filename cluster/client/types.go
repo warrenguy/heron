@@ -1,7 +1,7 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
 // EventCode is [clusterwire.EventCode] for cluster session events.

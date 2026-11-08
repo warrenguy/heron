@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/archive"
-	archivecodecs "github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"github.com/warrenguy/luas/archive"
+	archivecodecs "github.com/warrenguy/luas/archive/codecs"
+	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/consensus"
+	"github.com/warrenguy/luas/cluster/recordinglog"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 const (

@@ -11,10 +11,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"github.com/warrenguy/luas/cluster/codecs"
+	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
+	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/test/sim"
 )
 
 func TestElectionSim_threeNode_happyPath(t *testing.T) {
@@ -103,7 +103,7 @@ func TestElectionSim_dumpOnFailure(t *testing.T) {
 }
 
 func TestElectionSim_dumpSaveToDisk(t *testing.T) {
-	t.Setenv("HERON_SIM_SAVE", "1")
+	t.Setenv("LUAS_SIM_SAVE", "1")
 
 	s, err := sim.NewElectionSim(t, sim.Config{
 		Seed: 17,
@@ -117,7 +117,7 @@ func TestElectionSim_dumpSaveToDisk(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 	require.NoError(t, s.RunSteps(1))
 
-	// Dump always logs; with HERON_SIM_SAVE=1 also writes under module root.
+	// Dump always logs; with LUAS_SIM_SAVE=1 also writes under module root.
 	dir := s.Dump(t)
 	require.NotEmpty(t, dir)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
@@ -217,9 +217,9 @@ func TestElectionSim_runUntilPredicateSteps(t *testing.T) {
 }
 
 func TestElectionSim_invalidSeedFromEnv(t *testing.T) {
-	t.Setenv("HERON_SIM_SEED", "not-a-number")
+	t.Setenv("LUAS_SIM_SEED", "not-a-number")
 
-	// Seed 0 so SeedFromEnv reads HERON_SIM_SEED (non-zero short-circuits env).
+	// Seed 0 so SeedFromEnv reads LUAS_SIM_SEED (non-zero short-circuits env).
 	s, err := sim.NewElectionSim(t, sim.Config{Seed: 0})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, s.Close()) })

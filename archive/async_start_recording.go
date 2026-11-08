@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs/archivewire"
+import "github.com/warrenguy/luas/archive/codecs/archivewire"
 
 // AsyncStartRecording is one non-blocking start recording request.
 //

@@ -3,8 +3,8 @@ package aeron
 import (
 	"strconv"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // Publication return codes -1 to -5 mirror Aeron Java Publication.

@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 // handleNewLeader rebuilds the member ingress map for a leadership change. Called from

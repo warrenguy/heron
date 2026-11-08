@@ -2,7 +2,7 @@
 // objdump. Each release store sits in its own non-inlined wrapper.
 package main
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "github.com/warrenguy/luas/atomicbuffer"
 
 //go:noinline
 func putInt32Release(buf atomicbuffer.AtomicBuffer, value int32) {

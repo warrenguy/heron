@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 const fragmentBuilderIdleNextTermOffset int32 = -1

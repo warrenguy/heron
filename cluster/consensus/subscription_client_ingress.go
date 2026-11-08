@@ -1,7 +1,7 @@
 package consensus
 
 import (
-	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/luas/aeron"
 )
 
 // ControlledFragmentPoller delivers committed fragments with controlled-action

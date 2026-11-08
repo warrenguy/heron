@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/wire"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/wire"
 )
 
 func TestPutGetInt64_roundtrip_rapid(t *testing.T) {

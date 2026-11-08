@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/atomicbuffer"
 )
 
 // EgressAdapter polls an egress subscription and dispatches cluster SBE events

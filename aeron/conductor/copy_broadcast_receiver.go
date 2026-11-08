@@ -3,8 +3,8 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/broadcast"
 )
 
 // ScratchBufferLength is the initial scratch length of a CopyBroadcastReceiver.
