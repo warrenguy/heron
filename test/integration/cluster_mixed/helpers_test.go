@@ -573,6 +573,121 @@ func requireGoLogRecording(
 	return recordingID, recordedPosition
 }
 
+// goLogRecording names one Go member's log recording.
+type goLogRecording struct {
+	member      *mixedMemberFixture
+	recordingID int64
+}
+
+// awaitLogRecordingsReach polls until every Go recording reaches
+// wantPosition. tick runs at the start of each poll.
+//
+// Every Java member must hold exactly one recording-position counter for
+// logSessionID. That counter must reach wantPosition. The wait fails the test
+// when budget elapses.
+func awaitLogRecordingsReach(
+	t *testing.T,
+	tick func(),
+	goRecordings []goLogRecording,
+	java []*harness.DriverCounters,
+	logSessionID int32,
+	wantPosition int64,
+	budget time.Duration,
+) {
+	t.Helper()
+
+	start := time.Now()
+	ok := harness.PollUntilBool(budget, time.Millisecond, func() bool {
+		tick()
+
+		for _, rec := range goRecordings {
+			position := harness.RecordingCounterPosition(rec.member.module, rec.recordingID)
+
+			if position < wantPosition {
+				return false
+			}
+		}
+
+		for _, counters := range java {
+			found := counters.RecordingPositionsBySession(logSessionID)
+
+			if len(found) != 1 || found[0].Position < wantPosition {
+				return false
+			}
+		}
+
+		return true
+	})
+
+	elapsed := time.Since(start)
+	samples := formatLogRecordings(goRecordings, java, logSessionID)
+
+	if !ok {
+		modules := make([]*cluster.ConsensusModule, len(goRecordings))
+		for i, rec := range goRecordings {
+			modules[i] = rec.member.module
+		}
+
+		t.Fatalf(
+			"log recordings did not reach commit after %s (budget %s): "+
+				"want=%d session=%d go position=-1 means the counter is missing\n%s%s",
+			elapsed,
+			budget,
+			wantPosition,
+			logSessionID,
+			samples,
+			dumpMixedMembers(modules, java),
+		)
+	}
+
+	t.Logf(
+		"log recordings reached elapsed=%s budget=%s want=%d session=%d\n%s",
+		elapsed,
+		budget,
+		wantPosition,
+		logSessionID,
+		samples,
+	)
+}
+
+// formatLogRecordings returns one line per Go recording, then one line per
+// Java member. A Java line lists the recording-position counters for
+// logSessionID. A Go position of -1 means the counter is missing.
+func formatLogRecordings(
+	goRecordings []goLogRecording,
+	java []*harness.DriverCounters,
+	logSessionID int32,
+) string {
+	var b strings.Builder
+	for i, rec := range goRecordings {
+		fmt.Fprintf(
+			&b,
+			"go[%d] recordingID=%d position=%d\n",
+			i,
+			rec.recordingID,
+			harness.RecordingCounterPosition(rec.member.module, rec.recordingID),
+		)
+	}
+
+	for i, counters := range java {
+		matches := counters.RecordingPositionsBySession(logSessionID)
+		fmt.Fprintf(&b, "java[%d] matches=%d", i, len(matches))
+
+		for _, match := range matches {
+			fmt.Fprintf(
+				&b,
+				" recordingID=%d position=%d",
+				match.RecordingID,
+				match.Position,
+			)
+		}
+
+		b.WriteByte('\n')
+	}
+
+	return b.String()
+}
+
 // awaitGoRecordingReaches ticks the duty cycle until the recorded position
 // reaches wantPosition.
 //
@@ -1059,6 +1174,25 @@ func appendJavaMemberCounters(b *strings.Builder, memberID int, c *harness.Drive
 	)
 }
 
+// dumpMixedMembers returns one Go state line per module, then one Java counter
+// line per Java member.
+//
+// A module may be nil. Java lines use the slice index as the member id.
+// Callers must pass Java members in id order from member 0.
+func dumpMixedMembers(
+	modules []*cluster.ConsensusModule,
+	java []*harness.DriverCounters,
+) string {
+	var b strings.Builder
+	for _, m := range modules {
+		b.WriteString(harness.ClusterMemberState(m))
+	}
+	for i, c := range java {
+		appendJavaMemberCounters(&b, i, c)
+	}
+	return b.String()
+}
+
 // dumpMixedState returns the Go member state and one line per Java counter set.
 // The Go module may be nil when Go has not opened yet. dumpMixedState labels
 // each Java line with the slice index. The caller passes members in id order
@@ -1067,10 +1201,5 @@ func dumpMixedState(
 	m *cluster.ConsensusModule,
 	java []*harness.DriverCounters,
 ) string {
-	var b strings.Builder
-	b.WriteString(harness.ClusterMemberState(m))
-	for i, c := range java {
-		appendJavaMemberCounters(&b, i, c)
-	}
-	return b.String()
+	return dumpMixedMembers([]*cluster.ConsensusModule{m}, java)
 }

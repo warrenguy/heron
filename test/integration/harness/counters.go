@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -130,4 +131,60 @@ func (c *DriverCounters) Close() error {
 	c.mapped = nil
 	c.reader = nil
 	return mapped.Close()
+}
+
+const (
+	// recordingPositionRecordingIDOffset is the key offset of the recording
+	// id. Matches RecordingPos.RECORDING_ID_OFFSET.
+	recordingPositionRecordingIDOffset = 0
+
+	// recordingPositionSessionIDOffset is the key offset of the session id.
+	// Matches RecordingPos.SESSION_ID_OFFSET.
+	recordingPositionSessionIDOffset = 8
+)
+
+// RecordingPosition is one archive recording-position counter.
+type RecordingPosition struct {
+	RecordingID int64
+	Position    int64
+}
+
+// RecordingPositionsBySession returns every allocated recording-position
+// counter whose key holds sessionID, in ascending counter id order.
+//
+// Returns nil when the receiver is nil or closed. Does not filter on
+// archive id.
+func (c *DriverCounters) RecordingPositionsBySession(sessionID int32) []RecordingPosition {
+	if c == nil || c.reader == nil {
+		return nil
+	}
+
+	limit := c.reader.CounterValuesBuffer().Capacity() / cnc.CounterValueLength
+	var out []RecordingPosition
+
+	for counterID := range int32(limit) {
+		if !c.reader.IsCounterAllocatedOfType(
+			counterID,
+			cnc.ArchiveRecordingPositionCounterTypeID,
+		) {
+			continue
+		}
+
+		key, ok := c.reader.CounterKey(counterID)
+		if !ok {
+			continue
+		}
+
+		gotSession := int32(binary.LittleEndian.Uint32(key[recordingPositionSessionIDOffset:]))
+		if gotSession != sessionID {
+			continue
+		}
+
+		position, _ := c.reader.CounterValue(counterID)
+		out = append(out, RecordingPosition{
+			RecordingID: int64(binary.LittleEndian.Uint64(key[recordingPositionRecordingIDOffset:])),
+			Position:    position,
+		})
+	}
+	return out
 }

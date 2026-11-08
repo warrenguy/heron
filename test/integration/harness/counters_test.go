@@ -152,3 +152,126 @@ func TestDriverCounters_Value_afterClose(t *testing.T) {
 	_, ok := counters.Value(testCounterTypeA)
 	require.False(t, ok)
 }
+
+func TestDriverCounters_RecordingPositionsBySession(t *testing.T) {
+	t.Parallel()
+
+	const session int32 = 42
+
+	require.Nil(t, (*DriverCounters)(nil).RecordingPositionsBySession(session))
+
+	type seed struct {
+		counterID   int32
+		recordingID int64
+		sessionID   int32
+		archiveID   int64
+		position    int64
+		reclaimed   bool
+		otherType   bool
+	}
+
+	tests := []struct {
+		name       string
+		records    []seed
+		want       []RecordingPosition
+		closeFirst bool
+	}{
+		{
+			name:    "one match",
+			records: []seed{{counterID: 2, recordingID: 1001, sessionID: session, position: 5000}},
+			want:    []RecordingPosition{{RecordingID: 1001, Position: 5000}},
+		},
+		{
+			name: "two sessions",
+			records: []seed{
+				{counterID: 0, recordingID: 1001, sessionID: session, position: 10},
+				{counterID: 1, recordingID: 2002, sessionID: 99, position: 20},
+			},
+			want: []RecordingPosition{{RecordingID: 1001, Position: 10}},
+		},
+		{
+			name: "two records for one session",
+			records: []seed{
+				{counterID: 0, recordingID: 1001, sessionID: session, archiveID: 11, position: 10},
+				{counterID: 3, recordingID: 1002, sessionID: session, archiveID: 22, position: 30},
+			},
+			want: []RecordingPosition{
+				{RecordingID: 1001, Position: 10},
+				{RecordingID: 1002, Position: 30},
+			},
+		},
+		{
+			name: "reclaimed record skipped",
+			records: []seed{
+				{counterID: 0, recordingID: 1001, sessionID: session, position: 10, reclaimed: true},
+				{counterID: 1, recordingID: 1002, sessionID: session, position: 30},
+			},
+			want: []RecordingPosition{{RecordingID: 1002, Position: 30}},
+		},
+		{
+			name: "other type skipped",
+			records: []seed{
+				{counterID: 0, recordingID: 1001, sessionID: session, position: 10, otherType: true},
+				{counterID: 1, recordingID: 1002, sessionID: session, position: 30},
+			},
+			want: []RecordingPosition{{RecordingID: 1002, Position: 30}},
+		},
+		{
+			name:    "no match",
+			records: []seed{{counterID: 0, recordingID: 1001, sessionID: 99, position: 10}},
+		},
+		{
+			name:       "closed receiver",
+			records:    []seed{{counterID: 0, recordingID: 1001, sessionID: session, position: 5000}},
+			closeFirst: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// WriteCncDir sizes the counter buffers to the highest record id.
+			placeholders := make([]cnctest.CounterRecord, len(test.records))
+
+			for i, record := range test.records {
+				placeholders[i] = cnctest.CounterRecord{CounterID: record.counterID}
+			}
+
+			counters, err := OpenDriverCounters(cnctest.WriteCncDir(t, placeholders))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, counters.Close()) })
+
+			for _, record := range test.records {
+				state := cnc.CounterRecordAllocated
+				if record.reclaimed {
+					state = cnc.CounterRecordReclaimed
+				}
+
+				typeID := cnc.ArchiveRecordingPositionCounterTypeID
+				if record.otherType {
+					typeID = testOtherType
+				}
+
+				require.NoError(t, cnc.WriteRecordingPositionCounterRecord(
+					counters.mapped.CountersMetaDataBuffer(),
+					counters.mapped.CountersValuesBuffer(),
+					record.counterID,
+					state,
+					typeID,
+					record.recordingID,
+					record.sessionID,
+					"src",
+					record.archiveID,
+					record.position,
+				))
+			}
+
+			if test.closeFirst {
+				require.NoError(t, counters.Close())
+			}
+
+			require.Equal(t, test.want, counters.RecordingPositionsBySession(session))
+		})
+	}
+}

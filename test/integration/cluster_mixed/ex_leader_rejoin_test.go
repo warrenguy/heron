@@ -19,7 +19,10 @@ import (
 // copies the missed term from the Java leader. Runs only under
 // HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE.
 //
-// The test does not assert Java members' recordings.
+// Before the Go member stops, Java member 0's recording-position counter for
+// the Go leader's log session reaches the observed commit. After the Go member
+// rejoins, Java member 0's recording-position counter for the Java leader's
+// log session reaches the observed commit.
 //
 // This test owns the compose-fixed MixedAeronDir paths, MixedClusterDirGo,
 // and the PortBase 9000 block. Callers must not call t.Parallel.
@@ -55,11 +58,12 @@ func TestClusterMixedGoExLeaderRejoin(t *testing.T) {
 	awaitJavaCommitAdvance(t, f, java, recorded, clusterjava.MixedCommitBudget)
 	floor := f.module.CommitPosition()
 	require.Less(t, recordingBefore, floor)
-	awaitGoRecordingReaches(
+	awaitLogRecordingsReach(
 		t,
-		f,
+		f.tick,
+		[]goLogRecording{{member: f, recordingID: recordingID}},
 		java,
-		recordingID,
+		pub.SessionID(),
 		floor,
 		clusterjava.MixedCommitBudget,
 	)
@@ -105,11 +109,14 @@ func TestClusterMixedGoExLeaderRejoin(t *testing.T) {
 	induceSessionMessage(t, f)
 	awaitNotifiedCommitAdvance(t, f, before, clusterjava.MixedCommitBudget)
 	after := f.module.NotifiedCommitPosition()
-	awaitGoRecordingReaches(
+
+	// Java member 1 has stopped, so the wait covers member 0 only.
+	awaitLogRecordingsReach(
 		t,
-		f,
-		java,
-		recordingID,
+		f.tick,
+		[]goLogRecording{{member: f, recordingID: recordingID}},
+		java[:1],
+		f.module.LogAdapter().Image().SessionID(),
 		after,
 		clusterjava.MixedCommitBudget,
 	)
