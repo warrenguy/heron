@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -1350,6 +1351,14 @@ func TestIsFatal(t *testing.T) {
 		},
 		{name: "storage space", err: fmt.Errorf("wrap: %w", storage), want: true},
 		{name: "other archive code", err: fmt.Errorf("wrap: %w", other)},
+		{name: "joined storage space last", err: errors.Join(other, storage), want: true},
+		{name: "joined storage space first", err: errors.Join(storage, other), want: true},
+		{
+			name: "take wraps joined storage space",
+			err:  fmt.Errorf("%w: %w", ErrTakeSnapshot, errors.Join(other, storage)),
+			want: true,
+		},
+		{name: "joined other archive code", err: errors.Join(other, inner)},
 		{
 			name: "terminal ack wraps a non-fatal inner",
 			err:  fmt.Errorf("%w: %d: %w", ErrAckPublish, aeron.Closed, inner),
@@ -1376,6 +1385,51 @@ func TestIsFatal(t *testing.T) {
 			require.Equal(t, tt.want, isFatal(tt.err))
 		})
 	}
+}
+
+type backgroundCountingService struct {
+	recordingService
+	backgroundCalls int
+}
+
+func (s *backgroundCountingService) DoBackgroundWork(int64) int {
+	s.backgroundCalls++
+	return 0
+}
+
+type terminatingSubscriptionAdder struct {
+	reporter *terminatingReporter
+	err      error
+}
+
+func (a *terminatingSubscriptionAdder) AddSubscription(int32, string) (*aeron.Subscription, error) {
+	a.reporter.terminating = true
+	return nil, a.err
+}
+
+type terminatingResponseAdder struct {
+	*fakeResponseAdder
+	reporter *terminatingReporter
+}
+
+func (a *terminatingResponseAdder) PollAddPublication(
+	correlationID int64,
+) (*aeron.Publication, bool, error) {
+	a.reporter.terminating = true
+	return a.fakeResponseAdder.PollAddPublication(correlationID)
+}
+
+type terminatingSnapshotAdder struct {
+	SnapshotPublicationAdder
+	reporter *terminatingReporter
+}
+
+func (a *terminatingSnapshotAdder) OfferAddExclusivePublication(
+	streamID int32,
+	channel string,
+) (int64, error) {
+	a.reporter.terminating = true
+	return a.SnapshotPublicationAdder.OfferAddExclusivePublication(streamID, channel)
 }
 
 func TestAgent_transportTerminating(t *testing.T) {
@@ -1442,6 +1496,82 @@ func TestAgent_transportTerminating(t *testing.T) {
 		reporter.terminating = true
 		require.Equal(t, 0, take.agent.DoWork(0))
 		requireFailureReported(t, take.agent, got, ErrTransportTerminating, storage)
+	})
+
+	t.Run("join add error wraps", func(t *testing.T) {
+		svc := &backgroundCountingService{}
+		reporter := &terminatingReporter{}
+		addErr := &aeron.DriverTimeoutError{Cause: errors.New("timeout")}
+		var got []error
+		agent := NewAgent(AgentConfig{
+			Service:       svc,
+			Subscriptions: &terminatingSubscriptionAdder{reporter: reporter, err: addErr},
+			ErrorHandler:  collectErrors(&got),
+			Transport:     reporter,
+		})
+		agent.handleJoinLog(defaultJoinEvent(0))
+
+		agent.DoWork(0)
+		requireFailureReported(t, agent, got, ErrTransportTerminating, ErrLogSubscriptionAdd, addErr)
+		require.Zero(t, svc.backgroundCalls)
+	})
+
+	t.Run("join add error keeps a pending ack cause", func(t *testing.T) {
+		reporter := &terminatingReporter{}
+		addErr := &aeron.DriverTimeoutError{Cause: errors.New("timeout")}
+		pending := fmt.Errorf("%w: pending", ErrAckPublish)
+		var got []error
+		agent := NewAgent(AgentConfig{
+			Service:       &recordingService{},
+			Subscriptions: &terminatingSubscriptionAdder{reporter: reporter, err: addErr},
+			ErrorHandler:  collectErrors(&got),
+			Transport:     reporter,
+		})
+		agent.coordinationAcks = append(agent.coordinationAcks, coordinationAck{failure: pending})
+		agent.handleJoinLog(defaultJoinEvent(0))
+
+		agent.DoWork(0)
+		requireFailureReported(
+			t, agent, got, ErrTransportTerminating, pending, ErrLogSubscriptionAdd, addErr,
+		)
+	})
+
+	t.Run("response add poll error wraps", func(t *testing.T) {
+		reporter := &terminatingReporter{}
+		pollErr := &aeron.DriverTimeoutError{Cause: errors.New("timeout")}
+		adder := &terminatingResponseAdder{fakeResponseAdder: newFakeResponseAdder(), reporter: reporter}
+		var got []error
+		log := bindHandledLeader(t, adder, collectErrors(&got))
+		log.agent.transport = reporter
+		log.open(7, 50)
+		adder.next(1, responsePoll{err: pollErr})
+
+		log.agent.DoWork(0)
+		requireFailureReported(
+			t, log.agent, got, ErrTransportTerminating, ErrResponsePublicationAdd, pollErr,
+		)
+	})
+
+	t.Run("snapshot add error wraps once", func(t *testing.T) {
+		reporter := &terminatingReporter{}
+		addErr := &aeron.DriverTimeoutError{Cause: errors.New("timeout")}
+		h := newTakeHarness(t, &snapshotRecordingService{})
+		h.agent.transport = reporter
+		h.fake.addOffers = []error{addErr}
+		h.agent.snapshotPublications = &terminatingSnapshotAdder{
+			SnapshotPublicationAdder: h.fake,
+			reporter:                 reporter,
+		}
+		h.log.termEvent(t, clusterwire.ClusterTimeUnit_NANOS, 0)
+		h.log.snapshot(t, 9)
+
+		h.agent.DoWork(0)
+		h.agent.DoWork(0)
+		requireFailureReported(
+			t, h.agent, h.errs, ErrTransportTerminating, ErrSnapshotPublicationAdd, addErr,
+		)
+		failureText := h.agent.ServiceFailure().Error()
+		require.Equal(t, 1, strings.Count(failureText, ErrTransportTerminating.Error()))
 	})
 
 	nilTransports := []struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/warrenguy/heron/aeron"
@@ -919,8 +920,9 @@ func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 
 // joinWork progresses a pending join when no image is bound.
 //
-// Behaviour: a subscription add error reports. The add retries
-// joinAddRetryIntervalNs after the next tick. A newer join adds at once.
+// Behaviour: a subscription add error reports. An add error during transport
+// termination marks the failure. The add retries joinAddRetryIntervalNs after
+// the next tick. A newer join adds at once.
 func (a *Agent) joinWork(nowNs int64) int {
 	event := a.pendingJoin
 	if event == nil {
@@ -953,7 +955,9 @@ func (a *Agent) joinWork(nowNs int64) int {
 		sub, err := a.subscriptions.AddSubscription(event.logStreamID, event.logChannel)
 		if err != nil {
 			event.addFailed = true
-			a.handleError(fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err))
+			a.handleError(a.withTransportTermination(
+				fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err),
+			))
 			return 0
 		}
 		// No subscription yet: the next tick retries the add.
@@ -1037,24 +1041,64 @@ func isFatal(err error) bool {
 		return true
 	}
 
-	code, ok := archive.ExceptionCode(err)
-	return ok && code == archive.ErrorStorageSpace
+	return wrapsStorageSpace(err)
+}
+
+// wrapsStorageSpace checks every branch of err. [archive.ExceptionCode] reads
+// only the first archive exception.
+func wrapsStorageSpace(err error) bool {
+	exception, ok := err.(*archive.Exception)
+	if ok && exception.ErrorCode == archive.ErrorStorageSpace {
+		return true
+	}
+
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() error }:
+		return wrapsStorageSpace(wrapped.Unwrap())
+	case interface{ Unwrap() []error }:
+		return slices.ContainsFunc(wrapped.Unwrap(), wrapsStorageSpace)
+	}
+	return false
 }
 
 // markIfTransportTerminating returns true when it marks the failure. The
 // failure wraps a pending fatal ack cause.
 func (a *Agent) markIfTransportTerminating() bool {
-	if a.transport == nil || !a.transport.IsTerminating() {
+	cause := a.transportTerminatingCause()
+	if cause == nil {
 		return false
-	}
-
-	cause := ErrTransportTerminating
-	if pending := a.pendingAckFailure(); pending != nil {
-		cause = fmt.Errorf("%w: %w", ErrTransportTerminating, pending)
 	}
 
 	a.handleError(cause)
 	return true
+}
+
+// withTransportTermination wraps add error err with the termination cause when
+// the transport client is terminating. isFatal does not recognize the timeout
+// that a client can return when it terminates during the add.
+func (a *Agent) withTransportTermination(err error) error {
+	cause := a.transportTerminatingCause()
+	if cause == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", cause, err)
+}
+
+// transportTerminatingCause returns nil until the transport client terminates.
+// The cause wraps a pending fatal ack cause.
+func (a *Agent) transportTerminatingCause() error {
+	if a.transport == nil || !a.transport.IsTerminating() {
+		return nil
+	}
+
+	pending := a.pendingAckFailure()
+	switch {
+	case pending == nil:
+		return ErrTransportTerminating
+	case errors.Is(pending, ErrTransportTerminating):
+		return pending
+	}
+	return fmt.Errorf("%w: %w", ErrTransportTerminating, pending)
 }
 
 func (a *Agent) pendingAckFailure() error {

@@ -209,7 +209,9 @@ func (a *Agent) addSnapshotPublication(take *snapshotTake, nowNs int64) (bool, e
 			a.snapshotChannel,
 		)
 		if err != nil {
-			return false, fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err)
+			return false, a.withTransportTermination(
+				fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err),
+			)
 		}
 		take.addCorrelationID = id
 		take.addPending = true
@@ -222,7 +224,9 @@ func (a *Agent) addSnapshotPublication(take *snapshotTake, nowNs int64) (bool, e
 	}
 	switch {
 	case err != nil:
-		return false, fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err)
+		return false, a.withTransportTermination(
+			fmt.Errorf("%w: %w", ErrSnapshotPublicationAdd, err),
+		)
 	case !done:
 		return false, nil
 	case publication == nil:

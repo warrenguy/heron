@@ -285,7 +285,7 @@ func (a *Agent) connectClientSession(session *containerClientSession) {
 		session.responseChannel,
 	)
 	if err != nil {
-		a.handleError(responsePublicationAddError(session.id, err))
+		a.handleError(a.withTransportTermination(responsePublicationAddError(session.id, err)))
 		return
 	}
 	session.addCorrelationID = correlationID
@@ -393,7 +393,7 @@ func (a *Agent) pollResponseAdd(
 	case err == nil && publication != nil:
 		return publication, false
 	}
-	a.handleError(responsePublicationAddError(session.id, err))
+	a.handleError(a.withTransportTermination(responsePublicationAddError(session.id, err)))
 	return nil, false
 }
 
