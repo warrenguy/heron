@@ -14,17 +14,22 @@ const (
 	SizeUint16 = int(unsafe.Sizeof(uint16(0)))
 )
 
-// AtomicBuffer provides typed access to a byte slice, including atomic
-// operations for shared mmap regions.
+// AtomicBuffer reads and writes typed fields in a byte slice.
 //
-// Plain GetInt32/PutInt32 (and int64, byte) are non-atomic loads/stores. Hot paths in
-// ringbuffer that publish record headers across goroutines should use
-// GetInt32Volatile/PutInt32Release. Broadcast pairs plain record writes with
-// ReleaseFence and volatile tail counters (BroadcastReceiver ordering); migrating
-// broadcast to volatile int32 accessors would be a separate change.
+// GetInt32, PutInt32, and their int64 and byte forms do not use atomic order.
 //
-// *At accessors skip boundsCheck. Application code must use Get*. Internal tree
-// packages may call *At only after bind-time or header bounds proof.
+// Get*, Put*, Int32Pointer, Int64Pointer, and the atomic methods panic when the
+// field does not fit in the buffer.
+//
+// Int32At, Int64At, and ByteAt skip that bounds check. Int32At and Int64At
+// check the slice capacity, so a read past the length and inside the capacity
+// returns backing bytes. The caller must check the field against Capacity
+// first.
+//
+// The atomic methods do not check alignment. The caller must align the field
+// address to the field size. On arm64 a misaligned atomic access can fault and
+// stop the process. On amd64 a misaligned access that crosses a cache line can
+// tear.
 type AtomicBuffer struct {
 	buf []byte
 }
@@ -68,13 +73,9 @@ func boundsCheck(buf []byte, offset, size int) {
 	}
 }
 
-func addressAtUnchecked(buf []byte, offset int) unsafe.Pointer {
-	return unsafe.Add(unsafe.Pointer(&buf[0]), offset)
-}
-
 func addressAt(buf []byte, offset, size int) unsafe.Pointer {
 	boundsCheck(buf, offset, size)
-	return addressAtUnchecked(buf, offset)
+	return unsafe.Add(unsafe.Pointer(&buf[0]), offset)
 }
 
 // Int32Pointer returns the address of the int32 at offset. It panics when the
@@ -91,9 +92,7 @@ func (b AtomicBuffer) Int32Pointer(offset int) *int32 {
 // Int64Pointer returns the address of the int64 at offset. It panics when the
 // field does not fit in the buffer.
 //
-// A hot path calls it once when it binds the buffer. Later sync/atomic
-// operations and StoreInt64Release through the pointer need no bounds check,
-// because this call made it.
+// Operations through the pointer skip the bounds check.
 //
 // Lifetime: the pointer is valid while the backing memory stays mapped.
 func (b AtomicBuffer) Int64Pointer(offset int) *int64 {
@@ -116,13 +115,10 @@ func (b AtomicBuffer) PutInt32(offset int, value int32) {
 	binary.LittleEndian.PutUint32(b.buf[offset:offset+SizeInt32], uint32(value))
 }
 
+// GetInt32Volatile loads the int32 at offset with acquire order, like Agrona
+// getIntVolatile. It panics when the field does not fit in the buffer.
 func (b AtomicBuffer) GetInt32Volatile(offset int) int32 {
-	boundsCheck(b.buf, offset, SizeInt32)
-	return b.VolatileInt32At(offset)
-}
-
-func (b AtomicBuffer) VolatileInt32At(offset int) int32 {
-	return atomic.LoadInt32((*int32)(addressAtUnchecked(b.buf, offset)))
+	return atomic.LoadInt32((*int32)(addressAt(b.buf, offset, SizeInt32)))
 }
 
 func (b AtomicBuffer) GetInt64(offset int) int64 {
@@ -141,13 +137,10 @@ func (b AtomicBuffer) PutInt64(offset int, value int64) {
 	binary.LittleEndian.PutUint64(b.buf[offset:offset+SizeInt64], uint64(value))
 }
 
+// GetInt64Volatile loads the int64 at offset with acquire order, like Agrona
+// getLongVolatile. It panics when the field does not fit in the buffer.
 func (b AtomicBuffer) GetInt64Volatile(offset int) int64 {
-	boundsCheck(b.buf, offset, SizeInt64)
-	return b.VolatileInt64At(offset)
-}
-
-func (b AtomicBuffer) VolatileInt64At(offset int) int64 {
-	return atomic.LoadInt64((*int64)(addressAtUnchecked(b.buf, offset)))
+	return atomic.LoadInt64((*int64)(addressAt(b.buf, offset, SizeInt64)))
 }
 
 // PutInt64Volatile stores value with sequential consistency, like Agrona

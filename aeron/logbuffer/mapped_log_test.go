@@ -66,6 +66,12 @@ func TestMapLogBuffer_roundtrip(t *testing.T) {
 	require.Equal(t, logbuffer.TestPageSize, mapped.PageSize())
 	require.Equal(t, logbuffer.TestComputedLength, mapped.ComputedLength())
 	require.Empty(t, mapped.Path())
+
+	for i := range logbuffer.PartitionCount {
+		term, err := mapped.TermBuffer(i)
+		require.NoError(t, err)
+		require.Equal(t, logbuffer.TestTermLength, cap(term.Bytes()))
+	}
 }
 
 // syntheticLog builds a log of logLength bytes. Its tail holds metadata that

@@ -1,36 +1,34 @@
 package aeron
 
 import (
+	"sync/atomic"
+
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/atomicbuffer"
 )
 
-// SubscriberPosition wraps one driver subscriber-position counter slot in the CNC
-// values buffer.
+// SubscriberPosition wraps one driver subscriber-position counter slot in the
+// CNC values buffer.
 //
 // The driver owns counter lifetime for the image session.
-//
-// Get and SetRelease read and publish the consume position on the poll hot path.
 type SubscriberPosition struct {
-	counterID    int32
-	valuesOffset int
-	values       atomicbuffer.AtomicBuffer
+	counterID int32
+	value     *int64
 }
 
 func newSubscriberPosition(counterID int32, values atomicbuffer.AtomicBuffer) SubscriberPosition {
 	return SubscriberPosition{
-		counterID:    counterID,
-		valuesOffset: cnc.CounterOffset(counterID),
-		values:       values,
+		counterID: counterID,
+		value:     values.Int64Pointer(cnc.CounterOffset(counterID)),
 	}
 }
 
 func (position *SubscriberPosition) Get() int64 {
-	return position.values.VolatileInt64At(position.valuesOffset)
+	return atomic.LoadInt64(position.value)
 }
 
 func (position *SubscriberPosition) SetRelease(value int64) {
-	position.values.PutInt64Release(position.valuesOffset, value)
+	atomicbuffer.StoreInt64Release(position.value, value)
 }
 
 func (position *SubscriberPosition) CounterID() int32 {

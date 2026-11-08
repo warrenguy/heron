@@ -20,8 +20,8 @@ func storeInt64Release(ptr *int64, value int64) {
 }
 
 //go:noinline
-func putInt64ReleaseStoreFenceAt(buf atomicbuffer.AtomicBuffer, value int64) {
-	buf.PutInt64ReleaseStoreFenceAt(8, value)
+func storeInt64ReleaseStoreFence(ptr *int64, value int64) {
+	atomicbuffer.StoreInt64ReleaseStoreFence(ptr, value)
 }
 
 func main() {
@@ -30,6 +30,6 @@ func main() {
 	atomicbuffer.ReleaseFence()
 	putInt64Release(buf, -7)
 	storeInt64Release(buf.Int64Pointer(8), -9)
-	putInt64ReleaseStoreFenceAt(buf, -11)
+	storeInt64ReleaseStoreFence(buf.Int64Pointer(8), -11)
 	atomicbuffer.AcquireFence()
 }

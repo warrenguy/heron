@@ -92,8 +92,8 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 			atomicbuffer.Wrap(stack[:]).PutInt32Release(4, i32)
 			i32++
 		}},
-		{"PutInt64ReleaseStoreFenceAt", func() {
-			atomicBuffer.PutInt64ReleaseStoreFenceAt(8, i64)
+		{"StoreInt64ReleaseStoreFence", func() {
+			atomicbuffer.StoreInt64ReleaseStoreFence(atomicBuffer.Int64Pointer(8), i64)
 			i64++
 		}},
 		{"StoreInt64Release", func() {
@@ -124,17 +124,25 @@ func TestAtomicBuffer_ZeroAllocs(t *testing.T) {
 	}
 }
 
-func TestAtomicBuffer_EmptyPanics(t *testing.T) {
-	require.Panics(t, func() {
-		atomicbuffer.Wrap(nil).GetInt32Volatile(0)
-	}, "GetInt32Volatile on nil buffer")
-}
-
-func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
+func TestAtomicBuffer_MatchesBoundedGetters(t *testing.T) {
 	atomicBuffer := newTestAtomicBuffer(t, testAtomicBufferSize)
 	atomicBuffer.PutInt32(0, 0x01020304)
 	atomicBuffer.PutInt64Release(8, 0x0A0B0C0D0E0F1011)
 	atomicBuffer.PutByte(4, 0x55)
+
+	matchesRelease := func(store func(*int64, int64)) func(t *testing.T) {
+		return func(t *testing.T) {
+			const value = int64(-0x0102030405060708)
+			released := newTestAtomicBuffer(t, testAtomicBufferSize)
+			released.PutInt64Release(16, value)
+
+			stored := newTestAtomicBuffer(t, testAtomicBufferSize)
+			store(stored.Int64Pointer(16), value)
+
+			require.Equal(t, released.Bytes(), stored.Bytes())
+			require.Equal(t, value, stored.GetInt64(16))
+		}
+	}
 
 	cases := []struct {
 		name string
@@ -145,12 +153,6 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 		}},
 		{"Int64At", func(t *testing.T) {
 			require.Equal(t, atomicBuffer.GetInt64(8), atomicBuffer.Int64At(8))
-		}},
-		{"VolatileInt32At", func(t *testing.T) {
-			require.Equal(t, atomicBuffer.GetInt32Volatile(0), atomicBuffer.VolatileInt32At(0))
-		}},
-		{"VolatileInt64At", func(t *testing.T) {
-			require.Equal(t, atomicBuffer.GetInt64Volatile(8), atomicBuffer.VolatileInt64At(8))
 		}},
 		{"ByteAt", func(t *testing.T) {
 			require.Equal(t, atomicBuffer.GetByte(4), atomicBuffer.ByteAt(4))
@@ -163,35 +165,15 @@ func TestAtomicBuffer_TrustedAt_matchesBoundedGetters(t *testing.T) {
 			ptr := atomicBuffer.Int64Pointer(8)
 			require.Equal(t, atomicBuffer.GetInt64Volatile(8), atomic.LoadInt64(ptr))
 		}},
-		{"StoreInt64Release", func(t *testing.T) {
-			const value = int64(-0x0102030405060708)
-			released := newTestAtomicBuffer(t, testAtomicBufferSize)
-			released.PutInt64Release(16, value)
-
-			stored := newTestAtomicBuffer(t, testAtomicBufferSize)
-			atomicbuffer.StoreInt64Release(stored.Int64Pointer(16), value)
-
-			require.Equal(t, released.Bytes(), stored.Bytes())
-			require.Equal(t, value, stored.GetInt64(16))
-		}},
-		{"PutInt64ReleaseStoreFenceAt", func(t *testing.T) {
-			const value = int64(-0x0A0B0C0D0E0F1011)
-			released := newTestAtomicBuffer(t, testAtomicBufferSize)
-			released.PutInt64Release(8, value)
-
-			fenced := newTestAtomicBuffer(t, testAtomicBufferSize)
-			fenced.PutInt64ReleaseStoreFenceAt(8, value)
-
-			require.Equal(t, released.Bytes(), fenced.Bytes())
-			require.Equal(t, value, fenced.GetInt64(8))
-		}},
+		{"StoreInt64Release", matchesRelease(atomicbuffer.StoreInt64Release)},
+		{"StoreInt64ReleaseStoreFence", matchesRelease(atomicbuffer.StoreInt64ReleaseStoreFence)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, tc.fn)
 	}
 }
 
-func TestAtomicBuffer_TrustedAt_outOfBoundsPanics(t *testing.T) {
+func TestAtomicBuffer_OutOfBoundsPanics(t *testing.T) {
 	int32Buffer := newTestAtomicBuffer(t, atomicbuffer.SizeInt32)
 	int64Buffer := newTestAtomicBuffer(t, atomicbuffer.SizeInt64)
 	byteBuffer := newTestAtomicBuffer(t, atomicbuffer.SizeByte)
@@ -217,8 +199,8 @@ func TestAtomicBuffer_TrustedAt_outOfBoundsPanics(t *testing.T) {
 		{"PutByte negative offset", func() { byteBuffer.PutByte(-1, 0x01) }},
 		{"GetByte on nil buffer", func() { emptyBuffer.GetByte(0) }},
 		{"PutByte on nil buffer", func() { emptyBuffer.PutByte(0, 0x01) }},
-		{"VolatileInt32At on nil buffer", func() { emptyBuffer.VolatileInt32At(0) }},
-		{"VolatileInt64At on nil buffer", func() { emptyBuffer.VolatileInt64At(0) }},
+		{"GetInt32Volatile on nil buffer", func() { emptyBuffer.GetInt32Volatile(0) }},
+		{"GetInt64Volatile on nil buffer", func() { emptyBuffer.GetInt64Volatile(0) }},
 		{"ByteAt on nil buffer", func() { emptyBuffer.ByteAt(0) }},
 		{"Int32Pointer out of bounds", func() { int32Buffer.Int32Pointer(1) }},
 		{"Int64Pointer out of bounds", func() { int64Buffer.Int64Pointer(1) }},

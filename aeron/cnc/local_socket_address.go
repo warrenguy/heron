@@ -79,8 +79,7 @@ func (reader *CountersReader) FindLocalSocketAddresses(
 
 // activeLocalSocketAddressKeys yields the key offset of each allocated
 // LOCAL_SOCKADDR record that links to channelStatusCounterID and holds
-// ChannelEndpointStatusActive. The scan runs from counter id 0 and stops at
-// the first unused record.
+// ChannelEndpointStatusActive.
 func (reader *CountersReader) activeLocalSocketAddressKeys(
 	channelStatusCounterID int32,
 ) iter.Seq[int] {
@@ -105,7 +104,7 @@ func (reader *CountersReader) activeLocalSocketAddressKeys(
 				continue
 			}
 
-			if reader.values.VolatileInt64At(CounterOffset(counterID)) != ChannelEndpointStatusActive {
+			if reader.values.GetInt64Volatile(CounterOffset(counterID)) != ChannelEndpointStatusActive {
 				continue
 			}
 

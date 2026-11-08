@@ -2,18 +2,13 @@
 
 package atomicbuffer
 
-import (
-	"sync/atomic"
-	"unsafe"
-)
+import "sync/atomic"
 
-// PutInt64ReleaseStoreFenceAt stores value at offset with release order, then
+// StoreInt64ReleaseStoreFence stores value at ptr with release order, then
 // keeps later stores behind it. It matches Agrona putLongRelease followed by
-// Java VarHandle.storeStoreFence. It skips boundsCheck, like the other *At
-// accessors. Unlike them, it does not reject an empty buffer. The caller proves
-// offset+SizeInt64 <= Capacity.
-func (b AtomicBuffer) PutInt64ReleaseStoreFenceAt(offset int, value int64) {
-	ptr := (*int64)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(b.buf)), offset))
+// Java VarHandle.storeStoreFence. Get ptr from Int64Pointer, or from a slice
+// whose length the caller checked. ptr must be 8-byte aligned.
+func StoreInt64ReleaseStoreFence(ptr *int64, value int64) {
 	atomic.StoreInt64(ptr, value)
 	ReleaseFence()
 }

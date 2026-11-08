@@ -1,6 +1,7 @@
 package logbuffer_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -112,18 +113,38 @@ func TestPutFrameMutators_outOfBounds(t *testing.T) {
 }
 
 func TestFrameRead_outOfBounds(t *testing.T) {
-	buffer := atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1))
-	require.Equal(t, int32(0), logbuffer.FrameLength(buffer, 0))
-	require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(buffer, 0))
-	require.Equal(t, int8(0), logbuffer.FrameVersion(buffer, 0))
-	require.Equal(t, uint8(0), logbuffer.FrameFlags(buffer, 0))
-	require.Equal(t, int16(0), logbuffer.FrameType(buffer, 0))
-	require.Equal(t, int32(0), logbuffer.FrameTermOffset(buffer, 0))
-	require.Equal(t, int32(0), logbuffer.FrameSessionID(buffer, 0))
-	require.Equal(t, int32(0), logbuffer.FrameStreamID(buffer, 0))
-	require.Equal(t, int32(0), logbuffer.FrameTermID(buffer, 0))
-	require.Equal(t, int64(0), logbuffer.FrameReservedValue(buffer, 0))
-	require.False(t, logbuffer.IsPaddingFrame(buffer, 0))
+	cases := []struct {
+		name   string
+		buffer atomicbuffer.AtomicBuffer
+		offset int
+	}{
+		{
+			name:   "short header",
+			buffer: atomicbuffer.Wrap(make([]byte, logbuffer.DataHeaderLength-1)),
+			offset: 0,
+		},
+		{
+			name:   "offset near max int",
+			buffer: atomicbuffer.Wrap(make([]byte, 64)),
+			offset: math.MaxInt - 7,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, int32(0), logbuffer.FrameLengthVolatile(tc.buffer, tc.offset))
+			require.Equal(t, int32(0), logbuffer.FrameLength(tc.buffer, tc.offset))
+			require.Equal(t, int8(0), logbuffer.FrameVersion(tc.buffer, tc.offset))
+			require.Equal(t, uint8(0), logbuffer.FrameFlags(tc.buffer, tc.offset))
+			require.Equal(t, int16(0), logbuffer.FrameType(tc.buffer, tc.offset))
+			require.Equal(t, int32(0), logbuffer.FrameTermOffset(tc.buffer, tc.offset))
+			require.Equal(t, int32(0), logbuffer.FrameSessionID(tc.buffer, tc.offset))
+			require.Equal(t, int32(0), logbuffer.FrameStreamID(tc.buffer, tc.offset))
+			require.Equal(t, int32(0), logbuffer.FrameTermID(tc.buffer, tc.offset))
+			require.Equal(t, int64(0), logbuffer.FrameReservedValue(tc.buffer, tc.offset))
+			require.False(t, logbuffer.IsPaddingFrame(tc.buffer, tc.offset))
+		})
+	}
 }
 
 func TestWriteDataHeaderUnfragmented_outOfBounds(t *testing.T) {
@@ -228,6 +249,15 @@ func TestIsPaddingFrameInTerm_termEndSlack(t *testing.T) {
 			require.Equal(t, tt.wantPadType, logbuffer.IsPaddingFrameInTerm(buffer, 0))
 		})
 	}
+}
+
+func TestCommittedFrameLengthVolatile_outOfBounds(t *testing.T) {
+	var backing [24]byte
+	backing[0] = 7
+	buffer := atomicbuffer.Wrap(backing[8:])
+	require.Equal(t, 16, buffer.Capacity())
+
+	require.Equal(t, int32(0), logbuffer.CommittedFrameLengthVolatile(buffer, -8))
 }
 
 func TestCommittedFrameLengthVolatile_termEndSlack(t *testing.T) {
