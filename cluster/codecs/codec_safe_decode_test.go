@@ -323,14 +323,21 @@ func TestTryDecodeSessionConnectRequestAt_varOverCap(t *testing.T) {
 }
 
 func requireAdminRequestFastSlowParity(tb require.TestingT, buf []byte, offset int) {
-	requireFastSlowDecodeParity(
-		tb,
-		buf,
-		offset,
-		codecs.ClusterDecodeMaxVarLen,
-		clusterwire.AdminRequestSbeTemplateID,
-		codecs.TryDecodeAdminRequestAt,
-	)
+	fast, fastOK := codecs.TryDecodeAdminRequestAt(buf, offset)
+	slow, slowOK := codecs.TryDecodeByTemplate(buf, offset, codecs.ClusterDecodeMaxVarLen)
+	slowMatch := slowOK && slow.TemplateID == clusterwire.AdminRequestSbeTemplateID
+	require.Equal(tb, fastOK, slowMatch)
+
+	if !fastOK {
+		return
+	}
+
+	slowFields, ok := slow.Fields.(codecs.AdminRequestFields)
+	require.True(tb, ok)
+	require.Nil(tb, fast.Payload)
+
+	slowFields.Payload = nil
+	require.Equal(tb, slowFields, fast)
 }
 
 func TestAdminRequest_fastSlowDecodeParity_table(t *testing.T) {
@@ -371,6 +378,7 @@ func TestAdminRequest_fastSlowDecodeParity_table(t *testing.T) {
 		offset int
 	}{
 		{name: "valid", buf: validWire},
+		{name: "valid_payload", buf: payloadWire},
 		{name: "truncated_header", buf: validWire[:messageHeaderLen-1]},
 		{name: "one_byte_short", buf: payloadWire[:len(payloadWire)-1]},
 		{
