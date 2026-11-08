@@ -223,6 +223,58 @@ func TestHandleAdminRequest(t *testing.T) {
 		require.Equal(t, sessionPending, session.state)
 	})
 
+	staleCases := []struct {
+		name       string
+		allow      bool
+		wantCode   clusterwire.AdminResponseCode
+		wantOpen   int
+		wantToggle int64
+	}{
+		{
+			name:       "accepted snapshot keeps stale session",
+			allow:      true,
+			wantCode:   clusterwire.AdminResponseCode_OK,
+			wantOpen:   1,
+			wantToggle: int64(ControlToggleSnapshot),
+		},
+		{
+			name:       "refused snapshot closes stale session",
+			wantCode:   clusterwire.AdminResponseCode_UNAUTHORISED_ACCESS,
+			wantToggle: neutral,
+		},
+	}
+
+	for _, tc := range staleCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opened := openAdminSession(t, nil)
+
+			if tc.allow {
+				opened.agent.authoriser = AllowAllAuthoriser{}
+			}
+
+			toggle := newFakeToggle(neutral)
+			opened.agent.SetClusterControlToggle(toggle)
+			staleNs := opened.session.lastActivityNs + opened.agent.sessionTimeoutNs + 1
+			opened.ingress.Enqueue(encodeAdminRequestWire(
+				t,
+				adminRequestFields(opened.session.id, clusterwire.AdminRequestType_SNAPSHOT),
+			))
+			opened.agent.DoWork(staleNs)
+
+			got, _ := decodeClusterFieldsAtTermOffset[codecs.AdminResponseFields](
+				t,
+				opened.egress,
+				opened.replyOff,
+				clusterwire.AdminResponseSbeTemplateID,
+			)
+			require.Equal(t, tc.wantCode, got.ResponseCode)
+			require.Equal(t, tc.wantOpen, opened.agent.OpenSessionCount())
+			require.Equal(t, tc.wantToggle, toggle.Load())
+		})
+	}
+
 	t.Run("capturing authoriser", func(t *testing.T) {
 		t.Parallel()
 

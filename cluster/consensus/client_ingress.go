@@ -136,7 +136,7 @@ func (a *Agent) handleClientIngressFragment(
 		}
 	case clusterwire.AdminRequestSbeTemplateID:
 		if fields, ok := codecs.TryDecodeAdminRequestAt(buf, offset); ok {
-			a.handleAdminRequest(fields)
+			a.handleAdminRequest(fields, nowNs)
 		}
 	}
 	return aeron.ControlledContinue

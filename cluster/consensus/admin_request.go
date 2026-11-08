@@ -48,8 +48,10 @@ var (
 )
 
 // handleAdminRequest reports an unknown type code with
-// [ErrUnknownAdminRequestType] before the session checks.
-func (a *Agent) handleAdminRequest(fields codecs.AdminRequestFields) {
+// [ErrUnknownAdminRequestType] before the session checks. An OK reply
+// refreshes session activity. The idle sweep can run before a slow tick
+// consumes the toggle.
+func (a *Agent) handleAdminRequest(fields codecs.AdminRequestFields, nowNs int64) {
 	requestType, err := clusterwire.LookupAdminRequestType(int32(fields.RequestType))
 	if err != nil {
 		a.reportError(fmt.Errorf("%w: %d", ErrUnknownAdminRequestType, int32(fields.RequestType)))
@@ -62,6 +64,10 @@ func (a *Agent) handleAdminRequest(fields codecs.AdminRequestFields) {
 	}
 
 	code, message := a.runAdminRequest(requestType, session.encodedPrincipal)
+	if code == clusterwire.AdminResponseCode_OK {
+		session.lastActivityNs = nowNs
+	}
+
 	a.sendAdminResponse(session, fields, code, message)
 }
 
