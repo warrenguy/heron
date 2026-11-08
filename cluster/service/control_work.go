@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
@@ -222,11 +223,15 @@ func (a *Agent) sendFirstCoordinationAck() int64 {
 	if !accepted {
 		return result
 	}
-	a.coordinationAcks = a.coordinationAcks[1:]
+
+	// The pop keeps capacity, so the next append does not allocate.
+	a.coordinationAcks = slices.Delete(a.coordinationAcks, 0, 1)
 	a.ackID++
+
 	if entry.kind == ackKindSnapshot {
 		a.lastSnapshotRecordingID = entry.relevantID
 	}
+
 	if entry.failure != nil {
 		a.markFailure(entry.failure)
 	}
