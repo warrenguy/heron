@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/internal/testutil"
 )
 
 // TestTruncateLogEntry_positionGuards_rapid asserts local position and active

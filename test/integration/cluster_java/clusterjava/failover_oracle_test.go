@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
+	"luas.fast/test/integration/cluster_java/clusterjava"
 )
 
 const (
@@ -50,7 +50,7 @@ func TestFailoverHarnessConstants(t *testing.T) {
 		{
 			name: "FailoverBaseDirPrefix",
 			got:  clusterjava.FailoverBaseDirPrefix,
-			want: "/dev/shm/heron-cluster-",
+			want: "/dev/shm/luas-cluster-",
 		},
 		{
 			name: "FailoverIngressEndpoints",

@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
+	"luas.fast/atomicbuffer"
 )
 
 func TestDriverEventsAdapter_clientTimeout_matchingClient(t *testing.T) {

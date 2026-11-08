@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/archive/codecs"
+	"luas.fast/cluster/recordinglog"
 )
 
 // LogRecordingExtentsFromDescriptor maps replay geometry from a recording descriptor.

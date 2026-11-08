@@ -1,10 +1,10 @@
 package consensus
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/internal/buffer"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/internal/buffer"
 )
 
 // LogPublisher appends cluster log frames on a single-writer exclusive publication.

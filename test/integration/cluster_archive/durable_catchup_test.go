@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster"
+	"luas.fast/cluster/election"
+	"luas.fast/test/integration/harness"
 )
 
 // TestDurableCluster_catchesUpARestartedFollower asserts a stopped follower

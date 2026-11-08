@@ -3,8 +3,8 @@ package election
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // handleInit holds in INIT until PrepareForNewLeadership reports prepared.

@@ -16,12 +16,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/idlestrategy"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/client"
+	"luas.fast/idlestrategy"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 const (
@@ -63,8 +63,8 @@ var (
 )
 
 var (
-	echoPingPayload         = []byte("heron-cluster-echo-ping")
-	echoPostFailoverPayload = []byte("heron-cluster-echo-post-failover")
+	echoPingPayload         = []byte("luas-cluster-echo-ping")
+	echoPostFailoverPayload = []byte("luas-cluster-echo-post-failover")
 )
 
 type adminResponseCapture struct {

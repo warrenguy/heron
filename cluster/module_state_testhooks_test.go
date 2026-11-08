@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/cluster/consensus"
 )
 
 type recordingModuleStateCounter struct {

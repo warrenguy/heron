@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/election/nodewire"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/aeron/cnc"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/election/nodewire"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/mmap"
 )
 
 var (

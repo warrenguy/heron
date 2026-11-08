@@ -3,11 +3,11 @@ package archive
 import (
 	"bytes"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/atomicbuffer"
 )
 
 const challengeSbeTemplateID = int32(archivewire.ChallengeSbeTemplateID)

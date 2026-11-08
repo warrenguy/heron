@@ -5,8 +5,8 @@ package archive
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
 )
 
 func (ac *AsyncConnect) pollAddControlResponseSubscription(

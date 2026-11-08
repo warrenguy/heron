@@ -3,8 +3,8 @@ package broadcast
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
+	"luas.fast/atomicbuffer"
+	"luas.fast/record"
 )
 
 // BroadcastTransmitter transmits records to a broadcast buffer.

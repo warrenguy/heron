@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/archive/codecs/archivewire"
+import "luas.fast/archive/codecs/archivewire"
 
 // LogReplay is a duty-cycle helper for leader and follower replay paths.
 //

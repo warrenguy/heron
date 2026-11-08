@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
 )
 
 func TestAgent_JoinLifecycle(t *testing.T) {

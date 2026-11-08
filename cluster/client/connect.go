@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 // Connect performs the blocking cluster connect handshake and returns a connected

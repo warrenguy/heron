@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
 )
 
 func TestQueueControlIngress_orderAndLimit(t *testing.T) {

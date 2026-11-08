@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
 )
 
 func newConductorResourceLifecycleFixture(tb testing.TB) *testutil.ConductorFixture {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/internal/cnctest"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/internal/cnctest"
+	"luas.fast/ringbuffer"
 )
 
 const (

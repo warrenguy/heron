@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 func requireFastSlowDecodeParity[T any](
@@ -137,7 +137,7 @@ func TestTryDecodeSessionConnectRequestAt_roundtrip(t *testing.T) {
 		Version:            7,
 		ResponseChannel:    []byte("aeron:udp?endpoint=127.0.0.1:40123"),
 		EncodedCredentials: []byte{1, 2, 3, 4},
-		ClientInfo:         []byte("heron-client"),
+		ClientInfo:         []byte("luas-client"),
 	}
 	wire := encodeSessionConnectRequestWire(t, actingVersion, fields)
 
@@ -189,9 +189,9 @@ func TestTryDecodeSessionConnectRequestAt_versionGates(t *testing.T) {
 				Version:            4,
 				ResponseChannel:    []byte("aeron:udp"),
 				EncodedCredentials: []byte{9, 8, 7},
-				ClientInfo:         []byte("heron-client"),
+				ClientInfo:         []byte("luas-client"),
 			},
-			wantClient: []byte("heron-client"),
+			wantClient: []byte("luas-client"),
 		},
 		{
 			name:          "version_field_absent_pre_v2",

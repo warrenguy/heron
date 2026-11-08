@@ -3,7 +3,7 @@ package conductor
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 type AvailableImage struct {

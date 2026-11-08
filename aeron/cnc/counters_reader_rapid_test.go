@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/cnc"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {

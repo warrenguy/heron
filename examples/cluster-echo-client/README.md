@@ -30,7 +30,7 @@ For UDP multi-node clusters with a separate Go `aeronmd`, see
 From repo root:
 
 ```bash
-HERON_COMPOSE_UID=$(id -u) HERON_COMPOSE_GID=$(id -g) \
+LUAS_COMPOSE_UID=$(id -u) LUAS_COMPOSE_GID=$(id -g) \
 docker compose \
   -f test/integration/cluster_java/docker/compose.yaml \
   -f test/integration/cluster_java/docker/compose.host.yaml \
@@ -77,7 +77,7 @@ Status (stderr; `log` adds a timestamp prefix):
 Payload (stdout):
 
 ```
-cluster-echo-client: echo ok ("heron-cluster-echo-ping")
+cluster-echo-client: echo ok ("luas-cluster-echo-ping")
 ```
 
 ## Env

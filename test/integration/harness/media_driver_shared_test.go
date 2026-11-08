@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/logbuffer"
 )
 
 type stubTestMain struct {
@@ -237,7 +237,7 @@ func TestRunTestMainWithSharedDriver(t *testing.T) {
 		{
 			name: "bad_aeronmd_path",
 			setup: func(t *testing.T) *stubTestMain {
-				t.Setenv("AERONMD_PATH", "/nonexistent/heron-aeronmd-missing")
+				t.Setenv("AERONMD_PATH", "/nonexistent/luas-aeronmd-missing")
 				return &stubTestMain{runCode: 0}
 			},
 			wantCode:       1,
@@ -320,7 +320,7 @@ func TestRunTestMainWithSharedDriver_success_logsLifecycle(t *testing.T) {
 
 func TestBuildDriverEnv(t *testing.T) {
 	t.Parallel()
-	const dir = "/tmp/heron-aeron-shared-test"
+	const dir = "/tmp/luas-aeron-shared-test"
 	const threadingOverride = "DEDICATED"
 
 	tests := []struct {

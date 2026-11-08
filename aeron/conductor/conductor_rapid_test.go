@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/conductor"
+	"luas.fast/internal/testutil"
 )
 
 func drawUnpublishedDriverHeartbeat(t *rapid.T) int64 {

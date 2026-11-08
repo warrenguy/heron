@@ -14,11 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/internal/testutil"
 )
 
 var errRapidApplySubscriptionReady = errors.New("conductor_test: apply subscription ready failed")

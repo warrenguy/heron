@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron"
+	"luas.fast/cluster"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
 )
 
 // Member-0 endpoints from goldenClusterMembersSharedLog; reused by Validate
@@ -224,14 +224,14 @@ func TestNormalize_bridgesAeronDir(t *testing.T) {
 	customNano := func() int64 { return 99 }
 
 	cfg := cluster.Config{
-		AeronDir: "/tmp/heron-aeron",
+		AeronDir: "/tmp/luas-aeron",
 		AeronConfig: aeron.Config{
 			EpochClock: customEpoch,
 			NanoClock:  customNano,
 		},
 	}.Normalize()
 
-	require.Equal(t, "/tmp/heron-aeron", cfg.AeronConfig.AeronDir)
+	require.Equal(t, "/tmp/luas-aeron", cfg.AeronConfig.AeronDir)
 	require.NotNil(t, cfg.AeronConfig.EpochClock)
 	require.Equal(t, int64(42), cfg.AeronConfig.EpochClock())
 	require.NotNil(t, cfg.AeronConfig.NanoClock)

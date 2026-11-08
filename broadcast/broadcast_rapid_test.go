@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
-	"github.com/warrenguy/heron/record"
+	"luas.fast/atomicbuffer"
+	"luas.fast/broadcast"
+	"luas.fast/record"
 )
 
 func TestBroadcast_rapid_transmitReceiveOrder(t *testing.T) {

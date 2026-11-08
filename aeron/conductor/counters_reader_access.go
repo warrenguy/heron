@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/aeron/cnc"
+import "luas.fast/aeron/cnc"
 
 // CountersReader returns the driver counters view bound to this conductor.
 //

@@ -13,11 +13,11 @@ check_contract_pom() {
 	local pom="$1" version
 	version="$(sed -n 's/.*<aeron.version>\([^<]*\)<\/aeron.version>.*/\1/p' "${pom}")"
 	[[ -n "${version}" ]] || {
-		echo "heron: <aeron.version> not found in ${pom}" >&2
+		echo "luas: <aeron.version> not found in ${pom}" >&2
 		return 1
 	}
 	[[ "${version}" == "${AERON_REF}" ]] || {
-		echo "heron: pom aeron.version ${version} != specs aeron.ref ${AERON_REF} (${pom})" >&2
+		echo "luas: pom aeron.version ${version} != specs aeron.ref ${AERON_REF} (${pom})" >&2
 		return 1
 	}
 }
@@ -30,6 +30,6 @@ for pom in "${INTEGRATION_DIR}"/*/pom.xml; do
 done
 
 (( found )) || {
-	echo "heron: no integration pom.xml under test/integration/" >&2
+	echo "luas: no integration pom.xml under test/integration/" >&2
 	exit 1
 }

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 func TestOpenConsensusModule_configErrors(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/idlestrategy"
 )
 
 func TestSleeping(t *testing.T) {

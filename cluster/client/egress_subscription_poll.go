@@ -1,6 +1,6 @@
 package client
 
-import "github.com/warrenguy/heron/aeron"
+import "luas.fast/aeron"
 
 // pollEgressSubscription polls subscription with handler up to fragmentLimit fragments.
 // Returns 0 when subscription is nil.

@@ -200,9 +200,9 @@
       "name": "sessionConnectRequest_clientInfoV14",
       "template": "sessionConnectRequest",
       "actingVersion": 14,
-      "hex": "100003006f000e006600000000000000ca00000004000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3430313233030000000908070c0000006865726f6e2d636c69656e74",
+      "hex": "100003006f000e006600000000000000ca00000004000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3430313233030000000908070b0000006c7561732d636c69656e74",
       "fields": {
-        "clientInfo": "heron-client",
+        "clientInfo": "luas-client",
         "correlationId": 102,
         "encodedCredentials": {
           "hex": "090807"

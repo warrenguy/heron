@@ -9,19 +9,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/test/integration/harness"
-	"github.com/warrenguy/heron/test/integration/java_interop/javainterop"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/test/integration/harness"
+	"luas.fast/test/integration/java_interop/javainterop"
 )
 
-// TestJavaInteropDuplex proves bidirectional IPC smoke: Java publishes on 1100,
+// TestJavaInteropDuplex asserts bidirectional IPC: Java publishes on 1100,
 // Go subscribes; then Go publishes on 1101 and Java subscribes.
 //
 // Leg ordering is sequential in this function: Go does not offer on 1101 until
 // the 1100 receive and metadata assertions complete. JavaDuplex polls 1101 with
 // one ConnectedPollTimeout budget that also covers Go round-1 duration.
 func TestJavaInteropDuplex(t *testing.T) {
-	if os.Getenv("HERON_JAVA_INTEROP_COMPOSE") != "1" {
+	if os.Getenv("LUAS_JAVA_INTEROP_COMPOSE") != "1" {
 		t.Skip("java interop requires docker compose; run make smoke-java-interop")
 	}
 

@@ -8,11 +8,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/archive"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/test/integration/archive_java/archivejava"
+	"luas.fast/test/integration/harness"
 )
 
 // TestArchiveTruncatePath exercises TruncateRecording against a live Java Archive.

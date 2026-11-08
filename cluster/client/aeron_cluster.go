@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/internal/transportfault"
 )
 
 // ErrTransportTerminating reports that the connect-owned transport client has

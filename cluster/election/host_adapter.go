@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/consensus"
 )
 
 // HostAdapter implements [ElectionHost] over *consensus.Agent. Agent takes the

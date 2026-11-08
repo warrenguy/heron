@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
 )
 
 func TestApplyRecoveryPlan(t *testing.T) {

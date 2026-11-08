@@ -5,7 +5,7 @@
 # Needs docker.sock; DOCKER_GID from getent group docker when present (override if
 # socket GID differs).
 #
-# Per-run compose project (HERON_COMPOSE_PROJECT=heron-cluster-java-failover-$$
+# Per-run compose project (LUAS_COMPOSE_PROJECT=luas-cluster-java-failover-$$
 # + -p). Go leader-kill reads COMPOSE_PROJECT_NAME from the same value
 # (compose.failover.yaml). force-recreate + EXIT/INT/TERM traps clean this
 # project only so concurrent smokes stay isolated.
@@ -17,10 +17,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_BASE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
 COMPOSE_FAILOVER="${ROOT}/test/integration/cluster_java/docker/compose.failover.yaml"
 # Unique project per process; go kill path must match -p and compose name.
-export HERON_COMPOSE_PROJECT="heron-cluster-java-failover-$$"
+export LUAS_COMPOSE_PROJECT="luas-cluster-java-failover-$$"
 COMPOSE_CMD=(
 	docker compose
-	-p "${HERON_COMPOSE_PROJECT}"
+	-p "${LUAS_COMPOSE_PROJECT}"
 	-f "${COMPOSE_BASE}"
 	-f "${COMPOSE_FAILOVER}"
 	--profile failover
@@ -35,7 +35,7 @@ compose_cleanup() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-	echo "heron: docker required" >&2
+	echo "luas: docker required" >&2
 	exit 1
 fi
 
@@ -51,13 +51,13 @@ if [[ -z "${DOCKER_GID:-}" ]]; then
 fi
 
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
-HERON_COMPOSE_UID="$(id -u)"
-export HERON_COMPOSE_UID
-HERON_COMPOSE_GID="$(id -g)"
-export HERON_COMPOSE_GID
+LUAS_COMPOSE_UID="$(id -u)"
+export LUAS_COMPOSE_UID
+LUAS_COMPOSE_GID="$(id -g)"
+export LUAS_COMPOSE_GID
 
 if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
-	echo "heron: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
+	echo "luas: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
 	exit 1
 fi
 
@@ -82,10 +82,10 @@ else
 	compose wait go
 fi || {
 	status=$?
-	echo "heron: cluster java failover smoke failed" >&2
+	echo "luas: cluster java failover smoke failed" >&2
 	smoke_logs >&2 || true
 	exit "${status}"
 }
 
-echo "heron: cluster java failover smoke passed"
-smoke_logs || echo "heron: warning: could not fetch logs (smoke passed)" >&2
+echo "luas: cluster java failover smoke passed"
+smoke_logs || echo "luas: warning: could not fetch logs (smoke passed)" >&2

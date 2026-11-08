@@ -6,8 +6,8 @@ import (
 	"bytes"
 	"slices"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/service"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/service"
 )
 
 // RecordedClose is one SessionClose callback.

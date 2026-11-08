@@ -2,12 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-tier="${HERON_TIER:-check}"
+tier="${LUAS_TIER:-check}"
 
 GO_VERSION="$(awk '/^go / {print $2; exit}' go.mod)"
 GO_MINOR="${GO_VERSION%.*}"
 go version | grep -qE "go${GO_MINOR//./\\.}\\." || {
-	echo "heron: Go version mismatch (want go${GO_MINOR}.x, go.mod ${GO_VERSION})" >&2
+	echo "luas: Go version mismatch (want go${GO_MINOR}.x, go.mod ${GO_VERSION})" >&2
 	exit 1
 }
 
@@ -22,15 +22,15 @@ go tool -n gofumpt >/dev/null &
 fumpt_pid=$!
 
 command -v shellcheck >/dev/null || {
-	echo "heron: shellcheck required" >&2
+	echo "luas: shellcheck required" >&2
 	exit 1
 }
 command -v java >/dev/null || {
-	echo "heron: java required" >&2
+	echo "luas: java required" >&2
 	exit 1
 }
 command -v mvn >/dev/null || {
-	echo "heron: mvn required" >&2
+	echo "luas: mvn required" >&2
 	exit 1
 }
 
@@ -41,18 +41,18 @@ done
 if command -v docker >/dev/null; then
 	if ! docker compose version >/dev/null 2>&1; then
 		if [[ "${tier}" == "docker" ]]; then
-			echo "heron: WARN docker compose plugin unavailable (required for integration targets)" >&2
+			echo "luas: WARN docker compose plugin unavailable (required for integration targets)" >&2
 		else
-			echo "heron: WARN docker compose plugin unavailable" >&2
+			echo "luas: WARN docker compose plugin unavailable" >&2
 		fi
 	fi
 	if [[ -S /var/run/docker.sock ]]; then
 		if ! docker ps >/dev/null 2>&1; then
-			echo "heron: WARN docker socket present but not accessible" >&2
+			echo "luas: WARN docker socket present but not accessible" >&2
 		fi
 	elif [[ "${tier}" == "docker" ]]; then
-		echo "heron: WARN docker config but no /var/run/docker.sock - use root devcontainer (check)" >&2
+		echo "luas: WARN docker config but no /var/run/docker.sock - use root devcontainer (check)" >&2
 	fi
 elif [[ "${tier}" == "docker" ]]; then
-	echo "heron: WARN docker config but docker CLI missing" >&2
+	echo "luas: WARN docker config but docker CLI missing" >&2
 fi

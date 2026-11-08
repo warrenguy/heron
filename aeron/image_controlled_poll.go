@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 // computeLimitOffset maps limitPosition into a term offset upper bound for the

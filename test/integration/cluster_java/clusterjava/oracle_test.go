@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/cluster_java/clusterjava"
 )
 
 func TestHarnessConstants(t *testing.T) {
@@ -33,12 +33,12 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ComposeGateEnvKey",
 			got:  clusterjava.ComposeGateEnvKey,
-			want: "HERON_CLUSTER_JAVA_COMPOSE",
+			want: "LUAS_CLUSTER_JAVA_COMPOSE",
 		},
 		{
 			name: "FailoverComposeGateEnvKey",
 			got:  clusterjava.FailoverComposeGateEnvKey,
-			want: "HERON_CLUSTER_JAVA_FAILOVER_COMPOSE",
+			want: "LUAS_CLUSTER_JAVA_FAILOVER_COMPOSE",
 		},
 		{
 			name: "ComposeSkipHint",
@@ -53,14 +53,14 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "ComposeDirEnvKey",
 			got:  clusterjava.ComposeDirEnvKey,
-			want: "HERON_CLUSTER_JAVA_COMPOSE_DIR",
+			want: "LUAS_CLUSTER_JAVA_COMPOSE_DIR",
 		},
 		{
 			name: "FailoverComposeProfileName",
 			got:  clusterjava.FailoverComposeProfileName,
 			want: "failover",
 		},
-		{name: "BaseDir", got: clusterjava.BaseDir, want: "/tmp/heron-cluster-0"},
+		{name: "BaseDir", got: clusterjava.BaseDir, want: "/tmp/luas-cluster-0"},
 		{
 			name: "ClusterMembersString",
 			got:  clusterjava.ClusterMembersString,
@@ -74,7 +74,7 @@ func TestHarnessConstants(t *testing.T) {
 		{
 			name: "MixedServiceComposeGateEnvKey",
 			got:  clusterjava.MixedServiceComposeGateEnvKey,
-			want: "HERON_CLUSTER_MIXED_SERVICE_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_SERVICE_COMPOSE",
 		},
 		{
 			name: "MixedServiceComposeSkipHint",

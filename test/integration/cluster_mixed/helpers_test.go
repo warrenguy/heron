@@ -14,16 +14,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/idlestrategy"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/idlestrategy"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 // mixedIdlePollInterval paces polls that run no Go duty cycle.
@@ -828,7 +828,7 @@ func induceSessionMessage(t *testing.T, f *mixedMemberFixture) {
 		}
 	}()
 
-	payload := []byte("heron-mixed-induce")
+	payload := []byte("luas-mixed-induce")
 	offerMixedIngress(t, f, aeronClient, session, hadClientError, "induction", func() int64 {
 		return session.Offer(payload)
 	})

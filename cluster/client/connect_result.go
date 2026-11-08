@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"luas.fast/aeron"
+	"luas.fast/internal/transportfault"
 )
 
 // ConnectResult holds session handles and ids after a successful connect handshake.

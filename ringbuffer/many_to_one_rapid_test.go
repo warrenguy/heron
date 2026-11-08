@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/ringbuffer"
 )
 
 func rapidWriteMessages(

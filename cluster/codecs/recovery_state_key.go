@@ -1,8 +1,8 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/atomicbuffer"
 )
 
 // RecoveryStateCounterTypeID is the recovery state counter type id (Java

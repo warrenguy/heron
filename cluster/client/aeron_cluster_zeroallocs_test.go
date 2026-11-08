@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/cluster/client"
+	"luas.fast/internal/testutil"
 )
 
 const ingressAdminActionSpinTimeout = 2 * time.Second

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/cluster/codecs"
 )
 
 const (

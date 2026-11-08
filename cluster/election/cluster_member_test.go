@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/election"
 )
 
 func newTestMemberWithLog(

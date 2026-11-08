@@ -2,7 +2,7 @@
 
 package client
 
-import "github.com/warrenguy/heron/aeron"
+import "luas.fast/aeron"
 
 func (ac *AsyncConnect) pollAddEgressSubscription(
 	registrationID int64,

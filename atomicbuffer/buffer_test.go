@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 const testAtomicBufferSize = 64

@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 var ErrDestinationMessageOutOfBounds = errors.New("conductor: destination message out of bounds")

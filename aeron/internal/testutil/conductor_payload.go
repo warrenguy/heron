@@ -1,8 +1,8 @@
 package testutil
 
 import (
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
 )
 
 func ClientTimeoutPayload(clientID int64) []byte {

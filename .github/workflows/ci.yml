@@ -117,7 +117,7 @@ jobs:
       - name: Election sim soak
         env:
           ELECTION_SIM_RUNS: "1000"
-          HERON_SIM_SAVE: "1"
+          LUAS_SIM_SAVE: "1"
         run: make test-election-sim
       - name: Upload election-sim failures
         if: failure()
@@ -138,7 +138,7 @@ jobs:
       - name: Replication sim soak
         env:
           REPLICATION_SIM_RUNS: "180"
-          HERON_SIM_SAVE: "1"
+          LUAS_SIM_SAVE: "1"
         run: make test-replication-sim
       - name: Upload replication-sim failures
         if: failure()

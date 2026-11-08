@@ -19,7 +19,7 @@ load_aeron_versions() {
 	local versions="$1"
 
 	if [[ ! -f "${versions}" ]]; then
-		echo "heron: ${versions} not found" >&2
+		echo "luas: ${versions} not found" >&2
 		return 1
 	fi
 
@@ -57,13 +57,13 @@ require_aeron_versions() {
 	load_aeron_versions "${versions}" || return 1
 
 	if [[ -z "${AERON_REPOSITORY}" || -z "${AERON_REF}" || -z "${AERON_DRIVER_ARTIFACT}" ]]; then
-		echo "heron: aeron.repository, aeron.ref, and aeron.driver_artifact" \
+		echo "luas: aeron.repository, aeron.ref, and aeron.driver_artifact" \
 			"required in ${versions}" >&2
 		return 1
 	fi
 
 	if [[ ! "${AERON_REF}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-		echo "heron: aeron.ref must match ^[A-Za-z0-9._-]+$ (got ${AERON_REF})" >&2
+		echo "luas: aeron.ref must match ^[A-Za-z0-9._-]+$ (got ${AERON_REF})" >&2
 		return 1
 	fi
 }
@@ -72,7 +72,7 @@ load_sbe_versions() {
 	local versions="$1"
 
 	if [[ ! -f "${versions}" ]]; then
-		echo "heron: ${versions} not found" >&2
+		echo "luas: ${versions} not found" >&2
 		return 1
 	fi
 
@@ -98,12 +98,12 @@ require_sbe_versions() {
 	load_sbe_versions "${versions}" || return 1
 
 	if [[ -z "${SBE_MAVEN_COORDINATES}" ]]; then
-		echo "heron: sbe_tool.maven_coordinates required in ${versions}" >&2
+		echo "luas: sbe_tool.maven_coordinates required in ${versions}" >&2
 		return 1
 	fi
 
 	if [[ ! "${SBE_MAVEN_COORDINATES}" =~ ^[^:]+:sbe-all:[^:]+$ ]]; then
-		echo "heron: sbe_tool.maven_coordinates must match *:sbe-all:*" \
+		echo "luas: sbe_tool.maven_coordinates must match *:sbe-all:*" \
 			"(got ${SBE_MAVEN_COORDINATES})" >&2
 		return 1
 	fi

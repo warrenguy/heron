@@ -5,7 +5,7 @@ package sim
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/election"
 )
 
 // safetyObserver wraps the timeline StateObserver with safety checks on each

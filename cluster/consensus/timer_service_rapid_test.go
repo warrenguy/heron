@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/timerwheel"
+	"luas.fast/cluster/codecs"
+	"luas.fast/timerwheel"
 )
 
 type timerServiceOpKind int

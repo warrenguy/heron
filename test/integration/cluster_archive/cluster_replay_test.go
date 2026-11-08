@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/test/integration/harness"
 )
 
 // TestClusterModule_replaysOwnRecordingAfterRestart asserts a single member

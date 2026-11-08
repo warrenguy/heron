@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 func TestCalculatePort(t *testing.T) {

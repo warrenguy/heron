@@ -2,7 +2,7 @@
 
 package aeron
 
-import "github.com/warrenguy/heron/aeron/conductor"
+import "luas.fast/aeron/conductor"
 
 func (client *Client) awaitPendingPollTickForTest(
 	conductorInstance *conductor.Conductor,

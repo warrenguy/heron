@@ -26,7 +26,7 @@ nodestate)
 	NAMESPACE="nodewire"
 	;;
 *)
-	echo "heron: unknown sbe target ${TARGET} (want cluster, archive, or nodestate)" >&2
+	echo "luas: unknown sbe target ${TARGET} (want cluster, archive, or nodestate)" >&2
 	exit 1
 	;;
 esac
@@ -37,12 +37,12 @@ CACHE_DIR="${ROOT}/.cache/sbe-tool"
 require_sbe_versions "${VERSIONS}" || exit 1
 
 [[ -f "${SCHEMA}" ]] || {
-	echo "heron: ${SCHEMA} not found" >&2
+	echo "luas: ${SCHEMA} not found" >&2
 	exit 1
 }
 
 command -v java >/dev/null || {
-	echo "heron: java required for sbe-generate (not needed for go test)" >&2
+	echo "luas: java required for sbe-generate (not needed for go test)" >&2
 	exit 1
 }
 
@@ -54,9 +54,9 @@ mkdir -p "${CACHE_DIR}"
 group_path="${group//./\/}"
 url="https://repo1.maven.org/maven2/${group_path}/${artifact}/${version}/${jar}"
 if [[ ! -f "${SBE_TOOL_JAR}" ]]; then
-	echo "heron: fetching ${url}"
+	echo "luas: fetching ${url}"
 	command -v curl >/dev/null || {
-		echo "heron: curl required to fetch sbe-tool JAR" >&2
+		echo "luas: curl required to fetch sbe-tool JAR" >&2
 		exit 1
 	}
 fi
@@ -64,7 +64,7 @@ cache_fetch_if_missing "${SBE_TOOL_JAR}" "${url}"
 
 mkdir -p "${OUT_DIR}"
 
-echo "heron: generating SBE flyweights into ${OUT_DIR} (namespace ${NAMESPACE})"
+echo "luas: generating SBE flyweights into ${OUT_DIR} (namespace ${NAMESPACE})"
 java \
 	-Dsbe.target.language=GOLANG \
 	-Dsbe.go.generate.generate.flyweights=true \
@@ -73,4 +73,4 @@ java \
 	-jar "${SBE_TOOL_JAR}" \
 	"${SCHEMA}"
 
-echo "heron: SBE generation complete"
+echo "luas: SBE generation complete"

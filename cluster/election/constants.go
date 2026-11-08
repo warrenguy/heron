@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/recordinglog"
 )
 
 const (

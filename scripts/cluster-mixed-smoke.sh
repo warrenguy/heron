@@ -2,7 +2,7 @@
 # Mixed Go/Java cluster compose smoke.
 #
 # Isolation per run:
-# - Compose project HERON_COMPOSE_PROJECT=heron-cluster-mixed-$$ with -p
+# - Compose project LUAS_COMPOSE_PROJECT=luas-cluster-mixed-$$ with -p
 # - Per-run /24 under 172.30.0.0/16 (third octet from shell PID and attempt)
 #
 # Each overlay uses a disjoint third-octet range. Parallel mixed smokes under
@@ -78,7 +78,7 @@ go-leader-snapshot)
 	;;
 esac
 
-export HERON_COMPOSE_PROJECT="heron-cluster-mixed-$$"
+export LUAS_COMPOSE_PROJECT="luas-cluster-mixed-$$"
 
 # Export one /24 for this attempt. Hosts stay .10/.11/.12 inside that subnet.
 # Multicast log interface=172.30.0.0/16 covers every third octet.
@@ -86,17 +86,17 @@ pick_subnet() {
 	local attempt="$1"
 	local octet=$((($$ + attempt) % OCTET_SPAN + OCTET_BASE))
 
-	export HERON_CLUSTER_MIXED_SUBNET="172.30.${octet}.0/24"
-	export HERON_CLUSTER_MIXED_IP0="172.30.${octet}.10"
-	export HERON_CLUSTER_MIXED_IP1="172.30.${octet}.11"
-	export HERON_CLUSTER_MIXED_IP2="172.30.${octet}.12"
-	export HERON_CLUSTER_HOSTNAMES="${HERON_CLUSTER_MIXED_IP0},\
-${HERON_CLUSTER_MIXED_IP1},${HERON_CLUSTER_MIXED_IP2}"
+	export LUAS_CLUSTER_MIXED_SUBNET="172.30.${octet}.0/24"
+	export LUAS_CLUSTER_MIXED_IP0="172.30.${octet}.10"
+	export LUAS_CLUSTER_MIXED_IP1="172.30.${octet}.11"
+	export LUAS_CLUSTER_MIXED_IP2="172.30.${octet}.12"
+	export LUAS_CLUSTER_HOSTNAMES="${LUAS_CLUSTER_MIXED_IP0},\
+${LUAS_CLUSTER_MIXED_IP1},${LUAS_CLUSTER_MIXED_IP2}"
 }
 
 COMPOSE_CMD=(
 	docker compose
-	-p "${HERON_COMPOSE_PROJECT}"
+	-p "${LUAS_COMPOSE_PROJECT}"
 	-f "${COMPOSE_BASE}"
 )
 for overlay in "${OVERLAY_FILES[@]}"; do
@@ -113,19 +113,19 @@ compose_cleanup() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-	echo "heron: docker required" >&2
+	echo "luas: docker required" >&2
 	exit 1
 fi
 
 GO_VERSION="$(awk '/^go / {print $2; exit}' "${ROOT}/go.mod")"
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
-HERON_COMPOSE_UID="$(id -u)"
-export HERON_COMPOSE_UID
-HERON_COMPOSE_GID="$(id -g)"
-export HERON_COMPOSE_GID
+LUAS_COMPOSE_UID="$(id -u)"
+export LUAS_COMPOSE_UID
+LUAS_COMPOSE_GID="$(id -g)"
+export LUAS_COMPOSE_GID
 
 if ! docker image inspect java-interop-aeronmd >/dev/null 2>&1; then
-	echo "heron: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
+	echo "luas: missing image java-interop-aeronmd; run: make aeronmd-compose-image" >&2
 	exit 1
 fi
 
@@ -167,12 +167,12 @@ run_smoke() {
 		fi
 		status="${PIPESTATUS[0]}"
 		is_pool_conflict || return "${status}"
-		echo "heron: subnet ${HERON_CLUSTER_MIXED_SUBNET} taken; retrying" >&2
+		echo "luas: subnet ${LUAS_CLUSTER_MIXED_SUBNET} taken; retrying" >&2
 		compose down -v >/dev/null 2>&1 || true
 	done
 
 	if [[ "${status}" -ne 0 ]]; then
-		echo "heron: no free /24 after ${SUBNET_ATTEMPTS} picks" >&2
+		echo "luas: no free /24 after ${SUBNET_ATTEMPTS} picks" >&2
 		return "${status}"
 	fi
 
@@ -185,14 +185,14 @@ run_smoke() {
 
 run_smoke || {
 	status=$?
-	echo "heron: cluster mixed smoke failed (overlay=${OVERLAY_ARG})" >&2
+	echo "luas: cluster mixed smoke failed (overlay=${OVERLAY_ARG})" >&2
 	smoke_logs >&2 || true
 	exit "${status}"
 }
 
 # One log fetch feeds require_smoke_ran and the final dump.
 SMOKE_LOGS="$(smoke_logs)" || {
-	echo "heron: could not read compose logs for smoke check" >&2
+	echo "luas: could not read compose logs for smoke check" >&2
 	exit 1
 }
 
@@ -203,7 +203,7 @@ SMOKE_LOGS="$(smoke_logs)" || {
 # green exit when the overlay gate was never met.
 require_smoke_ran() {
 	if ! grep -qF -- "--- PASS: ${SMOKE_NAME}" <<<"${SMOKE_LOGS}"; then
-		echo "heron: mixed smoke missing --- PASS: ${SMOKE_NAME}" >&2
+		echo "luas: mixed smoke missing --- PASS: ${SMOKE_NAME}" >&2
 		return 1
 	fi
 }
@@ -213,5 +213,5 @@ require_smoke_ran || {
 	exit 1
 }
 
-echo "heron: cluster mixed smoke passed (overlay=${OVERLAY_ARG})"
+echo "luas: cluster mixed smoke passed (overlay=${OVERLAY_ARG})"
 echo "${SMOKE_LOGS}"

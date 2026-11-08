@@ -2,7 +2,7 @@
 
 package aeron
 
-import "github.com/warrenguy/heron/internal/testhook"
+import "luas.fast/internal/testhook"
 
 type fragmentedWriteTrackFn func(termID int32, frameOffset int, begin bool)
 

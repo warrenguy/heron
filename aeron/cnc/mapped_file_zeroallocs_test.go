@@ -3,8 +3,8 @@ package cnc_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/cnc"
+	"luas.fast/internal/testutil"
 )
 
 var sink any

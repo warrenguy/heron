@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 // clusterLockFileName is the exclusive lock basename under ClusterDir.

@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/service"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/service"
 )
 
 func TestConstants(t *testing.T) {

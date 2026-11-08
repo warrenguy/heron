@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/broadcast"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/broadcast"
 )
 
 var (

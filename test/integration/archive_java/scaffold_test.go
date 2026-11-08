@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/test/integration/archive_java/archivejava"
+	"luas.fast/test/integration/harness"
 )
 
 func TestHarnessScaffold(t *testing.T) {

@@ -3,7 +3,7 @@ package cnc_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 func writeBenchmarkCncPath(b *testing.B) string {

@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/aeron"
+	"luas.fast/cluster/consensus"
+	"luas.fast/idlestrategy"
 )
 
 // fakeTransport records ticks and reports termination when set.

@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
 )
 
 // TestClusterMemberSet_rejectsInvalidConfig asserts StartClusterMemberSet

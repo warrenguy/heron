@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/aeron"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 // testLogChannelTemplate is a loopback UDP log channel without endpoint.

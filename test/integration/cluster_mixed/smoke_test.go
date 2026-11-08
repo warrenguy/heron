@@ -8,23 +8,22 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
+	"luas.fast/test/integration/cluster_java/clusterjava"
 )
 
 // TestClusterMixedJavaLeader elects a Java appointed leader and advances
 // commit across the language boundary. Runs only under
-// HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
+// LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
 //
 // Asserts durable log recording after elect. The Go follower records the
 // received leader log into its own Archive. The recorded position reaches a
 // commit position the member observed. Each Java member's recording-position
 // counter for that log session reaches the same commit.
 //
-// No t.Parallel. This test is the single owner of compose-fixed
+// Do not add t.Parallel. This test is the single owner of compose-fixed
 // MixedAeronDir*, MixedClusterDirGo, and the PortBase 9000 unicast block.
-// Callers must not Parallelize.
 func TestClusterMixedJavaLeader(t *testing.T) {
 	requireMixedCompose(
 		t,
@@ -102,7 +101,7 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 
 // TestClusterMixedGoLeader elects the Go appointed leader, then shuts down the
 // cluster from that leader. Runs only under
-// HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE.
+// LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE.
 //
 // Do not add t.Parallel. The test is the single owner of compose-fixed
 // MixedAeronDir*, MixedClusterDir*, PortBase 9000, and MixedLogEndpoint.

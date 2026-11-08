@@ -4,7 +4,7 @@
 # Cluster runs embedded ClusteredMediaDriver with the Java service
 # container withheld. Go runs TestClusterMixedServiceSmoke.
 #
-# Per-run compose project (-p heron-cluster-mixed-service-$$) so concurrent
+# Per-run compose project (-p luas-cluster-mixed-service-$$) so concurrent
 # smokes do not share stacks. force-recreate avoids reusing a leftover
 # one-shot go under the same project if a prior trap failed. EXIT/INT/TERM
 # run compose down for this project only.
@@ -15,7 +15,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_BASE="${ROOT}/test/integration/cluster_java/docker/compose.yaml"
 COMPOSE_OVERLAY="${ROOT}/test/integration/cluster_java/docker/compose.mixed-service.yaml"
-COMPOSE_PROJECT="heron-cluster-mixed-service-$$"
+COMPOSE_PROJECT="luas-cluster-mixed-service-$$"
 # SMOKE_NAME must match the compose.mixed-service.yaml go command -test.run.
 SMOKE_NAME="TestClusterMixedServiceSmoke"
 COMPOSE_CMD=(
@@ -34,16 +34,16 @@ compose_cleanup() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-	echo "heron: docker required" >&2
+	echo "luas: docker required" >&2
 	exit 1
 fi
 
 GO_VERSION="$(awk '/^go / {print $2; exit}' "${ROOT}/go.mod")"
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 GO_VERSION
-HERON_COMPOSE_UID="$(id -u)"
-export HERON_COMPOSE_UID
-HERON_COMPOSE_GID="$(id -g)"
-export HERON_COMPOSE_GID
+LUAS_COMPOSE_UID="$(id -u)"
+export LUAS_COMPOSE_UID
+LUAS_COMPOSE_GID="$(id -g)"
+export LUAS_COMPOSE_GID
 
 trap compose_cleanup EXIT
 trap 'exit 130' INT
@@ -67,14 +67,14 @@ else
 	compose wait go
 fi || {
 	status=$?
-	echo "heron: cluster mixed service smoke failed" >&2
+	echo "luas: cluster mixed service smoke failed" >&2
 	smoke_logs >&2 || true
 	exit "${status}"
 }
 
 # One log fetch feeds require_smoke_ran and the final dump.
 SMOKE_LOGS="$(smoke_logs)" || {
-	echo "heron: could not read compose logs for smoke check" >&2
+	echo "luas: could not read compose logs for smoke check" >&2
 	exit 1
 }
 
@@ -84,7 +84,7 @@ SMOKE_LOGS="$(smoke_logs)" || {
 # foreign PASS.
 require_smoke_ran() {
 	if ! grep -qF -- "--- PASS: ${SMOKE_NAME}" <<<"${SMOKE_LOGS}"; then
-		echo "heron: mixed service smoke missing --- PASS: ${SMOKE_NAME}" >&2
+		echo "luas: mixed service smoke missing --- PASS: ${SMOKE_NAME}" >&2
 		return 1
 	fi
 }
@@ -94,5 +94,5 @@ require_smoke_ran || {
 	exit 1
 }
 
-echo "heron: cluster mixed service smoke passed"
+echo "luas: cluster mixed service smoke passed"
 echo "${SMOKE_LOGS}"

@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	aerontestutil "luas.fast/aeron/internal/testutil"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 type driverProxyOp int

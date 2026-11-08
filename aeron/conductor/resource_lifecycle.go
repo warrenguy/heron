@@ -1,8 +1,8 @@
 package conductor
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/logbuffer"
 )
 
 // ResourceLifecycle constructs and tears down publications and subscriptions for

@@ -3,9 +3,9 @@ package codecs_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/internal/testutil"
 )
 
 func TestTryDecodeClusterAt_ZeroAllocs(t *testing.T) {

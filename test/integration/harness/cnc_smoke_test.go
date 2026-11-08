@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
 )
 
 func TestCncWiring(t *testing.T) {

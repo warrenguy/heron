@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs"
+import "luas.fast/archive/codecs"
 
 // RecordingSignalHandler receives RecordingSignalEvent dispatches from the archive
 // control demux.

@@ -3,7 +3,7 @@ package conductor
 import (
 	"net"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const (

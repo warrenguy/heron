@@ -5,7 +5,7 @@ package replication
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/test/sim"
 )
 
 // DefaultCatalogWeight is the sum of soak scenario weights.

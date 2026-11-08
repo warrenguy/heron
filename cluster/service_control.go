@@ -3,8 +3,8 @@ package cluster
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/aeron"
+	"luas.fast/cluster/consensus"
 )
 
 // ServiceControlSubscriptionDeps are the collaborators

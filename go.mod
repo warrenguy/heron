@@ -1,4 +1,4 @@
-module github.com/warrenguy/heron
+module luas.fast
 
 go 1.26.4
 

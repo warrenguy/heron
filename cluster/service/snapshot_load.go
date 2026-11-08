@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/idlestrategy"
 )
 
 // snapshotLoadFragmentLimit matches upstream ServiceSnapshotLoader

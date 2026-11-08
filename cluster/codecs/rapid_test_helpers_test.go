@@ -5,9 +5,9 @@ package codecs_test
 import (
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/internal/testutil"
 )
 
 const (

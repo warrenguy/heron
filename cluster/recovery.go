@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
 )
 
 const clusterLockFileName = "cluster.lock"

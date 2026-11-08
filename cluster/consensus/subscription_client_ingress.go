@@ -1,7 +1,7 @@
 package consensus
 
 import (
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 // ControlledFragmentPoller delivers committed fragments with controlled-action

@@ -5,10 +5,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
+	"luas.fast/aeron/logbuffer"
 )
 
 var conductorSubscriptionHandleErrorCases = []struct {

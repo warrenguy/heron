@@ -3,8 +3,8 @@ package broadcast_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/broadcast"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/broadcast"
+	"luas.fast/internal/testutil"
 )
 
 func TestBroadcast_ZeroAllocs(t *testing.T) {

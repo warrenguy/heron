@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 type codecFieldsActingCase[T any] struct {
@@ -267,7 +267,7 @@ func TestSessionConnectRequest_roundtrip(t *testing.T) {
 				Version:            4,
 				ResponseChannel:    []byte("aeron:udp?endpoint=localhost:40123"),
 				EncodedCredentials: []byte{9, 8, 7},
-				ClientInfo:         []byte("heron-client"),
+				ClientInfo:         []byte("luas-client"),
 			},
 		},
 	}

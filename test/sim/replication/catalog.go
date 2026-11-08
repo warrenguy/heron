@@ -2,7 +2,7 @@
 
 package replication
 
-import "github.com/warrenguy/heron/test/sim"
+import "luas.fast/test/sim"
 
 // replicationSimCatalog is the weighted scenario list (weights sum to
 // DefaultCatalogWeight).

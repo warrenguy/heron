@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
 )
 
 const (

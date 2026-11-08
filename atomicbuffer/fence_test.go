@@ -171,7 +171,7 @@ func TestFenceARM64Barrier(t *testing.T) {
 func TestReleaseStoreCodegen(t *testing.T) {
 	t.Parallel()
 
-	const atomicbufferPrefix = "github.com/warrenguy/heron/atomicbuffer."
+	const atomicbufferPrefix = "luas.fast/atomicbuffer."
 	wrappers := []struct {
 		symbol     string
 		storeFence bool

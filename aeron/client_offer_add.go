@@ -3,7 +3,7 @@ package aeron
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 // OfferAddPublication registers a pending add and offers ADD_PUBLICATION once per

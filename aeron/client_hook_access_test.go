@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"luas.fast/aeron/internal/testutil"
 )
 
 func TestClient_awaitPollSleepingHook_clearRemovesSideTableEntry(t *testing.T) {

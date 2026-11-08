@@ -1,9 +1,9 @@
 package harness
 
 import (
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/record"
+	"luas.fast/ringbuffer"
 )
 
 func ringRecordLength(bodyLength int) int {

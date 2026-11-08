@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const recordingLogFileName = "recording.log"
@@ -731,10 +731,10 @@ func (l *Log) backfillTermsToTarget(p EnsureCoherentParams, anchor *Entry) error
 // Go divergence from the reference Java ensureCoherent: the reference skips
 // that backfill and either returns without appending the target when
 // logPosition is NullPosition or fails commit with ErrUnknownLeadershipTermID.
-// Heron backfills so the local index reaches leadershipTermID. Appended rows
+// Luas backfills so the local index reaches leadershipTermID. Appended rows
 // use the same TERM wire layout; only this node's recording.log changes.
-// recording.log is per-node and is not sent on the cluster wire, so mixed
-// Go and Java members are not cross-affected. A Java peer in the same abnormal
+// recording.log is per-node. The cluster wire does not carry it, so the backfill
+// does not affect mixed Go and Java members. A Java peer in the same abnormal
 // gappy state would not self-heal its own index. Normal election-driven calls
 // advance leadershipTermID forward and follow the same path as the reference.
 //

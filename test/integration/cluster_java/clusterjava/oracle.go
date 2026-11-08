@@ -5,9 +5,9 @@ package clusterjava
 import (
 	"time"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/client"
+	"luas.fast/test/integration/harness"
 )
 
 const (
@@ -41,20 +41,20 @@ const (
 	ComposeAeronDir = "/dev/shm/aeron"
 	// ComposeDir is where the failover-runtime stage copies the compose files.
 	ComposeDir = "/app/compose"
-	BaseDir    = "/tmp/heron-cluster-0"
+	BaseDir    = "/tmp/luas-cluster-0"
 )
 
 const (
-	ComposeGateEnvKey          = "HERON_CLUSTER_JAVA_COMPOSE"
-	FailoverComposeGateEnvKey  = "HERON_CLUSTER_JAVA_FAILOVER_COMPOSE"
-	ComposeDirEnvKey           = "HERON_CLUSTER_JAVA_COMPOSE_DIR"
+	ComposeGateEnvKey          = "LUAS_CLUSTER_JAVA_COMPOSE"
+	FailoverComposeGateEnvKey  = "LUAS_CLUSTER_JAVA_FAILOVER_COMPOSE"
+	ComposeDirEnvKey           = "LUAS_CLUSTER_JAVA_COMPOSE_DIR"
 	FailoverComposeProfileName = "failover"
 	composeSkipRunMake         = "requires docker compose; run make "
 	ComposeSkipHint            = "cluster java " + composeSkipRunMake + "smoke-cluster-java"
 	FailoverComposeSkipHint    = "failover " + composeSkipRunMake + "smoke-cluster-java-failover"
 
-	// MixedServiceComposeGateEnvKey is set to "1" by the mixed-service overlay.
-	MixedServiceComposeGateEnvKey = "HERON_CLUSTER_MIXED_SERVICE_COMPOSE"
+	// MixedServiceComposeGateEnvKey names the env key that the mixed-service overlay sets to "1".
+	MixedServiceComposeGateEnvKey = "LUAS_CLUSTER_MIXED_SERVICE_COMPOSE"
 
 	MixedServiceComposeSkipHint = "cluster mixed service " +
 		composeSkipRunMake + "smoke-cluster-mixed-service"

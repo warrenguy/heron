@@ -3,7 +3,7 @@ package aeron_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 func testSubscription(tb testing.TB) *aeron.Subscription {

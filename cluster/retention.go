@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/archive"
+	"luas.fast/archive/codecs"
+	"luas.fast/cluster/recordinglog"
 )
 
 var (

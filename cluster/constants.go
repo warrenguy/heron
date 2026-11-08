@@ -89,8 +89,8 @@ const (
 	TransferPortOffset = 5
 )
 
-// Channel templates. Endpoints are never baked in: every endpoint comes from the
-// cluster members string and is substituted per target.
+// Channel templates. The templates never hold endpoints. Every endpoint comes from
+// the cluster members string. Each target substitutes its own.
 const (
 	// DefaultConsensusChannel is CONSENSUS_CHANNEL_DEFAULT plus an explicit term
 	// length. Upstream default is bare "aeron:udp", which inherits the driver
@@ -103,13 +103,13 @@ const (
 	// for several members on one host. Raise for production throughput.
 	DefaultLogChannel = "aeron:udp?term-length=64k"
 
-	// DefaultIngressChannel is the client ingress channel template. Endpoints
-	// are not fixed in the template. Each member substitutes its own
+	// DefaultIngressChannel is the client ingress channel template. The template
+	// does not fix endpoints. Each member substitutes its own
 	// members-string ingress endpoint (port offset 2). The 64 KiB term matches
 	// the DefaultConsensusChannel URI shape for co-hosted members.
 	//
-	// Upstream AeronCluster.Configuration.INGRESS_CHANNEL_DEFAULT is null and
-	// must be set by the caller. Heron supplies a 64 KiB term template so
+	// Upstream AeronCluster.Configuration.INGRESS_CHANNEL_DEFAULT is null, so
+	// the caller must set it. Luas supplies a 64 KiB term template so
 	// Normalize has a usable default that matches DefaultConsensusChannel shape.
 	DefaultIngressChannel = "aeron:udp?term-length=64k"
 

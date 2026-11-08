@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs"
 )
 
 type handleEgressFragmentCase struct {

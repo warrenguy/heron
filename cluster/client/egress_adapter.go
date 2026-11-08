@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
 )
 
 // EgressAdapter polls an egress subscription and dispatches cluster SBE events

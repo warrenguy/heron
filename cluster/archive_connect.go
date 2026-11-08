@@ -1,8 +1,8 @@
 package cluster
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
+	"luas.fast/aeron"
+	"luas.fast/archive"
 )
 
 // moduleArchiveResponseStreamID matches the Java consensus module archive

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 const (

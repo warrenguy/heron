@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs"
+import "luas.fast/archive/codecs"
 
 func matchControlResponseFields(
 	fields codecs.ControlResponseFields,

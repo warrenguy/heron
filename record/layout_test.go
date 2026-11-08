@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
+	"luas.fast/atomicbuffer"
+	"luas.fast/record"
 )
 
 func TestRecordLayoutDerivedFromAtomicSizes(t *testing.T) {

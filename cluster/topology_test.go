@@ -6,10 +6,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
 )
 
 // testArchiveControl channels satisfy Validate for fixtures that never connect

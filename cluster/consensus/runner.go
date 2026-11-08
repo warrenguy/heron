@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/cluster/codecs"
+import "luas.fast/cluster/codecs"
 
 // ElectionRunner is the agent-to-election boundary.
 // Concrete type: *election.Election (outside this package).

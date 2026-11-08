@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/ringbuffer"
 )
 
 const (

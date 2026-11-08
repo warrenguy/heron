@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 var sessionIDRapidParamName = strings.TrimSuffix(aeron.ChannelSessionIDParam, "=")

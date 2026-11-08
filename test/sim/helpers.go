@@ -8,26 +8,26 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/election"
 )
 
-// SeedFromEnv returns HERON_SIM_SEED when set and defaultSeed is 0.
+// SeedFromEnv returns LUAS_SIM_SEED when set and defaultSeed is 0.
 //
 // Non-zero defaultSeed is authoritative (env does not override).
 //
-// Invalid env values are logged and fall back to defaultSeed.
+// SeedFromEnv logs an invalid env value and falls back to defaultSeed.
 func SeedFromEnv(tb testing.TB, defaultSeed uint64) uint64 {
 	tb.Helper()
 	if defaultSeed != 0 {
 		return defaultSeed
 	}
-	v := os.Getenv("HERON_SIM_SEED")
+	v := os.Getenv("LUAS_SIM_SEED")
 	if v == "" {
 		return defaultSeed
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
-		tb.Logf("sim: ignoring invalid HERON_SIM_SEED %q: %v", v, err)
+		tb.Logf("sim: ignoring invalid LUAS_SIM_SEED %q: %v", v, err)
 		return defaultSeed
 	}
 	return n

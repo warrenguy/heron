@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/mmap"
 )
 
 func openFDCount(t *testing.T) int {

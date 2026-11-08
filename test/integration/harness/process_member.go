@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 const raceReportPrefix = "WARNING: DATA RACE"

@@ -6,5 +6,5 @@ set -euo pipefail
 exec java \
 	--add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
 	-Daeron.dir="${AERON_DIR}" \
-	-cp /app/heron-java-interop.jar \
-	heron.interop.JavaDuplex
+	-cp /app/luas-java-interop.jar \
+	luas.interop.JavaDuplex

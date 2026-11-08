@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 type metadataFuzzKind uint8

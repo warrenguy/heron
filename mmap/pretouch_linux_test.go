@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/mmap"
 )
 
 func threadMinorFaults(t *testing.T) int64 {

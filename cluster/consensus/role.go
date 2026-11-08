@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/cluster/codecs"
+import "luas.fast/cluster/codecs"
 
 // Role is the cluster node role written to CLUSTER_NODE_ROLE_TYPE_ID (201).
 //

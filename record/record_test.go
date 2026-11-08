@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/record"
+	"luas.fast/record"
 )
 
 func TestRecord(t *testing.T) {

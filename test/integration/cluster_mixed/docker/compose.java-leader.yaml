@@ -12,7 +12,7 @@ services:
   go:
     command: ["-test.timeout=120s", "-test.run", "^TestClusterMixedJavaLeader$$"]
     environment:
-      HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "1"
+      LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "1"
 
   # Start Java only after Go readiness. Base file has no depends_on for these.
   cluster-0:

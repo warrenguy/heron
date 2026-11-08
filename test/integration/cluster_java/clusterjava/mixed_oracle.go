@@ -10,18 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 // Mixed Go/Java multi-node goldens. Hand-sync with ClusterConstantsMixedTest.
 // Java ClusterConfig helpers stay authoritative for topology strings.
 
 const (
-	// MixedComposeJavaLeaderEnvKey is set to "1" by the java-leader overlay.
-	MixedComposeJavaLeaderEnvKey = "HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE"
+	// MixedComposeJavaLeaderEnvKey names the env key that the java-leader overlay sets to "1".
+	MixedComposeJavaLeaderEnvKey = "LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE"
 
-	// MixedComposeGoLeaderEnvKey is set to "1" by the go-leader overlay.
-	MixedComposeGoLeaderEnvKey = "HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE"
+	// MixedComposeGoLeaderEnvKey names the env key that the go-leader overlay sets to "1".
+	MixedComposeGoLeaderEnvKey = "LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE"
 
 	// MixedSmokeNameJavaLeader is the TestClusterMixedJavaLeader function name.
 	//
@@ -35,19 +35,22 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameGoLeader = "TestClusterMixedGoLeader"
 
-	// MixedComposeExLeaderRejoinEnvKey is set to "1" by the ex-leader-rejoin overlay.
-	MixedComposeExLeaderRejoinEnvKey = "HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE"
+	// MixedComposeExLeaderRejoinEnvKey names the env key that the
+	// ex-leader-rejoin overlay sets to "1".
+	MixedComposeExLeaderRejoinEnvKey = "LUAS_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE"
 
 	// MixedSmokeNameExLeaderRejoin is the TestClusterMixedGoExLeaderRejoin function name.
 	//
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameExLeaderRejoin = "TestClusterMixedGoExLeaderRejoin"
 
-	// MixedComposeJavaLeaderSnapshotEnvKey is set to "1" by the java-leader-snapshot overlay.
-	MixedComposeJavaLeaderSnapshotEnvKey = "HERON_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE"
+	// MixedComposeJavaLeaderSnapshotEnvKey names the env key that the
+	// java-leader-snapshot overlay sets to "1".
+	MixedComposeJavaLeaderSnapshotEnvKey = "LUAS_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE"
 
-	// MixedComposeGoLeaderSnapshotEnvKey is set to "1" by the go-leader-snapshot overlay.
-	MixedComposeGoLeaderSnapshotEnvKey = "HERON_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE"
+	// MixedComposeGoLeaderSnapshotEnvKey names the env key that the
+	// go-leader-snapshot overlay sets to "1".
+	MixedComposeGoLeaderSnapshotEnvKey = "LUAS_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE"
 
 	// MixedSmokeNameJavaLeaderSnapshot is the TestClusterMixedJavaLeaderSnapshotRestart function name.
 	//
@@ -90,24 +93,24 @@ const (
 	// file. Each smoke writes the file before the waiting services start:
 	//   - java-leader starts both Java members.
 	//   - ex-leader-rejoin starts Java member 1.
-	MixedReadyPath = "/dev/shm/heron-mixed/member-ready"
+	MixedReadyPath = "/dev/shm/luas-mixed/member-ready"
 
 	// MixedStopPathMember1 is the stop file for Java member 1. The path sits
 	// outside every Aeron directory. A driver does not map the file. The
 	// ex-leader-rejoin overlay repeats this literal.
-	MixedStopPathMember1 = "/dev/shm/heron-mixed/stop-member-1"
+	MixedStopPathMember1 = "/dev/shm/luas-mixed/stop-member-1"
 
 	// MixedRestartPathMember1 is the restart file for Java member 1. The path
 	// sits outside every Aeron directory. A driver does not map the file. The
 	// go-leader-snapshot overlay repeats this literal.
-	MixedRestartPathMember1 = "/dev/shm/heron-mixed/restart-member-1"
+	MixedRestartPathMember1 = "/dev/shm/luas-mixed/restart-member-1"
 )
 
 // Default bridge address literals for the 172.30.0.0/24 topology.
 // Compose assigns each address as ipv4_address on the default subnet.
 //
 // Compose smokes pick a per-run /24 under 172.30.0.0/16 and set
-// HERON_CLUSTER_HOSTNAMES. Runtime helpers read MixedHostnamesEnvKey.
+// LUAS_CLUSTER_HOSTNAMES. Runtime helpers read MixedHostnamesEnvKey.
 //
 // MixedMember2Address is the default aeronmd address. The Go test binary
 // joins that driver with network_mode service:aeronmd. Consensus and log
@@ -120,7 +123,7 @@ const (
 
 	// MixedHostnamesEnvKey is the compose env key for the three member address
 	// literals in id order. Java ClusterNode and the Go smoke read this value.
-	MixedHostnamesEnvKey = "HERON_CLUSTER_HOSTNAMES"
+	MixedHostnamesEnvKey = "LUAS_CLUSTER_HOSTNAMES"
 )
 
 const (
@@ -153,7 +156,7 @@ const (
 // Paths are baseDirs, not the cluster/ subdirectory. Go uses member id 2.
 const (
 	// MixedBaseDirPrefix matches ClusterConstants.MIXED_BASE_DIR_PREFIX.
-	MixedBaseDirPrefix = "/tmp/heron-cluster-"
+	MixedBaseDirPrefix = "/tmp/luas-cluster-"
 
 	MixedClusterDirMember0 = MixedBaseDirPrefix + "0"
 	MixedClusterDirMember1 = MixedBaseDirPrefix + "1"

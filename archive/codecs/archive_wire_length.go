@@ -1,8 +1,8 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 const (

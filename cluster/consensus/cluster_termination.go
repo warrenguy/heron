@@ -6,9 +6,9 @@ import (
 	"math"
 	"slices"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/recordinglog"
 )
 
 // DefaultTerminationTimeoutNs caps the leader's wait for follower termination

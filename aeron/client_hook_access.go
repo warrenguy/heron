@@ -2,7 +2,7 @@
 
 package aeron
 
-import "github.com/warrenguy/heron/internal/testhook"
+import "luas.fast/internal/testhook"
 
 var (
 	awaitPollSleepingHooks = testhook.NewRegistry[*Client, func()]()

@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 func TestFragmentAssembler_Handler_ZeroAllocs(t *testing.T) {

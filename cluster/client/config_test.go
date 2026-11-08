@@ -6,11 +6,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 const (
@@ -147,14 +147,14 @@ func TestNormalizeConfig_mergesAeronDirOnly(t *testing.T) {
 	customNano := func() int64 { return 99 }
 
 	cfg := normalizedConfig(func(cfg *client.Config) {
-		cfg.AeronDir = "/tmp/heron-aeron"
+		cfg.AeronDir = "/tmp/luas-aeron"
 		cfg.AeronConfig = aeron.Config{
 			EpochClock: customEpoch,
 			NanoClock:  customNano,
 		}
 	})
 
-	require.Equal(t, "/tmp/heron-aeron", cfg.AeronConfig.AeronDir)
+	require.Equal(t, "/tmp/luas-aeron", cfg.AeronConfig.AeronDir)
 	require.NotNil(t, cfg.AeronConfig.EpochClock)
 	require.Equal(t, int64(42), cfg.AeronConfig.EpochClock())
 	require.NotNil(t, cfg.AeronConfig.NanoClock)

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive/codecs"
+	"luas.fast/archive/codecs"
 )
 
 func mustEncodeArchiveWire[T any](

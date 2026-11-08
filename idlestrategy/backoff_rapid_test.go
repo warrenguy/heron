@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/idlestrategy"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/idlestrategy"
+	"luas.fast/internal/testutil"
 )
 
 type backoffParams struct {

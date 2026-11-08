@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/mmap"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	"luas.fast/mmap"
+	"luas.fast/ringbuffer"
 )
 
 const (

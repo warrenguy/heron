@@ -5,7 +5,7 @@ package harness
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 // ModuleErrors keeps each error that a member's cluster.Config.ErrorHandler

@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/aeron"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 const (
@@ -157,12 +157,12 @@ func TestProxy_TryConnect_clientInfoOnWire(t *testing.T) {
 		{
 			name:       "default",
 			clientName: "",
-			want:       []byte("name=archive-client heron"),
+			want:       []byte("name=archive-client luas"),
 		},
 		{
 			name:       "custom",
 			clientName: "my-archive",
-			want:       []byte("name=my-archive heron"),
+			want:       []byte("name=my-archive luas"),
 		},
 	}
 	for _, tc := range cases {

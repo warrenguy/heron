@@ -1,8 +1,8 @@
 package codecs
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // ClusterProtocolSemanticVersion returns the packed wire value for

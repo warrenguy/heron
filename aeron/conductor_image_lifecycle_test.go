@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
+	"luas.fast/broadcast"
 )
 
 const (

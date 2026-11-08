@@ -2,7 +2,7 @@
 
 package election
 
-import "github.com/warrenguy/heron/cluster/consensus"
+import "luas.fast/cluster/consensus"
 
 var (
 	InitialiseOnCreate          = initialiseOnCreate

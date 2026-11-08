@@ -3,8 +3,8 @@ package election
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/election/nodewire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/election/nodewire"
 )
 
 func alignRecordOffset(off int) int {

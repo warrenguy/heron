@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
+	"luas.fast/test/integration/cluster_sbe/clustersbe"
 )
 
 func TestCatalogEntryToWireFixtureForTest_sessionConnectRequestPreV2(t *testing.T) {

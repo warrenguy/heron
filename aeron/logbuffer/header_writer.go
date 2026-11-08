@@ -3,7 +3,7 @@ package logbuffer
 import (
 	"unsafe"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 // HeaderWriter writes DATA frame headers as three 64-bit words, like Java
