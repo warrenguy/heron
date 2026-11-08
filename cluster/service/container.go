@@ -78,6 +78,14 @@ type SnapshotPublicationAdder interface {
 
 var _ SnapshotPublicationAdder = (*aeron.Client)(nil)
 
+// TerminationReporter reports whether the transport client has entered
+// termination.
+type TerminationReporter interface {
+	IsTerminating() bool
+}
+
+var _ TerminationReporter = (*aeron.Client)(nil)
+
 // TransportClient registers control handles, snapshot publications, and
 // response publications on a media driver.
 //
@@ -86,6 +94,7 @@ type TransportClient interface {
 	SubscriptionAdder
 	SnapshotPublicationAdder
 	ResponsePublicationAdder
+	TerminationReporter
 	AddPublication(streamID int32, channel string) (*aeron.Publication, error)
 }
 
@@ -103,7 +112,10 @@ type Config struct {
 	// With Archive set, Aeron must be an *aeron.Client. The archive client
 	// shares Aeron. Open then calls DoWork on Aeron until the archive connect
 	// completes. With Recovery set, Open also calls DoWork on Aeron during
-	// each recovery wait. Call Open on the invoker goroutine.
+	// each recovery wait. Call Open on the goroutine that runs DoWork.
+	//
+	// Close the container before Aeron. A closed Aeron is not terminating.
+	// The agent then marks only when an ack offer or an add fails.
 	Aeron TransportClient
 
 	// Service receives log-event callbacks. Required for [Open]. A nil-service
@@ -197,9 +209,9 @@ type Config struct {
 //     entry ready
 //   - Start error: the agent sets the start entry ready with RelevantID
 //     NULL_VALUE. The agent retries the start ack each tick until the ack
-//     sends, a terminal offer code returns, or Timeout passes. The agent
-//     then marks the Start error. With no bound control publication, the
-//     agent marks the Start error at once.
+//     sends, a terminal offer code returns, Timeout passes, or the transport
+//     client terminates. The agent then marks the Start error. With no bound
+//     control publication, the agent marks the Start error at once.
 //
 // When the start entry is ready, drain sends it as ack id 0. Every later ack
 // id shifts up by one. That is the Java numbering.
@@ -412,6 +424,7 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 		SnapshotStreamID:     cfg.SnapshotStreamID,
 		ResponsePublications: cfg.Aeron,
 		ErrorHandler:         cfg.ErrorHandler,
+		Transport:            cfg.Aeron,
 	})
 	container := &Container{
 		agent:         agent,

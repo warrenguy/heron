@@ -4,6 +4,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -121,23 +122,24 @@ type takeHarness struct {
 	pub   *aeron.Publication
 	log   *takeLog
 	svc   *snapshotRecordingService
+	errs  []error
 }
 
 func newTakeHarness(tb testing.TB, svc *snapshotRecordingService) *takeHarness {
 	tb.Helper()
+	h := &takeHarness{svc: svc}
 	proxy, pub := boundModuleProxy(tb)
 	agent, image, committed := bindImage(tb, AgentConfig{
-		ServiceID:   1,
-		Service:     svc,
-		ModuleProxy: proxy,
+		ServiceID:    1,
+		Service:      svc,
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&h.errs),
 	}, 0)
-	return &takeHarness{
-		agent: agent,
-		fake:  InstallSnapshotTakeFakeForTest(tb, agent),
-		pub:   pub,
-		log:   &takeLog{image: image, committed: committed},
-		svc:   svc,
-	}
+	h.agent = agent
+	h.fake = InstallSnapshotTakeFakeForTest(tb, agent)
+	h.pub = pub
+	h.log = &takeLog{image: image, committed: committed}
+	return h
 }
 
 // requireNoPreProofAck asserts that no sent ack carries the pre-proof id.
@@ -146,6 +148,12 @@ func (h *takeHarness) requireNoPreProofAck(tb testing.TB) {
 	for _, ack := range decodeServiceAcksFromPub(tb, h.pub) {
 		require.NotEqual(tb, snapshotTakeFakePreProofID, ack.RelevantID, "pre-proof ack")
 	}
+}
+
+func (h *takeHarness) requireNonFatalReported(tb testing.TB, causes ...error) {
+	tb.Helper()
+	require.NoError(tb, h.agent.ServiceFailure())
+	requireOneNonFatalReport(tb, h.errs, causes...)
 }
 
 // requireSnapshotTakeCleanedUp asserts that the take cleanup left nothing open.
@@ -165,6 +173,28 @@ func requireSnapshotTakeCleanedUp(
 	for i, publication := range fake.publications {
 		require.True(tb, publication.IsClosed(), "publication %d closed", i)
 	}
+}
+
+func TestAgent_nonFatalErrorKeepsRunning(t *testing.T) {
+	hookErr := errors.New("snap boom")
+	svc := &snapshotRecordingService{hookErrs: []error{hookErr, nil}}
+	h := newTakeHarness(t, svc)
+	h.log.termEvent(t, clusterwire.ClusterTimeUnit_NANOS, 0)
+	first := h.log.snapshot(t, 1)
+	h.log.timer(t, 11)
+	second := h.log.snapshot(t, 2)
+
+	for tick := 0; tick < 8 && len(decodeServiceAcksFromPub(t, h.pub)) < 2; tick++ {
+		h.agent.DoWork(0)
+	}
+
+	h.requireNonFatalReported(t, ErrTakeSnapshot, hookErr)
+	require.Equal(t, []timerRec{{correlationID: 11, timestamp: 11}}, h.svc.timers)
+	require.NotEqual(t, nullValue, h.fake.RecordingID())
+	require.Equal(t, []codecs.ServiceAckFields{
+		{LogPosition: first, Timestamp: 1, AckID: 0, RelevantID: nullValue, ServiceID: 1},
+		{LogPosition: second, Timestamp: 2, AckID: 1, RelevantID: h.fake.RecordingID(), ServiceID: 1},
+	}, decodeServiceAcksFromPub(t, h.pub))
 }
 
 func TestSnapshotTake_success(t *testing.T) {
@@ -542,7 +572,7 @@ func TestSnapshotTake_brokenState(t *testing.T) {
 
 			tt.corrupt(h.agent)
 			h.agent.DoWork(0)
-			require.ErrorIs(t, h.agent.ServiceFailure(), ErrSnapshotWrite)
+			h.requireNonFatalReported(t, ErrSnapshotWrite)
 			acks := decodeServiceAcksFromPub(t, h.pub)
 			require.Len(t, acks, 1)
 			require.Equal(t, end, acks[0].LogPosition)
@@ -728,6 +758,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 	startErr := errors.New("start boom")
 	hookErr := errors.New("hook boom")
 	timeoutErr := &aeron.RegistrationTimeoutError{Kind: "publication", CorrelationID: 1}
+	storage := &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
 	tests := []struct {
 		name          string
 		svc           *snapshotRecordingService
@@ -735,6 +766,7 @@ func TestSnapshotTake_failures(t *testing.T) {
 		setup         func(testing.TB, *takeHarness)
 		cause         error
 		wrapped       error
+		fatal         bool
 		wantCancelled []int64
 	}{
 		{
@@ -860,6 +892,45 @@ func TestSnapshotTake_failures(t *testing.T) {
 			setup: func(_ testing.TB, h *takeHarness) { h.fake.stopNever = true },
 			cause: ErrSnapshotRecordingStop,
 		},
+		{
+			name: "startSignalStorageSpace",
+			setup: func(_ testing.TB, h *takeHarness) {
+				h.fake.startSignals = []snapshotTakeFakeStep{{done: true, err: storage}}
+			},
+			cause:   ErrSnapshotRecordingStart,
+			wrapped: storage,
+			fatal:   true,
+		},
+		{
+			name: "addOfferClosedClient",
+			setup: func(_ testing.TB, h *takeHarness) {
+				h.fake.addOffers = []error{aeron.ErrClientClosed}
+			},
+			cause:   ErrSnapshotPublicationAdd,
+			wrapped: aeron.ErrClientClosed,
+			fatal:   true,
+		},
+		{
+			name:    "handlerStorageSpace",
+			svc:     &snapshotRecordingService{hookErr: fmt.Errorf("hook: %w", storage)},
+			cause:   ErrTakeSnapshot,
+			wrapped: storage,
+			fatal:   true,
+		},
+		{
+			name:    "handlerClosedClient",
+			svc:     &snapshotRecordingService{hookErr: fmt.Errorf("hook: %w", aeron.ErrClientClosed)},
+			cause:   ErrTakeSnapshot,
+			wrapped: aeron.ErrClientClosed,
+			fatal:   true,
+		},
+		{
+			name:    "handlerStart",
+			svc:     &snapshotRecordingService{hookErr: fmt.Errorf("hook: %w", ErrStart)},
+			cause:   ErrTakeSnapshot,
+			wrapped: ErrStart,
+			fatal:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -868,8 +939,6 @@ func TestSnapshotTake_failures(t *testing.T) {
 				svc = &snapshotRecordingService{}
 			}
 			h := newTakeHarness(t, svc)
-			var got []error
-			h.agent.errorHandler = collectErrors(&got)
 			h.fake.offerRetryTimeout = time.Duration(takeFailureTickNs)
 			h.fake.responseTimeout = time.Duration(takeFailureTickNs)
 			if tt.setup != nil {
@@ -882,22 +951,22 @@ func TestSnapshotTake_failures(t *testing.T) {
 
 			for tick := range int64(10) {
 				h.agent.DoWork(tick * takeFailureTickNs)
-				if h.agent.ServiceFailure() != nil {
+				if len(decodeServiceAcksFromPub(t, h.pub)) > 0 {
 					break
 				}
-				require.Empty(t, decodeServiceAcksFromPub(t, h.pub), "tick %d acks before mark", tick)
-			}
-			failure := h.agent.ServiceFailure()
-			require.ErrorIs(t, failure, ErrFailed)
-			require.ErrorIs(t, failure, tt.cause)
-			if tt.wrapped != nil {
-				require.ErrorIs(t, failure, tt.wrapped)
 			}
 
-			// The error handler reports when the -1 ack sends. The addPollError
-			// cleanup poll does not report again.
-			require.Len(t, got, 1)
-			require.Same(t, failure, got[0])
+			causes := []error{tt.cause}
+			if tt.wrapped != nil {
+				causes = append(causes, tt.wrapped)
+			}
+
+			if tt.fatal {
+				requireFailureReported(t, h.agent, h.errs, causes...)
+			} else {
+				h.requireNonFatalReported(t, causes...)
+			}
+
 			require.Equal(t, []codecs.ServiceAckFields{{
 				LogPosition: end,
 				Timestamp:   9,

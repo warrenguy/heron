@@ -27,7 +27,7 @@ const (
 // goroutine unmaps released log buffers. Close stops it.
 //
 // Concurrency: clientLock admits one call at a time. These calls take it:
-//   - DoWork, IsTerminating, Close, and CancelPending
+//   - DoWork, Close, and CancelPending
 //   - Add*, OfferAdd*, PollAdd*, and the destination methods
 //   - AddCounter, Counter.Close, NextAvailableSessionID, and PollCommand
 //
@@ -61,10 +61,13 @@ const (
 // See AvailableImageHandler and PublicationErrorFrameHandler for their own
 // contracts.
 type Client struct {
-	clientID                int64
-	mapped                  *cnc.MappedCncFile
-	countersReader          *cnc.CountersReader
-	conductor               *conductor.Conductor
+	clientID       int64
+	mapped         *cnc.MappedCncFile
+	countersReader *cnc.CountersReader
+	conductor      *conductor.Conductor
+	// terminationConductor does not change after construction, so IsTerminating
+	// reads it without clientLock.
+	terminationConductor    *conductor.Conductor
 	driverProxy             *conductor.DriverProxy
 	nanoClock               conductor.NanoClock
 	driverTimeout           time.Duration
@@ -323,6 +326,7 @@ func newConductorClient(
 		return nil, err
 	}
 	client.conductor = conductorInstance
+	client.terminationConductor = conductorInstance
 	return client, nil
 }
 
@@ -384,24 +388,15 @@ func (client *Client) DoWork() int {
 // Causes include driver shutdown, a stale keepalive, and a client or
 // service timeout.
 //
-// A call from outside a handler takes clientLock. A call from a handler
-// reads the conductor state. The handler call does not take clientLock.
+// Returns false after Close.
+//
+// Concurrency: safe from any goroutine.
 func (client *Client) IsTerminating() bool {
-	if client == nil || client.closed.Load() {
+	if client == nil || client.closed.Load() || client.terminationConductor == nil {
 		return false
 	}
-	if client.handlerScope.isHandlerGoroutine() {
-		if client.conductor == nil {
-			return false
-		}
-		return client.conductor.IsTerminating()
-	}
-	client.clientLock.Lock()
-	defer client.unlockClient()
-	if client.closed.Load() || client.conductor == nil {
-		return false
-	}
-	return client.conductor.IsTerminating()
+
+	return client.terminationConductor.IsTerminating()
 }
 
 // Commit or Abort each claim before Close. Call Close only after these

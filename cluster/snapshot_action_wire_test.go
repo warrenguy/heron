@@ -3,6 +3,7 @@
 package cluster
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/cluster/service"
 )
 
 const (
@@ -22,18 +24,19 @@ const (
 	snapshotWireNowNsSecond      int64 = 6000
 )
 
-// snapshotWireService embeds wireRecordingService and records each
-// TakeSnapshot publication.
+// snapshotWireService records each TakeSnapshot publication, then returns
+// takeErr.
 type snapshotWireService struct {
 	wireRecordingService
-	pubs []*aeron.ExclusivePublication
+	pubs    []*aeron.ExclusivePublication
+	takeErr error
 }
 
 func (s *snapshotWireService) TakeSnapshot(
 	publication *aeron.ExclusivePublication,
 ) error {
 	s.pubs = append(s.pubs, publication)
-	return nil
+	return s.takeErr
 }
 
 // snapshotWireHarness is an in-process consensus-module-plus-service snapshot
@@ -54,7 +57,8 @@ type snapshotWireHarness struct {
 	// join wait pairs with the join ServiceAck only.
 	dropRequest bool
 
-	rec *snapshotWireService
+	rec  *snapshotWireService
+	errs *errorRecorder
 }
 
 // newSnapshotWireHarness appends one NewLeadershipTermEvent at position 0,
@@ -87,14 +91,17 @@ func newSnapshotWireHarness(t testing.TB) *snapshotWireHarness {
 	cm.SetServiceProxy(proxy104)
 
 	rec := &snapshotWireService{}
+	errs := &errorRecorder{}
+
 	return &snapshotWireHarness{
-		wireServiceSide: newWireServiceSide(t, cm, rec),
+		wireServiceSide: newWireServiceSideWithConfig(t, cm, rec, nil, errs.record),
 		cm:              cm,
 		logPub:          logPub,
 		logTerm:         logTerm,
 		pub104:          pub104,
 		dropRequest:     true,
 		rec:             rec,
+		errs:            errs,
 	}
 }
 
@@ -306,6 +313,47 @@ func TestSnapshotActionWire_RoundTrip(t *testing.T) {
 
 	// Join consumed ack 0. Snapshot is ack 1. ExpectedServiceAckID is 2.
 	h.runSnapshotRound(t, snapshotWireNowNs, 1, 2, 1)
+}
+
+func TestSnapshotActionWire_failedTakeKeepsService(t *testing.T) {
+	hookErr := errors.New("snap boom")
+	h := newSnapshotWireHarness(t)
+	h.rec.takeErr = hookErr
+	h.bindJoin(t)
+
+	require.NoError(t, h.cm.RequestSnapshot(snapshotWireNowNs))
+	h.requireTickUntil(
+		t,
+		snapshotWireNowNs,
+		func() bool {
+			return !h.cm.HasPendingSnapshotAction() &&
+				h.cm.ExpectedServiceAckID() == 2 &&
+				h.cm.PendingServiceAckWaits() == 0
+		},
+		"failed snapshot wait did not complete",
+	)
+	actionPos := h.svc.LogPosition()
+	require.Positive(t, actionPos)
+	require.NoError(t, h.svc.ServiceFailure())
+	require.NoError(t, h.cm.ServiceAckFailure())
+	got := h.errs.reported
+	require.Len(t, got, 1)
+	require.ErrorIs(t, got[0], service.ErrTakeSnapshot)
+	require.ErrorIs(t, got[0], hookErr)
+	require.NotErrorIs(t, got[0], service.ErrFailed)
+	h.requireAckAt(t, h.decodeServiceAcks(t), codecs.ServiceAckFields{
+		LogPosition: actionPos,
+		Timestamp:   snapshotWireNowNs,
+		AckID:       1,
+		RelevantID:  -1,
+		ServiceID:   0,
+	})
+	result, ok := h.cm.LastSnapshotTake()
+	require.True(t, ok)
+	require.Equal(t, []int64{-1}, result.ServiceRecordingIDs)
+
+	h.rec.takeErr = nil
+	h.runSnapshotRound(t, snapshotWireNowNsSecond, 2, 3, 2)
 }
 
 func TestSnapshotActionWire_prepareThenJoin(t *testing.T) {

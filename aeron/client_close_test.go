@@ -335,6 +335,28 @@ func TestClient_conductorServiceTimeoutAfterInterServiceTimeout(t *testing.T) {
 	require.True(t, fixture.Conductor.IsTerminating())
 }
 
+func TestClient_IsTerminating_doesNotWaitForClientLock(t *testing.T) {
+	nanoNs := testutil.TestStartNanoNs
+	fixture := testutil.NewConductorFixture(t, testutil.DefaultConductorConfig(&nanoNs))
+	client := newClientCloseTestClient(fixture, func() int64 { return nanoNs }, time.Nanosecond)
+
+	nanoNs += testutil.TestInterServiceTimeout.Nanoseconds() + 1
+	require.Equal(t, 1, fixture.Conductor.DoWork())
+
+	require.True(t, client.TryLockClientForTest())
+	defer client.UnlockClientForTest()
+
+	result := make(chan bool, 1)
+	go func() { result <- client.IsTerminating() }()
+
+	select {
+	case terminating := <-result:
+		require.True(t, terminating)
+	case <-time.After(testutil.TestDriverTimeout):
+		require.Fail(t, "IsTerminating waited on clientLock")
+	}
+}
+
 func TestClient_Close_drainsPublicationBeforeClientClose(t *testing.T) {
 	fixture, client := setupClientCloseDrainTest(t, true, false)
 	closeClientAndRequireRecordOrder(

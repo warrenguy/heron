@@ -76,14 +76,9 @@ func (r *terminationRun) disconnectSender(t *testing.T) {
 	r.agent.moduleProxy.SetPublication(aeron.NewTestPublicationForHooksWithLimit(t, 0, false))
 }
 
-// requireCleanStop asserts one Terminate call, a stop without a failure or a
-// report, and the acks on the publication.
 func (r *terminationRun) requireCleanStop(t *testing.T, wantAcks ...codecs.ServiceAckFields) {
 	t.Helper()
-	require.True(t, r.agent.IsTerminated())
-	require.NoError(t, r.agent.ServiceFailure())
-	require.Equal(t, 1, r.terminate.calls)
-	require.Empty(t, r.reports)
+	r.requireNonFatalStop(t, 0)
 	r.requireAcks(t, wantAcks...)
 }
 
@@ -101,42 +96,29 @@ func (r *terminationRun) requireFailedStop(t *testing.T, causes ...error) {
 	requireFailureReported(t, r.agent, r.reports, causes...)
 }
 
-// requireLostAckStop asserts one Terminate call, a stop without a failure, and
-// one ErrTerminationAckPublish report that carries code.
 func (r *terminationRun) requireLostAckStop(t *testing.T, code int64) {
 	t.Helper()
-	require.True(t, r.agent.IsTerminated())
-	require.NoError(t, r.agent.ServiceFailure())
-	require.Equal(t, 1, r.terminate.calls)
-	require.Len(t, r.reports, 1)
-	require.ErrorIs(t, r.reports[0], ErrTerminationAckPublish)
-	require.NotErrorIs(t, r.reports[0], ErrFailed)
+	r.requireNonFatalStop(t, 1)
+	requireNonFatalReport(t, r.reports[0], ErrTerminationAckPublish)
 	require.ErrorContains(t, r.reports[0], strconv.FormatInt(code, 10))
 }
 
-// stopOnFailedTake runs failTakeAtTermination with ackRequired TRUE. The failed
-// entry stays queued ahead of the termination entry. The drain stays open.
-//
-// Returns the take position.
-func (r *terminationRun) stopOnFailedTake(t *testing.T, hookErr error) int64 {
-	t.Helper()
-	end := r.failTakeAtTermination(t, hookErr, clusterwire.BooleanType_TRUE)
-	require.False(t, r.agent.IsTerminated())
-	require.NoError(t, r.agent.ServiceFailure())
-	require.Equal(t, 2, r.agent.PendingCoordinationAcks())
-	return end
+func (r *terminationRun) requireNonFatalStop(tb testing.TB, reportCount int) {
+	tb.Helper()
+	require.True(tb, r.agent.IsTerminated())
+	require.NoError(tb, r.agent.ServiceFailure())
+	require.Equal(tb, 1, r.terminate.calls)
+	require.Len(tb, r.reports, reportCount)
 }
 
 // failTakeAtTermination fails a take with hookErr at a termination position,
 // behind a NotConnected sender. The take uses failedTakeTimestamp. The agent
 // calls Terminate.
-//
-// Returns the take position.
 func (r *terminationRun) failTakeAtTermination(
 	t *testing.T,
 	hookErr error,
 	ackRequired clusterwire.BooleanType,
-) int64 {
+) {
 	t.Helper()
 	r.agent.snapshotHandler = &snapshotRecordingService{hookErr: hookErr}
 	InstallSnapshotTakeFakeForTest(t, r.agent)
@@ -151,7 +133,6 @@ func (r *terminationRun) failTakeAtTermination(
 	r.agent.DoWork(0)
 	require.Nil(t, r.agent.take)
 	require.Equal(t, 1, r.terminate.calls)
-	return end
 }
 
 func timedServiceAck(logPosition, ackID, timestamp int64) codecs.ServiceAckFields {
@@ -312,15 +293,48 @@ func TestAgent_Termination_takeInFlightAtPosition(t *testing.T) {
 func TestAgent_Termination_failedTakeEntryAhead(t *testing.T) {
 	hookErr := errors.New("snap boom")
 	run := newBoundTerminationRun(t)
-	end := run.stopOnFailedTake(t, hookErr)
+	run.agent.snapshotHandler = &snapshotRecordingService{hookErr: hookErr}
+	InstallSnapshotTakeFakeForTest(t, run.agent)
+	run.disconnectSender(t)
+	end := writeTermEventAndSnapshot(t, run.image, run.committed, failedTakeTimestamp)
 
-	// The sender connects. The snapshot ack sends. The agent then marks its
-	// cause.
-	run.agent.moduleProxy.SetPublication(run.pub)
-	require.Equal(t, 1, run.agent.DoWork(0))
-	run.requireFailedStop(t, ErrTakeSnapshot, hookErr)
-	run.requireAcks(t, joinAck, timedServiceAck(end, 1, failedTakeTimestamp))
+	// Phase "report": the take fails. The -1 entry stays queued.
+	run.agent.DoWork(0)
+	require.NotNil(t, run.agent.take)
+	require.Equal(t, 0, run.terminate.calls)
+
+	run.agent.DoWork(0)
+	require.Nil(t, run.agent.take)
+	require.Equal(t, end, run.agent.LogPosition())
+	require.Equal(t, nullValue, run.agent.terminationPosition)
+	require.False(t, run.agent.IsTerminated())
+	require.Equal(t, 0, run.terminate.calls)
 	require.Equal(t, 1, run.agent.PendingCoordinationAcks())
+	require.Equal(t, ackKindSnapshot, run.agent.coordinationAcks[0].kind)
+	require.Equal(t, nullValue, run.agent.coordinationAcks[0].relevantID)
+	require.True(t, run.agent.coordinationAcks[0].ready)
+	require.NoError(t, run.agent.ServiceFailure())
+	requireOneNonFatalReport(t, run.reports, ErrTakeSnapshot, hookErr)
+
+	// Phase "stop": the termination position arrives after the take report.
+	enqueueTerminationPosition(t, run.control, end, clusterwire.BooleanType_TRUE)
+	run.agent.moduleProxy.SetPublication(run.pub)
+	for range 3 {
+		if run.agent.IsTerminated() {
+			break
+		}
+
+		run.agent.DoWork(0)
+	}
+
+	run.requireNonFatalStop(t, 1)
+	run.requireAcks(
+		t,
+		joinAck,
+		timedServiceAck(end, 1, failedTakeTimestamp),
+		timedServiceAck(end, 2, failedTakeTimestamp),
+	)
+	require.Equal(t, 0, run.agent.PendingCoordinationAcks())
 }
 
 func TestAgent_Termination_unreadyRequestAbovePosition(t *testing.T) {
@@ -366,19 +380,22 @@ func TestAgent_Termination_requestLogPassedInStopTick(t *testing.T) {
 	run.control.Enqueue(encodeRequestServiceAckControl(t, span/2))
 	enqueueTerminationPosition(t, run.control, span, clusterwire.BooleanType_TRUE)
 
-	// Phase "mark": the stop sweep marks ErrAckRequestPassed.
+	// Phase "stop": the sweep reports the passed request. The request ack
+	// sends at the log position, then the termination ack.
 	run.agent.DoWork(0)
 	require.Equal(t, span, run.agent.LogPosition())
-	requireFailureReported(t, run.agent, run.reports, ErrAckRequestPassed)
-	require.False(t, run.agent.IsTerminated())
-	require.Equal(t, 0, run.terminate.calls)
+	run.requireNonFatalStop(t, 1)
+	requireNonFatalReport(t, run.reports[0], ErrAckRequestPassed)
 	require.Empty(t, background.backgroundNows)
-	run.requireAcks(t, joinAck)
+	run.requireAcks(
+		t,
+		joinAck,
+		serviceAckFields(span, 1, nullValue),
+		serviceAckFields(span, 2, nullValue),
+	)
 
-	// Phase "close": Close calls Terminate.
 	run.agent.Close()
-	require.Equal(t, 1, run.terminate.calls)
-	require.False(t, run.agent.IsTerminated())
+	run.requireNonFatalStop(t, 1)
 }
 
 func TestAgent_Termination_notConnectedTwiceThenConnected(t *testing.T) {
@@ -509,13 +526,13 @@ func TestAgent_Termination_terminateError(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		err   error
-		cause error
+		fatal bool
 	}{
-		{name: "terminate error", err: terminateErr, cause: terminateErr},
+		{name: "terminate error", err: terminateErr},
 		{
 			name:  "terminate error wraps a client close",
 			err:   fmt.Errorf("cleanup: %w", aeron.ErrClientClosed),
-			cause: aeron.ErrClientClosed,
+			fatal: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -525,11 +542,18 @@ func TestAgent_Termination_terminateError(t *testing.T) {
 
 			run.agent.DoWork(0)
 			require.True(t, run.agent.IsTerminated())
-			require.NoError(t, run.agent.ServiceFailure())
+			require.Equal(t, 1, run.terminate.calls)
 			require.Len(t, run.reports, 1)
 			require.ErrorIs(t, run.reports[0], ErrTerminate)
 			require.ErrorIs(t, run.reports[0], tc.err)
-			require.ErrorIs(t, run.reports[0], tc.cause)
+
+			if tc.fatal {
+				requireFailureReported(t, run.agent, run.reports, ErrTerminate, aeron.ErrClientClosed)
+				run.requireAcks(t, joinAck)
+				return
+			}
+
+			require.NoError(t, run.agent.ServiceFailure())
 			require.NotErrorIs(t, run.reports[0], ErrFailed)
 			run.requireAcks(t, joinAck, serviceAckFields(0, 1, nullValue))
 		})
@@ -537,9 +561,9 @@ func TestAgent_Termination_terminateError(t *testing.T) {
 }
 
 func TestAgent_Termination_markInsideTerminateEndsDrain(t *testing.T) {
-	markErr := errors.New("mark boom")
+	markErr := ErrLogNotContiguous
 	run := newBoundTerminationRun(t)
-	run.terminate.probe = func() { run.agent.markFailure(markErr) }
+	run.terminate.probe = func() { run.agent.handleError(markErr) }
 	enqueueTerminationPosition(t, run.control, 0, clusterwire.BooleanType_TRUE)
 
 	run.agent.DoWork(0)
@@ -761,10 +785,10 @@ func TestAgent_CloseTerminate_afterStartError(t *testing.T) {
 }
 
 func TestAgent_CloseTerminate_afterFatalMark(t *testing.T) {
-	markErr := errors.New("mark boom")
+	markErr := ErrLogNotContiguous
 	run := newTerminationRun(t)
 	run.agent.DoWork(0)
-	run.agent.markFailure(markErr)
+	run.agent.handleError(markErr)
 	run.terminate.err = errors.New("terminate boom")
 	run.agent.Close()
 	require.Equal(t, 1, run.terminate.calls)
@@ -841,10 +865,18 @@ func TestAgent_CloseTerminate_duringDrain(t *testing.T) {
 func TestAgent_CloseTerminate_duringDrainWithQueuedCause(t *testing.T) {
 	hookErr := errors.New("snap boom")
 	run := newBoundTerminationRun(t)
-	run.stopOnFailedTake(t, hookErr)
+	run.failTakeAtTermination(t, hookErr, clusterwire.BooleanType_TRUE)
+
+	// The failed entry stays queued ahead of the termination entry, so the drain
+	// stays open.
+	require.False(t, run.agent.IsTerminated())
+	require.NoError(t, run.agent.ServiceFailure())
+	require.Equal(t, 2, run.agent.PendingCoordinationAcks())
 
 	run.agent.Close()
-	run.requireFailedStop(t, ErrTakeSnapshot, hookErr)
+	run.requireNonFatalStop(t, 2)
+	requireNonFatalReport(t, run.reports[0], ErrTakeSnapshot, hookErr)
+	requireNonFatalReport(t, run.reports[1], ErrTerminationAckPublish)
 	run.requireAcks(t, joinAck)
 }
 
@@ -852,14 +884,37 @@ func TestAgent_CloseTerminate_afterStopWithQueuedCause(t *testing.T) {
 	hookErr := errors.New("snap boom")
 	run := newBoundTerminationRun(t)
 	run.failTakeAtTermination(t, hookErr, clusterwire.BooleanType_FALSE)
-	require.True(t, run.agent.IsTerminated())
-	require.NoError(t, run.agent.ServiceFailure())
-	require.Empty(t, run.reports)
+	run.requireNonFatalStop(t, 1)
+	requireNonFatalReport(t, run.reports[0], ErrTakeSnapshot, hookErr)
 
-	// The sender connects. Close marks the cause. The entry does not send.
+	// Close after the sender connects does not report or send the entry.
 	run.agent.moduleProxy.SetPublication(run.pub)
 	run.agent.Close()
-	run.requireFailedStop(t, ErrTakeSnapshot, hookErr)
+	run.requireNonFatalStop(t, 1)
+	run.requireAcks(t, joinAck)
+}
+
+func TestAgent_CloseTerminate_duringDrainAfterTransportMark(t *testing.T) {
+	reporter := &terminatingReporter{}
+	run := newBoundTerminationRun(t)
+	run.agent.transport = reporter
+	run.disconnectSender(t)
+	enqueueTerminationPosition(t, run.control, 0, clusterwire.BooleanType_TRUE)
+
+	run.agent.DoWork(0)
+	require.False(t, run.agent.IsTerminated())
+	require.Equal(t, 1, run.terminate.calls)
+	require.Empty(t, run.reports)
+
+	reporter.terminating = true
+	require.Equal(t, 0, run.agent.DoWork(0))
+	require.False(t, run.agent.IsTerminated())
+	require.ErrorIs(t, run.agent.ServiceFailure(), ErrTransportTerminating)
+	require.Len(t, run.reports, 1)
+	require.NotErrorIs(t, run.reports[0], ErrTerminationAckPublish)
+
+	run.agent.Close()
+	run.requireFailedStop(t, ErrTransportTerminating)
 	run.requireAcks(t, joinAck)
 }
 

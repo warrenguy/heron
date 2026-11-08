@@ -157,7 +157,7 @@ func (a *Agent) CloseClientSession(id int64) bool {
 	}
 	session, ok := a.sessions[id]
 	if !ok {
-		a.reportError(fmt.Errorf("%w: session %d", ErrCloseUnknownSession, id))
+		a.handleError(fmt.Errorf("%w: session %d", ErrCloseUnknownSession, id))
 		return false
 	}
 	if session.closing {
@@ -179,12 +179,8 @@ func (a *Agent) CloseClientSession(id int64) bool {
 // joinEgress applies the egress rule of the join that bound this tick.
 //
 // Behaviour:
-//   - A non-leader join closes every response publication. It resolves or
-//     cancels every in-flight add. It keeps each closing flag.
-//   - A leader join with isStartup false starts one response publication
-//     add for each open session that holds none.
+//   - A non-leader join keeps each closing flag.
 //   - A leader join with isStartup true does not start an add.
-//   - A leader join clears the closing flag of every open session.
 func (a *Agent) joinEgress(event *logJoinEvent) {
 	if event.role != codecs.RoleLeader {
 		a.disconnectEgress()
@@ -193,6 +189,10 @@ func (a *Agent) joinEgress(event *logJoinEvent) {
 	for _, session := range a.sessionList {
 		if !event.isStartup {
 			a.connectClientSession(session)
+
+			if a.serviceFailure != nil {
+				return
+			}
 		}
 		session.closing = false
 	}
@@ -272,7 +272,8 @@ func (a *Agent) walkClientSessions(yield func(ClientSession) bool) {
 }
 
 // connectClientSession starts the response publication add of session. An
-// add error reports ErrResponsePublicationAdd. The session stays open.
+// add error reports ErrResponsePublicationAdd. The session stays open after a
+// report.
 func (a *Agent) connectClientSession(session *containerClientSession) {
 	if a.responsePublications == nil ||
 		session.publication != nil ||
@@ -284,7 +285,7 @@ func (a *Agent) connectClientSession(session *containerClientSession) {
 		session.responseChannel,
 	)
 	if err != nil {
-		a.reportError(responsePublicationAddError(session.id, err))
+		a.handleError(a.withTransportTermination(responsePublicationAddError(session.id, err)))
 		return
 	}
 	session.addCorrelationID = correlationID
@@ -293,24 +294,32 @@ func (a *Agent) connectClientSession(session *containerClientSession) {
 
 // responseAddWork polls each in-flight response publication add once. An
 // error, or a done poll that does not return a publication, reports
-// ErrResponsePublicationAdd. The session stays open.
+// ErrResponsePublicationAdd. The session stays open after a report. A fatal
+// mark ends the loop. Unpolled adds stay in flight.
 //
 // Returns the count of adds still in flight plus publications stored.
 func (a *Agent) responseAddWork() int {
 	work := 0
 	kept := a.responseAdds[:0]
-	for _, session := range a.responseAdds {
+	for i, session := range a.responseAdds {
 		publication, inFlight := a.pollResponseAdd(session)
 		if inFlight {
 			kept = append(kept, session)
 			work++
 			continue
 		}
+
+		session.addCorrelationID = nullValue
+
+		if a.serviceFailure != nil {
+			kept = append(kept, a.responseAdds[i+1:]...)
+			break
+		}
+
 		if publication != nil {
 			session.publication = publication
 			work++
 		}
-		session.addCorrelationID = nullValue
 	}
 	clear(a.responseAdds[len(kept):])
 	a.responseAdds = kept
@@ -331,7 +340,8 @@ func (a *Agent) disconnectClientSession(session *containerClientSession) {
 
 // disconnectEgress ends the in-flight add and closes the response
 // publication of every open session, in id order. It then ends any add left
-// for a session outside the registry. Registry entries stay.
+// for a session outside the registry. Registry entries stay. A fatal mark
+// does not stop the loop.
 func (a *Agent) disconnectEgress() {
 	for _, session := range a.sessionList {
 		if session.addCorrelationID != nullValue {
@@ -353,9 +363,7 @@ func (a *Agent) disconnectEgress() {
 //
 // The add polls once before any cancel. CancelPending leaves a ready-marked
 // add registered, so the poll collects that publication and closes it. Any
-// other poll result cancels the add. An error, or a done poll that does not
-// return a publication, reports ErrResponsePublicationAdd. An in-flight poll
-// does not report.
+// other poll result cancels the add. pollResponseAdd reports a failed poll.
 func (a *Agent) endResponseAdd(session *containerClientSession) {
 	publication, _ := a.pollResponseAdd(session)
 	if publication != nil {
@@ -385,7 +393,7 @@ func (a *Agent) pollResponseAdd(
 	case err == nil && publication != nil:
 		return publication, false
 	}
-	a.reportError(responsePublicationAddError(session.id, err))
+	a.handleError(a.withTransportTermination(responsePublicationAddError(session.id, err)))
 	return nil, false
 }
 

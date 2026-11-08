@@ -193,7 +193,7 @@ func (conductor *Conductor) pendingDeadline(timeout time.Duration) int64 {
 }
 
 func (conductor *Conductor) checkNotTerminating() error {
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return ErrConductorTerminating
 	}
 	return nil

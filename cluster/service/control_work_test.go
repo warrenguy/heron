@@ -401,15 +401,23 @@ func TestControlWork_PassedAtDelivery(t *testing.T) {
 	h.agent.DoWork(0)
 	require.Equal(t, int64(span), h.agent.LogPosition())
 
-	// Request below current position.
+	// Request below current position. The request ack sends this tick at the log
+	// position.
+	var got []error
+	h.agent.errorHandler = collectErrors(&got)
 	h.control.Enqueue(encodeRequestServiceAckControl(t, 0))
 	work := h.agent.DoWork(0)
-	require.ErrorIs(t, h.agent.ServiceFailure(), ErrAckRequestPassed)
+	require.NoError(t, h.agent.ServiceFailure())
+	requireOneNonFatalReport(t, got, ErrAckRequestPassed)
 	require.GreaterOrEqual(t, work, 1)
-	require.Equal(t, 1, h.agent.PendingCoordinationAcks())
-	// Only join ack on the wire.
-	require.Len(t, decodeServiceAcksFromPub(t, h.pub), 1)
-	require.Equal(t, 0, h.agent.DoWork(0))
+	require.Equal(t, 0, h.agent.PendingCoordinationAcks())
+	acks := decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 2)
+	require.Equal(t, int64(span), acks[1].LogPosition)
+	require.Equal(t, int64(1), acks[1].AckID)
+	require.Equal(t, nullValue, acks[1].RelevantID)
+	h.agent.DoWork(0)
+	require.NoError(t, h.agent.ServiceFailure())
 }
 
 func TestControlWork_MidFrameRequest(t *testing.T) {
@@ -426,15 +434,23 @@ func TestControlWork_MidFrameRequest(t *testing.T) {
 	require.Less(t, mid, int64(span))
 	*h.committed = int64(span)
 
+	var got []error
+	h.agent.errorHandler = collectErrors(&got)
 	h.control.Enqueue(encodeRequestServiceAckControl(t, mid))
 	// Request appended; poll bound at mid; frame starts at 0 < mid so it
 	// delivers; log rests at span past mid.
 	h.agent.DoWork(0)
 	require.Equal(t, int64(span), h.agent.LogPosition())
-	// Sweep already ran before poll this tick. Next tick marks failure.
+	require.Empty(t, got)
+
+	// The sweep ran before the poll, so the next tick reports.
 	h.agent.DoWork(0)
-	require.ErrorIs(t, h.agent.ServiceFailure(), ErrAckRequestPassed)
-	require.Len(t, decodeServiceAcksFromPub(t, h.pub), 1)
+	require.NoError(t, h.agent.ServiceFailure())
+	requireOneNonFatalReport(t, got, ErrAckRequestPassed)
+	acks := decodeServiceAcksFromPub(t, h.pub)
+	require.Len(t, acks, 2)
+	require.Equal(t, int64(span), acks[1].LogPosition)
+	require.Equal(t, int64(1), acks[1].AckID)
 }
 
 func TestControlWork_OutOfOrderRequests(t *testing.T) {

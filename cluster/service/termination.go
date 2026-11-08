@@ -31,12 +31,12 @@ func (a *Agent) handleServiceTerminationPosition(logPosition int64, ackRequired 
 
 // terminationWork starts the stop once the log reaches the stored termination
 // position. Padding does not move logPosition, so the agent adopts the position
-// when isConsumedTo holds. A running snapshot take delays the stop. A mark from
-// the request sweep prevents the stop. A log position past the termination
-// position makes the stop unexpected.
+// when isConsumedTo holds. A running snapshot take delays the stop. A passed
+// request does not end the stop. A log position past the termination position
+// makes the stop unexpected.
 func (a *Agent) terminationWork() int {
 	position := a.terminationPosition
-	if position == nullValue || a.take != nil {
+	if position == nullValue || a.take != nil || a.serviceFailure != nil {
 		return 0
 	}
 
@@ -49,10 +49,6 @@ func (a *Agent) terminationWork() int {
 	}
 
 	a.sweepRequestAckReadiness()
-
-	if a.serviceFailure != nil {
-		return 0
-	}
 
 	a.terminating = true
 
@@ -129,7 +125,7 @@ func (a *Agent) countFailedTerminationSend(result int64) {
 
 func (a *Agent) abandonTerminationDrain(result int64) {
 	if a.terminationAckRequired {
-		a.reportError(fmt.Errorf("%w: %d", ErrTerminationAckPublish, result))
+		a.handleError(fmt.Errorf("%w: %d", ErrTerminationAckPublish, result))
 	}
 
 	a.finishTermination()
@@ -140,7 +136,7 @@ func (a *Agent) finishTermination() {
 	a.terminated = true
 
 	if a.logPosition != a.terminationPosition {
-		a.markFailure(fmt.Errorf(
+		a.handleError(fmt.Errorf(
 			"%w: log position %d, termination position %d",
 			ErrTerminationPositionPassed,
 			a.logPosition,

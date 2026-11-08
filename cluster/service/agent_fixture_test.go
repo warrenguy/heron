@@ -176,11 +176,14 @@ func (s *snapshotRecordingService) TakeSnapshot(
 
 // stubAdder returns a fixed subscription (or error) from AddSubscription.
 type stubAdder struct {
-	sub *aeron.Subscription
-	err error
+	sub   *aeron.Subscription
+	err   error
+	calls int
 }
 
 func (s *stubAdder) AddSubscription(int32, string) (*aeron.Subscription, error) {
+	s.calls++
+
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -515,6 +518,14 @@ func collectErrors(dst *[]error) func(error) {
 	}
 }
 
+type terminatingReporter struct {
+	terminating bool
+}
+
+func (r *terminatingReporter) IsTerminating() bool {
+	return r.terminating
+}
+
 func requireFailureReported(tb testing.TB, agent *Agent, got []error, causes ...error) {
 	tb.Helper()
 	failure := agent.ServiceFailure()
@@ -526,16 +537,30 @@ func requireFailureReported(tb testing.TB, agent *Agent, got []error, causes ...
 	require.Same(tb, failure, got[0])
 }
 
-// moduleProxyFailureCase is one module proxy setup for a publish failure
-// table.
+func requireNonFatalReport(tb testing.TB, report error, causes ...error) {
+	tb.Helper()
+
+	for _, cause := range causes {
+		require.ErrorIs(tb, report, cause)
+	}
+
+	require.NotErrorIs(tb, report, ErrFailed)
+}
+
+func requireOneNonFatalReport(tb testing.TB, got []error, causes ...error) {
+	tb.Helper()
+	require.Len(tb, got, 1)
+	requireNonFatalReport(tb, got[0], causes...)
+}
+
 type moduleProxyFailureCase struct {
-	name        string
-	setup       func(*testing.T) *ConsensusModuleProxy
-	wantFailure error
+	name     string
+	setup    func(*testing.T) *ConsensusModuleProxy
+	reported error
 }
 
 // moduleProxyFailureCases returns the shared module proxy failure setups. Only
-// the terminal setup wants terminalFailure.
+// the terminal setup reports terminalFailure.
 func moduleProxyFailureCases(terminalFailure error) []moduleProxyFailureCase {
 	return []moduleProxyFailureCase{
 		{
@@ -565,7 +590,7 @@ func moduleProxyFailureCases(terminalFailure error) []moduleProxyFailureCase {
 				require.NoError(t, pub.Close())
 				return proxy
 			},
-			wantFailure: terminalFailure,
+			reported: terminalFailure,
 		},
 	}
 }

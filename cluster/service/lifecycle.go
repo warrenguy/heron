@@ -91,7 +91,7 @@ func (a *Agent) callTerminate() {
 	}
 
 	if err := a.runTerminate(); err != nil {
-		a.reportError(fmt.Errorf("%w: %w", ErrTerminate, err))
+		a.handleError(fmt.Errorf("%w: %w", ErrTerminate, err))
 	}
 }
 
@@ -102,9 +102,10 @@ func (a *Agent) runTerminate() error {
 }
 
 func (a *Agent) changeRole(role codecs.Role) {
-	if role == a.role {
+	if a.serviceFailure != nil || role == a.role {
 		return
 	}
+
 	a.role = role
 	if a.roleChangeHandler == nil {
 		return
@@ -128,12 +129,12 @@ func (a *Agent) endLifecycleCall() {
 }
 
 // refuseInsideLifecycleCall reports whether a lifecycle call runs. When one
-// runs, the agent passes the refusal of call to reportError.
+// runs, the agent passes the refusal of call to handleError.
 func (a *Agent) refuseInsideLifecycleCall(call refusedCall) bool {
 	active := a.activeLifecycleCall
 	if active == lifecycleCallNone {
 		return false
 	}
-	a.reportError(lifecycleRefusals[active][call])
+	a.handleError(lifecycleRefusals[active][call])
 	return true
 }

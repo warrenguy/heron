@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/warrenguy/heron/aeron/cnc"
@@ -151,7 +152,8 @@ type Conductor struct {
 	// inCallback is agent-only; suppresses nested image handler delivery.
 	inCallback       bool
 	terminationCause error
-	terminating      bool
+	// Client.IsTerminating reads terminating without clientLock.
+	terminating atomic.Bool
 }
 
 func NewConductor(
@@ -214,14 +216,14 @@ func newConductor(
 }
 
 func (conductor *Conductor) DoWork() int {
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return 0
 	}
 	return conductor.service()
 }
 
 func (conductor *Conductor) IsTerminating() bool {
-	return conductor.terminating
+	return conductor.terminating.Load()
 }
 
 func (conductor *Conductor) TerminationCause() error {
@@ -236,7 +238,7 @@ func (conductor *Conductor) SeedServiceTimestamps(nowNs int64) {
 func (conductor *Conductor) service() int {
 	nowNs := conductor.config.NanoClock()
 	workCount := conductor.checkTimeouts(nowNs)
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return workCount
 	}
 
@@ -294,16 +296,12 @@ func (conductor *Conductor) handleBroadcastReceiveError(err error) {
 }
 
 // consumeLivenessProbe applies a heartbeat-counter probe after Receive returns.
+// Dispatch has already completed.
 //
-// Behaviour:
-//   - No-ops when already terminating.
-//   - Clears livenessProbeRequested. Dispatch has already completed.
-//   - Terminates with HeartbeatCounterClosedError when the probe finds a
-//     reclaimed heartbeat counter.
-//
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Conductor.DoWork]. Not safe
+// from other goroutines.
 func (conductor *Conductor) consumeLivenessProbe() {
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return
 	}
 	conductor.livenessProbeRequested = false
@@ -319,7 +317,7 @@ func (conductor *Conductor) checkTimeouts(nowNs int64) int {
 
 	conductor.checkServiceInterval(nowNs)
 	conductor.timeOfLastServiceNs = nowNs
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return 1
 	}
 
@@ -431,7 +429,7 @@ func (conductor *Conductor) storeClientHeartbeat(nowNs, nowMs int64) int {
 }
 
 func (conductor *Conductor) handleClientTimeout() {
-	if conductor.terminating {
+	if conductor.terminating.Load() {
 		return
 	}
 	conductor.terminateWithError(ErrClientTimeout)
@@ -819,23 +817,18 @@ func (conductor *Conductor) invokePublicationErrorFrameHandler(
 	handler(event)
 }
 
-// terminateWithError records err as the termination cause and force-closes
-// every publication and subscription. The conductor stays terminating after
-// this call.
+// terminateWithError records err as the termination cause. The conductor stays
+// terminating after this call.
 //
-// Behaviour:
-//   - Sets terminating and stores err as terminationCause.
-//   - Clears every pending registration.
-//   - Force-closes resources. Does not offer REMOVE commands to the driver.
-//   - Invokes ErrorHandler with err when the handler is set.
+// Behaviour: does not offer REMOVE commands to the driver.
 //
-// Concurrency: invoker-only. Callers run inside service. Must not hold
-// resourceMu.
+// Concurrency: call from the goroutine that runs [Conductor.DoWork], inside
+// service. Not safe from other goroutines. The caller must not hold resourceMu.
 func (conductor *Conductor) terminateWithError(err error) {
 	entered := conductor.enterHandler()
 	defer conductor.exitHandler(entered)
 
-	conductor.terminating = true
+	conductor.terminating.Store(true)
 	conductor.terminationCause = err
 	conductor.ClearPending()
 	conductor.forceCloseResources()

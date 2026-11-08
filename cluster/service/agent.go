@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"iter"
 	"math"
+	"slices"
+	"time"
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive"
@@ -19,38 +21,44 @@ var ErrFailed = errors.New("service: failed")
 // ErrStart wraps a Start error. The error is fatal.
 var ErrStart = errors.New("service: start")
 
-// ErrLogSubscriptionAdd wraps a log subscription add error. The error is fatal.
+// ErrLogSubscriptionAdd wraps a log subscription add error. The error is not
+// fatal unless the transport client is closed or terminating.
 var ErrLogSubscriptionAdd = errors.New("service: add log subscription")
 
 // ErrLogNotContiguous marks a join whose log position is not contiguous. The
 // error is fatal.
 var ErrLogNotContiguous = errors.New("service: log not contiguous")
 
-// ErrSessionClash marks a SessionOpen whose id is already open. The error is
-// fatal.
+// ErrSessionClash reports a SessionOpen whose id is already open. The error is
+// not fatal.
 var ErrSessionClash = errors.New("service: session id clash")
 
-// ErrTimerPublish marks a terminal timer offer code. The error is fatal.
+// ErrTimerPublish reports a terminal timer offer code. The error is not fatal.
 var ErrTimerPublish = errors.New("service: timer publish failed")
 
-// ErrCloseSessionPublish marks a terminal close-session offer code. The error
-// is fatal.
+// ErrCloseSessionPublish reports a terminal close-session offer code. The
+// error is not fatal.
 var ErrCloseSessionPublish = errors.New("service: close session publish failed")
 
-// ErrTakeSnapshot wraps a TakeSnapshot error. The error is fatal.
+// ErrTakeSnapshot wraps a TakeSnapshot error. The error is not fatal unless it
+// wraps a fatal cause. See [TakeSnapshotHandler].
 var ErrTakeSnapshot = errors.New("service: take snapshot failed")
 
 // ErrActionPositionMismatch marks a cluster action at the wrong log position.
 // The error is fatal.
 var ErrActionPositionMismatch = errors.New("service: cluster action log position mismatch")
 
-// ErrUnknownClusterAction marks a cluster action the agent does not dispatch.
-// The error is fatal.
+// ErrUnknownClusterAction reports a cluster action the agent does not dispatch.
+// The error is not fatal.
 var ErrUnknownClusterAction = errors.New("service: unknown cluster action")
 
 // ErrResponsePublicationAdd wraps a response publication add error. The error
-// is not fatal.
+// is not fatal unless the transport client is closed or terminating.
 var ErrResponsePublicationAdd = errors.New("service: add response publication")
+
+// ErrTransportTerminating reports a transport client that has entered
+// termination. The error is fatal.
+var ErrTransportTerminating = errors.New("service: transport client is terminating")
 
 // ErrUnknownSessionClose reports a SessionClose for an unknown id. The error is
 // not fatal.
@@ -64,7 +72,8 @@ var ErrCloseUnknownSession = errors.New("service: close unknown client session")
 // error is not fatal.
 var ErrUnknownTimeUnit = errors.New("service: unknown time unit")
 
-// ErrTerminate wraps a Terminate error. The error is not fatal.
+// ErrTerminate wraps a Terminate error. The error is not fatal unless it wraps
+// a fatal cause. See [TerminateHandler].
 var ErrTerminate = errors.New("service: terminate")
 
 // ErrTerminationPositionPassed marks a stop with the log position past the
@@ -162,12 +171,18 @@ type AgentConfig struct {
 	// ErrorHandler must not:
 	//   - panic
 	//   - call Agent.DoWork or Agent.Close
-	//   - call ScheduleTimer, CancelTimer or CloseClientSession
+	//   - call ScheduleTimer, CancelTimer, or CloseClientSession
 	//   - call ClientSession.Offer or ClientSession.Close
 	//
 	// ErrorHandler may call every other Agent method and every other
 	// ClientSession method. Those methods do not change state.
 	ErrorHandler func(error)
+
+	// Transport reports whether the transport client has entered termination.
+	// DoWork marks ErrTransportTerminating when Transport reports true. A nil
+	// Transport skips the check. [Open] sets Transport to Config.Aeron. Agent
+	// does not own Transport.
+	Transport TerminationReporter
 }
 
 // Agent owns the service duty cycle: log join, bounded log consumption,
@@ -179,20 +194,15 @@ type AgentConfig struct {
 // subscription add, the snapshot publication add poll, and the response
 // publication add poll run conductor ticks.
 //
-// Lifetime: Agent closes the log subscription in Close. The take closes its
-// snapshot publication and start request when it ends. Close closes both
-// while a take runs. Close ends every in-flight response add and closes
-// every response publication. Unbind and a non-leader join close every
-// response publication. A leader join with isStartup false re-adds them.
-// Agent does not own the aeron.Client. Agent stops at the termination position
-// the module sends. [Agent.IsTerminated] reports the stop.
-// [Agent.ServiceFailure] reports an unexpected stop.
+// Lifetime: Agent stops at the termination position the module sends.
+// [Agent.IsTerminated] reports the stop. [Agent.ServiceFailure] reports an
+// unexpected stop.
 //
 // Ownership: Agent owns the BoundedLogAdapter, the log subscription, and the
 // snapshot publication and start request of a running take. Agent owns the
 // response publications and their in-flight adds. Agent does not own Images
 // the subscription holds. Unbind clears the adapter Image reference only.
-// Agent does not own the archive client.
+// Agent does not own the aeron.Client. Agent does not own the archive client.
 type Agent struct {
 	serviceID         int32
 	service           ClusteredService
@@ -239,6 +249,9 @@ type Agent struct {
 	serviceFailure error
 
 	errorHandler func(error)
+
+	// transport is never a typed nil.
+	transport TerminationReporter
 
 	// pendingJoin is the last JoinLog not yet bound, or nil. One slot. A newer
 	// join supersedes an unbound older join and marks the prior join entry
@@ -339,6 +352,14 @@ type Agent struct {
 // logJoinEvent holds one delivered JoinLog not yet bound, or the join just
 // stored for handoff while an older image still drains to the cap.
 type logJoinEvent struct {
+	// addFailed defers the retry wait to the next joinWork. A failed add can
+	// block past its own tick.
+	addFailed bool
+
+	// addRetryNs is the earliest nowNs for the next log subscription add.
+	addRetryNs    int64
+	addRetryArmed bool
+
 	logPosition    int64
 	maxLogPosition int64
 	memberID       int32
@@ -348,6 +369,10 @@ type logJoinEvent struct {
 	role           codecs.Role
 	logChannel     string
 }
+
+// joinAddRetryIntervalNs is the wait between log subscription adds after an
+// add error. An add can block DoWork, so a failed add does not retry each tick.
+const joinAddRetryIntervalNs = int64(time.Second)
 
 // coordinationAckKind discriminates the readiness rule of one entry.
 type coordinationAckKind uint8
@@ -379,15 +404,15 @@ const (
 //     failure. A nil Service counts as success. After a Start error,
 //     RelevantID on the start entry is NULL_VALUE.
 //   - join: ready at bind or supersession
-//   - request: ready when the agent log position equals the entry
-//     logPosition
+//   - request: ready when the log reaches or passes the entry position.
+//     A passed request moves logPosition to the agent log position.
 //   - snapshot: ready when the take resolves, on success or failure
 //   - termination: ready when queued
 //
 // When the module asks for the termination ack, the stop readies each unready
 // entry at its own queued position.
 //
-// failure stores the cause of a failed Start or a failed snapshot take.
+// failure stores a fatal Start or take cause whose ack has not sent.
 type coordinationAck struct {
 	logPosition int64
 	kind        coordinationAckKind
@@ -399,11 +424,11 @@ type coordinationAck struct {
 // Compile-time assertion: Agent satisfies Cluster.
 var _ Cluster = (*Agent)(nil)
 
-// NewAgent builds an Agent from cfg. The adapter is created with no Image.
+// NewAgent builds an Agent from cfg. The adapter starts without an Image.
 // memberID starts at -1 and logPosition at 0 (cold-start service).
 //
 // When StartAck is set and LogPosition is non-negative, NewAgent queues one
-// unready start entry. A negative LogPosition queues nothing. [Open]
+// unready start entry. A negative LogPosition does not queue an entry. [Open]
 // refuses a negative LogPosition.
 func NewAgent(cfg AgentConfig) *Agent {
 	a := &Agent{
@@ -446,6 +471,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if !isNilOrTypedNil(cfg.ResponsePublications) {
 		a.responsePublications = cfg.ResponsePublications
 	}
+	if !isNilOrTypedNil(cfg.Transport) {
+		a.transport = cfg.Transport
+	}
 	a.leadershipHandler, _ = cfg.Service.(NewLeadershipTermEventHandler)
 	a.snapshotHandler, _ = cfg.Service.(TakeSnapshotHandler)
 	a.roleChangeHandler, _ = cfg.Service.(RoleChangeHandler)
@@ -475,32 +503,29 @@ func NewAgent(cfg AgentConfig) *Agent {
 // the start ack drain.
 //
 // Behaviour:
+//   - DoWork checks Transport before every other step. On termination, DoWork
+//     marks ErrTransportTerminating. DoWork then returns 0.
 //   - After a Start error, each tick drains only the start entry, until the
 //     agent marks the service failure.
+//   - A fatal mark skips the remaining steps of the tick.
 //   - A panic from Start propagates out of DoWork. The start ack does not
-//     send. The agent does not mark a failure. The invoker must not call
+//     send. The agent does not mark a failure. The caller must not call
 //     DoWork again.
-//   - The agent can send the ack of a take in the tick that resolves the take.
-//   - The log poll bound is min(committed, lowest unready request entry
-//     position, stored termination position).
-//   - While a take runs, the take action position also caps the bound.
-//   - The agent does not unbind while a take runs.
-//   - After the unbind and before background work, the agent checks the
-//     stored termination position. The agent stops at that position once a
-//     running take ends.
 //   - While the termination drain runs, each tick only sends queued acks.
 //     DoWork returns 0 after the stop.
 //   - A panic from Terminate propagates out of DoWork. A later DoWork runs the
 //     termination drain.
 //
-// Returns the work count. A response add that a bind starts counts when its
-// poll runs. The disconnect polls of an unbind or a non-leader join do not
-// count.
+// Returns the work count.
 //
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines.
 func (a *Agent) DoWork(nowNs int64) int {
 	if a.closed || a.serviceFailure != nil || a.terminated {
+		return 0
+	}
+
+	if a.markIfTransportTerminating() {
 		return 0
 	}
 
@@ -546,10 +571,14 @@ func (a *Agent) DoWork(nowNs int64) int {
 
 	if len(a.responseAdds) > 0 {
 		work += a.responseAddWork()
+
+		if a.serviceFailure != nil {
+			return work
+		}
 	}
 
 	if a.pendingJoin != nil && a.adapter.Image() == nil {
-		work += a.joinWork()
+		work += a.joinWork(nowNs)
 		if a.serviceFailure != nil {
 			return work
 		}
@@ -576,6 +605,7 @@ func (a *Agent) DoWork(nowNs int64) int {
 	}
 
 	a.maybeUnbind(polled)
+
 	work += a.terminationWork()
 
 	if a.terminating || a.terminated || a.serviceFailure != nil {
@@ -587,10 +617,9 @@ func (a *Agent) DoWork(nowNs int64) int {
 
 // Close calls Terminate first when the service started and did not stop.
 //
-// Close marks a Start error or a snapshot take failure that still waits for
-// its ack, unless the agent has already failed. The waiting ack does not
-// send. Close does not report teardown errors. A take that Close ends does
-// not send an ack.
+// Close marks a fatal Start or take cause that still waits for its ack, unless
+// the agent has already failed. The waiting ack does not send. Close does not
+// report teardown errors. A take that Close ends does not send an ack.
 //
 // Close ends a running termination drain. The queued acks do not send. When
 // the module asked for the ack, Close reports ErrTerminationAckPublish, unless
@@ -614,7 +643,7 @@ func (a *Agent) Close() {
 
 	a.callTerminate()
 	if err := a.pendingAckFailure(); err != nil {
-		a.markFailure(err)
+		a.handleError(err)
 	}
 
 	if a.terminating {
@@ -684,9 +713,9 @@ func (a *Agent) acceptOffer(result int64, cause, inner error) bool {
 	}
 	if !aeron.IsOfferRetriable(result) {
 		if inner != nil {
-			a.markFailure(fmt.Errorf("%w: %d: %w", cause, result, inner))
+			a.handleError(fmt.Errorf("%w: %d: %w", cause, result, inner))
 		} else {
-			a.markFailure(fmt.Errorf("%w: %d", cause, result))
+			a.handleError(fmt.Errorf("%w: %d", cause, result))
 		}
 	}
 	return false
@@ -827,42 +856,52 @@ func (a *Agent) pendingStartFailure() error {
 }
 
 // failedStartAckWork drains the failed start entry. The first call sets
-// startAckDeadlineNs to nowNs plus startAckTimeoutNs. The sum stops at
-// math.MaxInt64. A slow Start therefore does not use up the wait. At
-// startAckDeadlineNs, failedStartAckWork marks the Start error without
-// the ack.
+// startAckDeadlineNs, so a slow Start does not use up the wait. At
+// startAckDeadlineNs, failedStartAckWork marks the Start error without the ack.
 //
 // Returns 1 when the ack sends. Returns 0 otherwise.
 func (a *Agent) failedStartAckWork(nowNs int64) int {
 	if !a.startAckDeadlineArmed {
 		a.startAckDeadlineArmed = true
-		a.startAckDeadlineNs = nowNs + a.startAckTimeoutNs
-		if nowNs > 0 && a.startAckTimeoutNs > math.MaxInt64-nowNs {
-			a.startAckDeadlineNs = math.MaxInt64
-		}
+		a.startAckDeadlineNs = deadlineAfter(nowNs, a.startAckTimeoutNs)
 	}
 	work := a.drainReadyCoordinationAck()
 	if a.serviceFailure == nil && nowNs >= a.startAckDeadlineNs {
 		if err := a.pendingStartFailure(); err != nil {
-			a.markFailure(err)
+			a.handleError(err)
 		}
 	}
 	return work
 }
 
-// failAckEntry sets the first unready entry of kind ready. failAckEntry
-// stores cause on a matched entry. failAckEntry sets RelevantID to
-// NULL_VALUE on the matched entry. With no such entry, or no ack sender,
-// failAckEntry marks cause at once. Otherwise the drain marks cause.
+// deadlineAfter returns nowNs plus waitNs, capped at math.MaxInt64.
+func deadlineAfter(nowNs, waitNs int64) int64 {
+	if nowNs > 0 && waitNs > math.MaxInt64-nowNs {
+		return math.MaxInt64
+	}
+
+	return nowNs + waitNs
+}
+
+// failAckEntry sets the first unready entry of kind ready with RelevantID
+// NULL_VALUE. A non-fatal cause reports at once. A fatal cause stays on the
+// entry. The drain marks that cause after the ack. With no such entry, or no
+// ack sender, a fatal cause marks at once.
 func (a *Agent) failAckEntry(kind coordinationAckKind, cause error) {
 	e := a.markAckReady(kind)
-	if e == nil || !a.canPublish() {
-		a.markFailure(cause)
+	if e == nil {
+		a.handleError(cause)
+		return
 	}
-	if e != nil {
-		e.relevantID = nullValue
+
+	e.relevantID = nullValue
+
+	if isFatal(cause) && a.canPublish() {
 		e.failure = cause
+		return
 	}
+
+	a.handleError(cause)
 }
 
 // markAckReady sets ready on the first unready entry of kind and returns
@@ -881,9 +920,10 @@ func (a *Agent) markAckReady(kind coordinationAckKind) *coordinationAck {
 
 // joinWork progresses a pending join when no image is bound.
 //
-// Behaviour: a bind runs the join egress rule (joinEgress) after it marks
-// the join ack ready.
-func (a *Agent) joinWork() int {
+// Behaviour: a subscription add error reports. An add error during transport
+// termination marks the failure. The add retries joinAddRetryIntervalNs after
+// the next tick. A newer join adds at once.
+func (a *Agent) joinWork(nowNs int64) int {
 	event := a.pendingJoin
 	if event == nil {
 		return 0
@@ -900,9 +940,24 @@ func (a *Agent) joinWork() int {
 		if a.subscriptions == nil {
 			return 0
 		}
+
+		if event.addFailed {
+			event.addFailed = false
+			event.addRetryArmed = true
+			event.addRetryNs = deadlineAfter(nowNs, joinAddRetryIntervalNs)
+			return 0
+		}
+
+		if event.addRetryArmed && nowNs < event.addRetryNs {
+			return 0
+		}
+
 		sub, err := a.subscriptions.AddSubscription(event.logStreamID, event.logChannel)
 		if err != nil {
-			a.markFailure(fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err))
+			event.addFailed = true
+			a.handleError(a.withTransportTermination(
+				fmt.Errorf("%w: %w", ErrLogSubscriptionAdd, err),
+			))
 			return 0
 		}
 		// No subscription yet: the next tick retries the add.
@@ -918,7 +973,7 @@ func (a *Agent) joinWork() int {
 	}
 
 	if event.logPosition != a.logPosition || image.JoinPosition() != event.logPosition {
-		a.markFailure(ErrLogNotContiguous)
+		a.handleError(ErrLogNotContiguous)
 		return 0
 	}
 
@@ -945,25 +1000,105 @@ func (a *Agent) maybeUnbind(polled int) {
 	a.changeRole(codecs.RoleFollower)
 }
 
-// markFailure stores the first fatal error, wrapped with ErrFailed, and
-// reports it. Does nothing after Close or an earlier mark.
-func (a *Agent) markFailure(err error) {
+// handleError passes err to the error handler. When isFatal reports true,
+// handleError stores err, wrapped with ErrFailed, as the service failure. The
+// handler then receives the wrapped error. handleError drops err after Close or
+// an earlier mark.
+func (a *Agent) handleError(err error) {
 	if a.closed || a.serviceFailure != nil {
 		return
 	}
-	a.serviceFailure = fmt.Errorf("%w: %w", ErrFailed, err)
+
+	if isFatal(err) {
+		a.serviceFailure = fmt.Errorf("%w: %w", ErrFailed, err)
+		err = a.serviceFailure
+	}
+
 	if a.errorHandler != nil {
-		a.errorHandler(a.serviceFailure)
+		a.errorHandler(err)
 	}
 }
 
-// reportError passes a non-fatal error to the error handler. Does nothing
-// after Close or a mark.
-func (a *Agent) reportError(err error) {
-	if a.closed || a.serviceFailure != nil || a.errorHandler == nil {
-		return
+// isFatal reports whether err ends the service. These errors are fatal:
+//   - a cause the agent cannot recover from: a Start error, a log gap or
+//     dispatch fault, a terminal ack code, a terminating transport client,
+//     or a termination position the log passed
+//   - an add on a closed or terminating transport client
+//   - an archive STORAGE_SPACE error
+func isFatal(err error) bool {
+	switch {
+	case errors.Is(err, ErrStart),
+		errors.Is(err, ErrLogNotContiguous),
+		errors.Is(err, ErrAckPublish),
+		errors.Is(err, ErrLogDispatchHeader),
+		errors.Is(err, ErrLogDispatchSchema),
+		errors.Is(err, ErrLogDispatchDecode),
+		errors.Is(err, ErrActionPositionMismatch),
+		errors.Is(err, ErrTransportTerminating),
+		errors.Is(err, ErrTerminationPositionPassed),
+		errors.Is(err, aeron.ErrClientClosed),
+		errors.Is(err, aeron.ErrConductorTerminating):
+		return true
 	}
-	a.errorHandler(err)
+
+	return wrapsStorageSpace(err)
+}
+
+// wrapsStorageSpace checks every branch of err. [archive.ExceptionCode] reads
+// only the first archive exception.
+func wrapsStorageSpace(err error) bool {
+	exception, ok := err.(*archive.Exception)
+	if ok && exception.ErrorCode == archive.ErrorStorageSpace {
+		return true
+	}
+
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() error }:
+		return wrapsStorageSpace(wrapped.Unwrap())
+	case interface{ Unwrap() []error }:
+		return slices.ContainsFunc(wrapped.Unwrap(), wrapsStorageSpace)
+	}
+	return false
+}
+
+// markIfTransportTerminating returns true when it marks the failure. The
+// failure wraps a pending fatal ack cause.
+func (a *Agent) markIfTransportTerminating() bool {
+	cause := a.transportTerminatingCause()
+	if cause == nil {
+		return false
+	}
+
+	a.handleError(cause)
+	return true
+}
+
+// withTransportTermination wraps add error err with the termination cause when
+// the transport client is terminating. isFatal does not recognize the timeout
+// that a client can return when it terminates during the add.
+func (a *Agent) withTransportTermination(err error) error {
+	cause := a.transportTerminatingCause()
+	if cause == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", cause, err)
+}
+
+// transportTerminatingCause returns nil until the transport client terminates.
+// The cause wraps a pending fatal ack cause.
+func (a *Agent) transportTerminatingCause() error {
+	if a.transport == nil || !a.transport.IsTerminating() {
+		return nil
+	}
+
+	pending := a.pendingAckFailure()
+	switch {
+	case pending == nil:
+		return ErrTransportTerminating
+	case errors.Is(pending, ErrTransportTerminating):
+		return pending
+	}
+	return fmt.Errorf("%w: %w", ErrTransportTerminating, pending)
 }
 
 func (a *Agent) pendingAckFailure() error {
@@ -1006,14 +1141,13 @@ func (a *Agent) handleSessionOpen(
 	logPosition int64,
 	fields codecs.SessionOpenEventFields,
 ) aeron.ControlledAction {
-	// Abort before adoptConsumed. Otherwise the unconsumed frame end becomes
-	// the log position.
+	a.adoptConsumed(logPosition, fields.Timestamp)
+
 	if _, exists := a.sessions[fields.ClusterSessionID]; exists {
-		a.markFailure(ErrSessionClash)
-		return aeron.ControlledAbort
+		a.handleError(fmt.Errorf("%w: %d", ErrSessionClash, fields.ClusterSessionID))
+		return aeron.ControlledBreak
 	}
 
-	a.adoptConsumed(logPosition, fields.Timestamp)
 	session := newContainerClientSession(
 		a,
 		fields.ClusterSessionID,
@@ -1023,6 +1157,10 @@ func (a *Agent) handleSessionOpen(
 	)
 	if a.role == codecs.RoleLeader {
 		a.connectClientSession(session)
+
+		if a.serviceFailure != nil {
+			return aeron.ControlledBreak
+		}
 	}
 	a.addClientSession(session)
 	if a.service != nil {
@@ -1039,7 +1177,7 @@ func (a *Agent) handleSessionClose(
 
 	session := a.removeClientSession(fields.ClusterSessionID)
 	if session == nil {
-		a.reportError(fmt.Errorf(
+		a.handleError(fmt.Errorf(
 			"%w: session %d: %d",
 			ErrUnknownSessionClose,
 			fields.ClusterSessionID,
@@ -1048,6 +1186,11 @@ func (a *Agent) handleSessionClose(
 		return aeron.ControlledContinue
 	}
 	a.disconnectClientSession(session)
+
+	if a.serviceFailure != nil {
+		return aeron.ControlledBreak
+	}
+
 	if a.service != nil {
 		a.service.SessionClose(session, fields.Timestamp, fields.CloseReason)
 	}
@@ -1073,7 +1216,7 @@ func (a *Agent) handleNewLeadershipTermEvent(
 	unit, ok := resolveTimeUnit(fields.TimeUnit)
 	a.timeUnit = unit
 	if !ok {
-		a.reportError(fmt.Errorf("%w: %d", ErrUnknownTimeUnit, fields.TimeUnit))
+		a.handleError(fmt.Errorf("%w: %d", ErrUnknownTimeUnit, fields.TimeUnit))
 	}
 	a.appVersion = fields.AppVersion
 	a.egressLeadershipTermID = fields.LeadershipTermID
@@ -1110,19 +1253,11 @@ func resolveTimeUnit(
 
 // handleClusterAction delivers one ClusterActionRequest from the log adapter.
 //
-// Order:
-//  1. Note time and position from the frame. Runs for every action kind.
-//  2. Decoded LogPosition must equal the frame-end position. Mismatch
-//     marks failure and returns ControlledAbort. Noted values stay.
-//  3. SUSPEND and RESUME return ControlledContinue. No hook. No entry.
-//  4. Unknown Action, including NULL_VALUE, marks failure and returns
-//     ControlledAbort.
-//  5. SNAPSHOT with Flags != 0 returns ControlledContinue. No hook. No
-//     entry.
-//  6. SNAPSHOT with Flags == 0 appends one unready snapshot entry, then
-//     starts a take. A take that cannot start fails the entry. Returns
-//     ControlledBreak. The log poll holds at the action position until the
-//     take resolves.
+// Behaviour:
+//   - A decoded LogPosition other than the frame-end position marks failure.
+//     The time and position from the frame stay noted.
+//   - SNAPSHOT with Flags == 0 starts a take. The log poll holds at the action
+//     position until the take resolves.
 func (a *Agent) handleClusterAction(
 	logPosition int64,
 	fields codecs.ClusterActionRequestFields,
@@ -1145,11 +1280,12 @@ func (a *Agent) handleClusterAction(
 	case clusterwire.ClusterAction_NULL_VALUE:
 		fallthrough
 	default:
-		return a.handleDispatchFailure(ErrUnknownClusterAction)
+		a.handleError(ErrUnknownClusterAction)
+		return aeron.ControlledContinue
 	}
 }
 
 func (a *Agent) handleDispatchFailure(err error) aeron.ControlledAction {
-	a.markFailure(err)
+	a.handleError(err)
 	return aeron.ControlledAbort
 }

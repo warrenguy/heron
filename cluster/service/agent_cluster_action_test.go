@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 )
@@ -132,10 +133,12 @@ func TestAgent_ClusterAction_hookError(t *testing.T) {
 	hookErr := errors.New("snap boom")
 	svc := &snapshotRecordingService{hookErr: hookErr}
 	proxy, pub := boundModuleProxy(t)
+	var got []error
 	agent, image, committed := bindImage(t, AgentConfig{
-		ServiceID:   1,
-		Service:     svc,
-		ModuleProxy: proxy,
+		ServiceID:    1,
+		Service:      svc,
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
 	}, 0)
 	InstallSnapshotTakeFakeForTest(t, agent)
 
@@ -153,7 +156,7 @@ func TestAgent_ClusterAction_hookError(t *testing.T) {
 	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 	require.Empty(t, decodeServiceAcksFromPub(t, pub), "no ack on consume tick")
 
-	// Tick 2: the hook fails. The -1 ack sends, then the mark follows.
+	// Tick 2: the hook fails.
 	agent.DoWork(0)
 	require.Len(t, svc.pubs, 1, "hook calls")
 	acks := decodeServiceAcksFromPub(t, pub)
@@ -165,51 +168,69 @@ func TestAgent_ClusterAction_hookError(t *testing.T) {
 		RelevantID:  nullValue,
 		ServiceID:   1,
 	}, acks[0])
-	require.ErrorIs(t, agent.ServiceFailure(), ErrTakeSnapshot)
-	require.ErrorIs(t, agent.ServiceFailure(), hookErr)
+	requireOneNonFatalReport(t, got, ErrTakeSnapshot, hookErr)
+	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, 0, agent.PendingCoordinationAcks(), "pending acks after send")
 
-	// Tick 3: the mark freezes the duty cycle.
-	require.Equal(t, 0, agent.DoWork(0))
+	// Tick 3: the service keeps running.
+	agent.DoWork(0)
+	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, end, agent.adapter.Position(), "poll position later tick")
 	require.Len(t, decodeServiceAcksFromPub(t, pub), 1, "later tick acks")
 	require.Len(t, svc.pubs, 1, "later tick hook calls")
 }
 
-func TestAgent_ClusterAction_hookErrorTerminalAck(t *testing.T) {
-	hookErr := errors.New("snap boom")
-	svc := &snapshotRecordingService{hookErr: hookErr}
-	proxy, pub := boundModuleProxy(t)
+func failTakeOnClosedPublication(t *testing.T, hookErr error) (*Agent, []error) {
+	t.Helper()
 	var got []error
-	agent, image, committed := bindImage(t, AgentConfig{
-		ServiceID:    1,
-		Service:      svc,
-		ModuleProxy:  proxy,
-		ErrorHandler: collectErrors(&got),
-	}, 0)
-	InstallSnapshotTakeFakeForTest(t, agent)
-	require.NoError(t, pub.Close())
+	take := bindDisconnectedTake(t, hookErr, collectErrors(&got))
+	closedPub := aeron.NewTestPublicationForHooksWithConnected(t, true)
+	require.NoError(t, closedPub.Close())
+	take.proxy.SetPublication(closedPub)
 
-	end := writeTermEventAndSnapshot(t, image, committed, 321)
+	end := writeTermEventAndSnapshot(t, take.image, take.committed, 321)
 
-	// Tick 1: no mark, one unready entry.
-	agent.DoWork(0)
-	require.NoError(t, agent.ServiceFailure())
-	require.Equal(t, 0, agent.ReadyCoordinationAcks(), "ready acks")
-	require.Equal(t, end, agent.adapter.Position(), "poll position after break")
+	take.agent.DoWork(0)
+	require.NoError(t, take.agent.ServiceFailure())
+	require.Equal(t, 0, take.agent.ReadyCoordinationAcks(), "ready acks")
+	require.Equal(t, end, take.agent.adapter.Position(), "poll position after break")
 
-	// Tick 2: the hook fails. A terminal offer marks ErrAckPublish with the
-	// offer code, then the take cause. The ack does not send.
-	agent.DoWork(0)
-	require.Len(t, svc.pubs, 1, "hook calls")
-	requireFailureReported(t, agent, got, ErrAckPublish, ErrTakeSnapshot, hookErr)
-	want := fmt.Sprintf("%v: %d: %v", ErrAckPublish, aeron.Closed, ErrTakeSnapshot)
-	require.ErrorContains(t, agent.ServiceFailure(), want)
-	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
-	require.Equal(t, int64(0), agent.NextAckID())
+	take.agent.DoWork(0)
+	require.Len(t, take.svc.pubs, 1, "hook calls")
+	return take.agent, got
+}
 
-	// Tick 3: the mark freezes the duty cycle.
-	require.Equal(t, 0, agent.DoWork(0))
+func TestAgent_ClusterAction_hookErrorTerminalAck(t *testing.T) {
+	t.Run("plainHookError", func(t *testing.T) {
+		hookErr := errors.New("snap boom")
+		agent, got := failTakeOnClosedPublication(t, hookErr)
+
+		// The take reports. The closed publication then marks bare ErrAckPublish.
+		require.Len(t, got, 2)
+		requireNonFatalReport(t, got[0], ErrTakeSnapshot, hookErr)
+		requireFailureReported(t, agent, got[1:], ErrAckPublish)
+		require.NotErrorIs(t, agent.ServiceFailure(), ErrTakeSnapshot)
+		require.NotErrorIs(t, agent.ServiceFailure(), hookErr)
+		want := fmt.Sprintf("%v: %d", ErrAckPublish, aeron.Closed)
+		require.ErrorContains(t, agent.ServiceFailure(), want)
+		require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
+		require.Equal(t, int64(0), agent.NextAckID())
+
+		require.Equal(t, 0, agent.DoWork(0))
+	})
+
+	t.Run("storageSpaceRidesAck", func(t *testing.T) {
+		storage := &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
+		agent, got := failTakeOnClosedPublication(t, fmt.Errorf("snap: %w", storage))
+
+		requireFailureReported(t, agent, got, ErrAckPublish, ErrTakeSnapshot, storage)
+		want := fmt.Sprintf("%v: %d: %v", ErrAckPublish, aeron.Closed, ErrTakeSnapshot)
+		require.ErrorContains(t, agent.ServiceFailure(), want)
+		require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
+		require.Equal(t, int64(0), agent.NextAckID())
+
+		require.Equal(t, 0, agent.DoWork(0))
+	})
 }
 
 type disconnectedTake struct {
@@ -242,34 +263,39 @@ func bindDisconnectedTake(t *testing.T, hookErr error, handler func(error)) disc
 	}
 }
 
-func requireRetriableHold(t *testing.T, agent *Agent, got []error) {
+func requireRetriableHold(t *testing.T, agent *Agent) {
 	t.Helper()
 	for tick := range 4 {
 		agent.DoWork(0)
 		require.NoError(t, agent.ServiceFailure(), "tick %d", tick)
-		require.Empty(t, got, "tick %d reports", tick)
 		require.Equal(t, 1, agent.PendingCoordinationAcks(), "tick %d pending acks", tick)
 		require.Equal(t, int64(0), agent.NextAckID(), "tick %d ack id", tick)
 	}
 }
 
 func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
-	t.Run("retriableDefersMark", func(t *testing.T) {
+	t.Run("retriableReportsAtOnce", func(t *testing.T) {
 		hookErr := errors.New("snap boom")
 		var got []error
-		take := bindDisconnectedTake(t, hookErr, collectErrors(&got))
-		agent := take.agent
+		var ackIDs []int64
+		var agent *Agent
+		take := bindDisconnectedTake(t, hookErr, func(err error) {
+			got = append(got, err)
+			ackIDs = append(ackIDs, agent.NextAckID())
+		})
+		agent = take.agent
 
 		const timestamp int64 = 321
 		end := writeTermEventAndSnapshot(t, take.image, take.committed, timestamp)
 
-		// Consume tick, hook tick, then retriable drain ticks: the entry
-		// stays, no mark.
-		requireRetriableHold(t, agent, got)
+		// The hook tick reports while NotConnected holds the ack.
+		requireRetriableHold(t, agent)
+		requireOneNonFatalReport(t, got, ErrTakeSnapshot, hookErr)
+		require.Equal(t, []int64{0}, ackIDs)
 		require.Len(t, take.svc.pubs, 1, "hook calls")
 		require.Equal(t, end, agent.adapter.Position(), "poll position")
 
-		// Connected publication: the -1 ack sends, then the mark follows.
+		// The connected drain sends -1 without a second report.
 		connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
 		take.proxy.SetPublication(connected)
 		require.Equal(t, 1, agent.DoWork(0))
@@ -283,7 +309,8 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 			ServiceID:   1,
 		}, acks[0])
 		require.Equal(t, 0, agent.PendingCoordinationAcks(), "pending acks after send")
-		requireFailureReported(t, agent, got, ErrTakeSnapshot, hookErr)
+		require.Len(t, got, 1)
+		require.NoError(t, agent.ServiceFailure())
 	})
 
 	t.Run("laterDispatchFailureKeepsCause", func(t *testing.T) {
@@ -303,11 +330,13 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 		require.Empty(t, take.svc.pubs, "hook calls")
 		require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 
-		// Tick 2: the hook fails. NotConnected holds the entry. The log poll
+		// Tick 2: the hook reports. NotConnected holds the entry. The log poll
 		// resumes, so the second frame marks the position mismatch.
 		agent.DoWork(0)
 		require.Len(t, take.svc.pubs, 1, "hook calls")
-		requireFailureReported(t, agent, got, ErrActionPositionMismatch)
+		require.Len(t, got, 2)
+		requireNonFatalReport(t, got[0], ErrTakeSnapshot)
+		requireFailureReported(t, agent, got[1:], ErrActionPositionMismatch)
 
 		// A later bind sends no -1 ack.
 		connected := aeron.NewTestPublicationForHooksWithConnected(t, true)
@@ -319,15 +348,14 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 		require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
 		require.Len(t, take.svc.pubs, 1, "hook calls after bind")
 
-		// Close keeps the position-mismatch failure. Close does not report
-		// the waiting take cause.
+		// Close keeps the position-mismatch failure.
 		agent.Close()
-		require.Len(t, got, 1)
-		require.Same(t, agent.ServiceFailure(), got[0])
+		require.Len(t, got, 2)
+		require.Same(t, agent.ServiceFailure(), got[1])
 		require.NotErrorIs(t, agent.ServiceFailure(), ErrTakeSnapshot)
 	})
 
-	t.Run("closeMarksWaitingTakeFailure", func(t *testing.T) {
+	t.Run("closeKeepsTakeReport", func(t *testing.T) {
 		hookErr := errors.New("snap boom")
 		var got []error
 		take := bindDisconnectedTake(t, hookErr, collectErrors(&got))
@@ -335,12 +363,33 @@ func TestAgent_ClusterAction_hookErrorRetriableAck(t *testing.T) {
 
 		writeTermEventAndSnapshot(t, take.image, take.committed, 321)
 
-		// NotConnected holds the ack. The hook fails. The agent does not report.
-		requireRetriableHold(t, agent, got)
+		requireRetriableHold(t, agent)
+		requireOneNonFatalReport(t, got, ErrTakeSnapshot, hookErr)
 		require.Len(t, take.svc.pubs, 1, "hook calls")
 
 		agent.Close()
-		requireFailureReported(t, agent, got, ErrTakeSnapshot, hookErr)
+		require.Len(t, got, 1)
+		require.NoError(t, agent.ServiceFailure())
+		require.Equal(t, int64(0), agent.NextAckID(), "ack id after close")
+		require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks after close")
+	})
+
+	t.Run("storageSpaceMarksAtClose", func(t *testing.T) {
+		storage := &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
+		hookErr := fmt.Errorf("snap: %w", storage)
+		var got []error
+		take := bindDisconnectedTake(t, hookErr, collectErrors(&got))
+		agent := take.agent
+
+		writeTermEventAndSnapshot(t, take.image, take.committed, 321)
+
+		requireRetriableHold(t, agent)
+		require.Empty(t, got)
+		require.Len(t, take.svc.pubs, 1, "hook calls")
+
+		agent.Close()
+		requireFailureReported(t, agent, got, storage)
+		require.ErrorIs(t, agent.ServiceFailure(), ErrTakeSnapshot)
 		require.Equal(t, int64(0), agent.NextAckID(), "ack id after close")
 		require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks after close")
 	})
@@ -358,10 +407,12 @@ func TestAgent_ClusterAction_hookErrorNoModuleProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			hookErr := errors.New("snap boom")
 			svc := &snapshotRecordingService{hookErr: hookErr}
+			var got []error
 			agent, image, committed := bindImage(t, AgentConfig{
-				ServiceID:   1,
-				Service:     svc,
-				ModuleProxy: tt.proxy,
+				ServiceID:    1,
+				Service:      svc,
+				ModuleProxy:  tt.proxy,
+				ErrorHandler: collectErrors(&got),
 			}, 0)
 			fake := InstallSnapshotTakeFakeForTest(t, agent)
 
@@ -372,28 +423,36 @@ func TestAgent_ClusterAction_hookErrorNoModuleProxy(t *testing.T) {
 			require.NoError(t, agent.ServiceFailure())
 			require.Equal(t, end, agent.adapter.Position(), "poll position after break")
 
-			// Tick 2: the hook fails. No sender, so the take cause marks at
-			// once.
+			// Tick 2: no sender, so the take reports at once.
 			agent.DoWork(0)
-			require.ErrorIs(t, agent.ServiceFailure(), ErrTakeSnapshot)
-			require.ErrorIs(t, agent.ServiceFailure(), hookErr)
+			requireOneNonFatalReport(t, got, ErrTakeSnapshot, hookErr)
+			require.NoError(t, agent.ServiceFailure())
 			require.Len(t, svc.pubs, 1, "hook calls")
 			require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
 			require.True(t, fake.LastPublication().IsClosed(), "publication closed")
 			require.Nil(t, fake.handler, "session handler")
 
-			// Tick 3: the mark freezes the duty cycle.
-			require.Equal(t, 0, agent.DoWork(0))
+			agent.DoWork(0)
+			require.NoError(t, agent.ServiceFailure())
 
 			if tt.proxy == nil {
 				return
 			}
-			// A later bind sends no -1 ack.
+
+			// A later bind sends the -1 ack at ack id 0.
 			pub := aeron.NewTestPublicationForHooksWithConnected(t, true)
 			tt.proxy.SetPublication(pub)
-			require.Equal(t, 0, agent.DoWork(0))
-			require.Empty(t, decodeServiceAcksFromPub(t, pub), "acks after bind")
-			require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks after bind")
+			require.Equal(t, 1, agent.DoWork(0))
+			require.Equal(t, []codecs.ServiceAckFields{{
+				LogPosition: end,
+				Timestamp:   321,
+				AckID:       0,
+				RelevantID:  nullValue,
+				ServiceID:   1,
+			}}, decodeServiceAcksFromPub(t, pub))
+			require.Equal(t, 0, agent.PendingCoordinationAcks(), "pending acks after bind")
+			require.NoError(t, agent.ServiceFailure())
+			require.Len(t, got, 1)
 		})
 	}
 }
@@ -401,24 +460,27 @@ func TestAgent_ClusterAction_hookErrorNoModuleProxy(t *testing.T) {
 func TestAgent_ClusterAction_noArchive(t *testing.T) {
 	svc := &snapshotRecordingService{}
 	proxy, pub := boundModuleProxy(t)
+	var got []error
 	agent, image, committed := bindImage(t, AgentConfig{
-		ServiceID:   1,
-		Service:     svc,
-		ModuleProxy: proxy,
+		ServiceID:    1,
+		Service:      svc,
+		ModuleProxy:  proxy,
+		ErrorHandler: collectErrors(&got),
 	}, 0)
 
 	const timestamp int64 = 88
 	span := writeAlignedSnapshot(t, image, committed, timestamp)
 
-	// Tick 1: no archive fails the take on the action.
+	// Tick 1: without an archive, the take fails on the action.
 	agent.DoWork(0)
 	require.NoError(t, agent.ServiceFailure())
+	requireOneNonFatalReport(t, got, ErrSnapshotNoArchive)
 	require.Empty(t, svc.pubs, "hook calls")
 	require.Equal(t, int64(span), agent.adapter.Position(), "poll position after break")
 	require.Equal(t, 1, agent.PendingCoordinationAcks(), "pending acks")
 	require.Equal(t, 1, agent.ReadyCoordinationAcks(), "ready acks")
 
-	// Tick 2: the -1 ack sends, then the mark follows.
+	// Tick 2: the -1 ack sends. The service keeps running.
 	agent.DoWork(0)
 	acks := decodeServiceAcksFromPub(t, pub)
 	require.Len(t, acks, 1)
@@ -429,7 +491,8 @@ func TestAgent_ClusterAction_noArchive(t *testing.T) {
 		RelevantID:  nullValue,
 		ServiceID:   1,
 	}, acks[0])
-	require.ErrorIs(t, agent.ServiceFailure(), ErrSnapshotNoArchive)
+	require.NoError(t, agent.ServiceFailure())
+	require.Len(t, got, 1)
 	require.Equal(t, nullValue, agent.LastSnapshotRecordingID())
 }
 
@@ -471,17 +534,21 @@ func TestAgent_ClusterAction_unknownAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := &snapshotRecordingService{}
-			agent, image, committed := bindImage(t, AgentConfig{Service: svc}, 0)
+			var got []error
+			agent, image, committed := bindImage(t, AgentConfig{
+				Service:      svc,
+				ErrorHandler: collectErrors(&got),
+			}, 0)
 			const timestamp int64 = 9
 			span := writeAlignedAction(t, image, committed, timestamp, tt.action, 0)
-			join := image.Position()
 			agent.DoWork(0)
-			require.ErrorIs(t, agent.ServiceFailure(), ErrUnknownClusterAction)
+			requireOneNonFatalReport(t, got, ErrUnknownClusterAction)
+			require.NoError(t, agent.ServiceFailure())
 			require.Empty(t, svc.pubs, "hook calls")
 			require.Equal(t, 0, agent.PendingCoordinationAcks(), "pending acks")
 			require.Equal(t, int64(span), agent.LogPosition())
 			require.Equal(t, timestamp, agent.ClusterTime())
-			require.Equal(t, join, agent.adapter.Position(), "poll position after abort")
+			require.Equal(t, int64(span), agent.adapter.Position(), "poll position after continue")
 		})
 	}
 }
