@@ -207,26 +207,45 @@ goimports: ## goimports on non-generated Go sources
 gofumpt: goimports ## gofumpt after goimports
 	go tool gofumpt -extra -w $(GO_SOURCES)
 
-.PHONY: fuzz
+.PHONY: fuzz fuzz-list
 # go test -fuzz must match exactly one Fuzz* per invocation.
 #
 # Discover packages from *_fuzz_test.go files. List Fuzz* names from the
-# compiled test binary. Run each name. A package may host many targets.
-fuzz: ## Run all Fuzz* tests
+# compiled test binary. A package may host many targets.
+fuzz-list: ## List Fuzz* tests as package and name pairs
 	@set -euo pipefail; \
 	fuzz_dirs=$$(grep -rl '^func Fuzz' --include='*_fuzz_test.go' \
 		--exclude-dir=vendor . 2>/dev/null \
 		| sed 's|/[^/]*$$||' | sort -u || true); \
-	[ -n "$$fuzz_dirs" ] || { echo "no fuzz tests"; exit 1; }; \
+	[ -n "$$fuzz_dirs" ] || { echo "no fuzz tests" >&2; exit 1; }; \
 	for dir in $$fuzz_dirs; do \
 		pkg=./$${dir#./}; \
-		for name in $$(go test -timeout=$(TEST_TIMEOUT) -tags=$(UNIT_TEST_TAGS) \
-			-run '^$$' -list '^Fuzz' $$pkg | grep '^Fuzz'); do \
-			echo "fuzz $$pkg $$name"; \
-			go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
-				-fuzz=^$$name$$ -fuzztime=$(FUZZ_TIME) $$pkg; \
-		done; \
+		names=$$(go test -timeout=$(TEST_TIMEOUT) -tags=$(UNIT_TEST_TAGS) \
+			-run '^$$' -list '^Fuzz' $$pkg | grep '^Fuzz') || { \
+			echo "fuzz: list $$pkg: build failed or no Fuzz target" >&2; \
+			exit 1; }; \
+		for name in $$names; do echo "$$pkg $$name"; done; \
 	done
+
+# Set FUZZ_PKG and FUZZ_NAME to run one target. Otherwise run every listed
+# target, then fail when any target failed.
+fuzz: ## Run all Fuzz* tests, or one with FUZZ_PKG and FUZZ_NAME
+	@set -euo pipefail; \
+	if [ -n "$(FUZZ_PKG)$(FUZZ_NAME)" ]; then \
+		[ -n "$(FUZZ_PKG)" ] && [ -n "$(FUZZ_NAME)" ] || { \
+			echo "fuzz: set both FUZZ_PKG and FUZZ_NAME" >&2; exit 1; }; \
+		targets="$(FUZZ_PKG) $(FUZZ_NAME)"; \
+	else \
+		targets=$$($(MAKE) -s --no-print-directory fuzz-list); \
+	fi; \
+	failed=; \
+	while read -r pkg name; do \
+		echo "fuzz $$pkg $$name"; \
+		go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
+			-fuzz=^$$name$$ -fuzztime=$(FUZZ_TIME) $$pkg \
+			|| failed="$$failed $$pkg:$$name"; \
+	done <<< "$$targets"; \
+	[ -z "$$failed" ] || { echo "fuzz: failed targets:$$failed" >&2; exit 1; }
 
 # Unit tests need -tags=testhooks,bench; use make test.
 # $(1)=target suffix, $(2)=extra tags, $(3)=test flags, $(4)=help label,

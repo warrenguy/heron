@@ -1,0 +1,114 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fuzz.yml
+      - Makefile
+      - "**/*_fuzz_test.go"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
+env:
+  GOARCH: amd64
+
+jobs:
+  targets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: List fuzz targets
+        id: list
+        run: |
+          set -euo pipefail
+          matrix=$(make fuzz-list | jq -Rnc '[inputs | split(" ") as [$pkg, $name]
+            | {pkg: $pkg, name: $name,
+               id: (($pkg | ltrimstr("./") | gsub("/"; "-")) + "-" + $name)}]')
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    name: fuzz ${{ matrix.pkg }} ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    # One target per job: a 6m cap plus the package build.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    env:
+      FUZZ_TIME: ${{ github.event_name == 'pull_request' && '10s' || '2m' }}
+      FUZZ_TIMEOUT: 6m
+      FUZZ_PKG: ${{ matrix.pkg }}
+      FUZZ_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Locate fuzz corpus
+        id: corpus
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+
+      - id: corpus-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-corpus-${{ runner.os }}-${{ env.GOARCH }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-${{ env.GOARCH }}-${{ matrix.id }}-
+
+      - name: Fuzz
+        run: make fuzz
+
+      - name: Save fuzz corpus
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: ${{ steps.corpus-cache.outputs.cache-primary-key }}
+
+      - name: Collect crashers
+        if: failure()
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/fuzz-crashers"
+          mkdir -p "${dest}"
+          git ls-files -z --others --exclude-standard \
+            -- ':(glob)**/testdata/fuzz/**' \
+            | xargs -0 -r cp --parents -t "${dest}"
+          {
+            echo "### Fuzz crashers"
+            (cd "${dest}" && find . -type f | sort)
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashers-${{ matrix.id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fuzz-crashers/
+          if-no-files-found: ignore
+          retention-days: 30
