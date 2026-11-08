@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func runElectionSafetyPBT(t *testing.T, crashWeighted bool) {
@@ -27,7 +28,7 @@ func runElectionSafetyPBT(t *testing.T, crashWeighted bool) {
 		steps = 20
 	}
 
-	rapidCheckSteps(t, checks, steps, func(rt *rapid.T) {
+	testutil.RapidCheckSteps(t, checks, steps, func(rt *rapid.T) {
 		c := newElectionRapidCluster(t, rapidClusterSize)
 		defer c.closeStores()
 		c.crashWeighted = crashWeighted

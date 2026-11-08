@@ -3,16 +3,14 @@
 package codecs_test
 
 import (
-	"flag"
 	"math"
-	"strconv"
-	"sync"
 	"testing"
 
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const (
@@ -20,32 +18,7 @@ const (
 	rapidChecksVarHeavy   = 200
 )
 
-// rapidChecksFlagMu serializes flag.Set("rapid.checks") for the full Check call.
-// -rapid.checks is process-global; no local budget API yet. Parallel rapid
-// tests take this mutex only for the Set+Check span.
-var rapidChecksFlagMu sync.Mutex
-
-func rapidCheck(tb testing.TB, checks int, prop func(*rapid.T)) {
-	tb.Helper()
-
-	f := flag.Lookup("rapid.checks")
-	if f == nil {
-		rapid.Check(tb, prop)
-		return
-	}
-
-	rapidChecksFlagMu.Lock()
-	defer rapidChecksFlagMu.Unlock()
-
-	previous := f.Value.String()
-	defer func() { _ = flag.Set("rapid.checks", previous) }()
-
-	if err := flag.Set("rapid.checks", strconv.Itoa(checks)); err != nil {
-		tb.Fatalf("rapid.checks: %v", err)
-	}
-
-	rapid.Check(tb, prop)
-}
+var rapidCheck = testutil.RapidCheck
 
 func rapidCodecContext(rt *rapid.T) (actingVersion uint16, offset int) {
 	rt.Helper()

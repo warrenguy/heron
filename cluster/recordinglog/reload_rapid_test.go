@@ -13,19 +13,16 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	userSet := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "rapid.checks" {
-			userSet = true
-		}
-	})
-	if !userSet {
+
+	if !testutil.IsRapidFlagSet("rapid.checks") {
 		_ = flag.Set("rapid.checks", "1000")
 	}
+
 	os.Exit(m.Run())
 }
 

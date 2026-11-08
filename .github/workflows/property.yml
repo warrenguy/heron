@@ -1,0 +1,55 @@
+name: property
+
+on:
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+    inputs:
+      checks:
+        description: Checks per property test (default 2000)
+        type: number
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/property.yml
+      - Makefile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: property-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
+env:
+  GOARCH: amd64
+
+jobs:
+  property:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # On a pull request, one check per test exercises the workflow.
+      # ci.yml runs the property tests on every pull request.
+      RAPID_CHECKS: ${{ github.event_name == 'pull_request' && '1' || inputs.checks || '2000' }}
+      RAPID_TIMEOUT: 40m
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Property tests
+        run: make test-rapid
+
+      - name: Upload failfiles
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rapid-failfiles-attempt-${{ github.run_attempt }}
+          path: "**/testdata/rapid/**/*.fail"
+          if-no-files-found: ignore
+          retention-days: 30
