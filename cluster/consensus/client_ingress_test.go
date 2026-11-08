@@ -33,8 +33,8 @@ func (h *recordingSessionConnectHandler) HandleSessionConnect(
 	h.calls = append(h.calls, sessionConnectCall{fields: fields, nowNs: nowNs})
 }
 
-func encodeSessionConnectWire(t *testing.T, fields codecs.SessionConnectRequestFields) []byte {
-	t.Helper()
+func encodeSessionConnectWire(tb testing.TB, fields codecs.SessionConnectRequestFields) []byte {
+	tb.Helper()
 	actingVersion := uint16(clusterwire.SessionConnectRequestSbeSchemaVersion)
 	wireLen, ok := codecs.SessionConnectRequestWireLen(
 		actingVersion,
@@ -42,10 +42,10 @@ func encodeSessionConnectWire(t *testing.T, fields codecs.SessionConnectRequestF
 		len(fields.EncodedCredentials),
 		len(fields.ClientInfo),
 	)
-	require.True(t, ok)
+	require.True(tb, ok)
 	buf := make([]byte, wireLen)
 	end, ok := codecs.EncodeSessionConnectRequest(buf, 0, actingVersion, fields)
-	require.True(t, ok)
+	require.True(tb, ok)
 	return buf[:end]
 }
 

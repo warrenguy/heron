@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // TestTruncateLogEntry_positionGuards_rapid asserts local position and active
@@ -18,6 +19,8 @@ func TestTruncateLogEntry_positionGuards_rapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		position := rapid.Int64Range(-1<<20, 1<<20).Draw(rt, "position")

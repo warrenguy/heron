@@ -15,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 var errSnapshotTakeRapidBoom = errors.New("boom")
@@ -288,6 +289,8 @@ func (m *snapshotTakeAckModel) pop() bool {
 func TestSnapshotTake_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
 		isLeader := rapid.Bool().Draw(rt, "isLeader")
 		script := drawSnapshotTakeScript(rt, serviceCount)
@@ -312,7 +315,6 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		stateCounter := &recordingModuleStateCounter{}
 		a.SetModuleStateCounter(stateCounter)
 		q := attachQueueServiceIngress(a)
-		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
 		lp, _ := boundLogPublisher(t)
 		a.SetLogPublisher(lp)
 		archive := newFakeSnapshotArchive()

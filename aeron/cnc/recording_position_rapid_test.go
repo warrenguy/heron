@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/cnc"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type recordingPositionSlot struct {
@@ -18,12 +19,15 @@ type recordingPositionSlot struct {
 	archiveID   int64
 }
 
-// TestFindRecordingPositionCounter_matchesOracle_rapid checks the binary key scan against
-// a reference model over random counter layouts: it must return the first allocated
-// recording-position counter matching the recording id and the archive id filter.
+// TestFindRecordingPositionCounter_matchesOracle_rapid checks the key scan
+// against a reference model over random counter layouts. The scan returns the
+// first allocated recording-position counter that matches the recording id and
+// the archive id filter.
 func TestFindRecordingPositionCounter_matchesOracle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		counterCount := rapid.IntRange(1, 8).Draw(rt, "counterCount")
 		meta, values := syntheticCountersBuffers(t, counterCount)
 

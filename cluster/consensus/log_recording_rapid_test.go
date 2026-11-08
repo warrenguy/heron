@@ -12,6 +12,7 @@ import (
 
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // logRecordingModel is the reference model for the recording lifecycle.
@@ -65,6 +66,8 @@ func TestRecordingLifecycle_startStopTransition_rapid(t *testing.T) {
 	const sessionID int32 = 10
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		a, _, _ := agentWithLogJoin(t, sessionID, 0, AgentConfig{})

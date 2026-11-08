@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type uncommittedEntriesOpKind int
@@ -54,7 +55,7 @@ func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
 // commit and the publication position at the last prepare.
 //
 // A SUSPENDED leader does not poll client ingress or run session work. The
-// open and close ops skip while the module state is SUSPENDED.
+// test skips open and close ops while the module state is SUSPENDED.
 //
 // After each op:
 //   - uncommittedTimers equals those log TimerEvents, in order.
@@ -70,7 +71,7 @@ func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
 //     deadline 0.
 //   - The closing sessions are the earlier ones plus each close above C,
 //     less each session opened above P.
-//   - No session opened above P remains. No pre-open session remains.
+//   - Every session opened above P, and every pre-open session, is gone.
 //   - The module state reverts to the previous state of the first
 //     uncommittedModuleStates entry. With an empty list, the module state does
 //     not change.
@@ -80,6 +81,8 @@ func scheduledTimerDeadlines(rt *rapid.T, a *Agent) map[int64]int64 {
 func TestUncommittedEntries_rollback_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const leadershipTermID int64 = 3
 		commit := new(atomic.Int64)
 		a, _, pub := leaderWithTimerIngress(t, AgentConfig{

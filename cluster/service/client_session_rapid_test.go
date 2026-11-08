@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // modelPollKind is one drawn PollAddPublication outcome.
@@ -112,17 +113,20 @@ func (s *pollScripter) drawPoll(
 //     not open reports ErrCloseUnknownSession. A log close of an id that is
 //     not open reports ErrUnknownSessionClose. A poll at Close does not
 //     report.
-//   - no step marks a failure.
+//   - a step never marks a failure.
 //
 // Ops: open a free id, close any pool id, message any pool id, set the role,
 // script one in-flight poll then DoWork, offer to an open id, request a
-// close of any pool id. Close is an optional last op. Session-open clash is
-// constrained out. Unit rows assert the clash path and terminal proxy codes.
+// close of any pool id. Close is an optional last op. The draws leave out a
+// session-open clash. Table tests assert the clash path and terminal proxy
+// codes.
 func TestAgent_clientSessions_rapid(t *testing.T) {
 	t.Parallel()
 	pollErr := errors.New("poll add boom")
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		svc := &recordingService{}
@@ -468,6 +472,8 @@ func TestAgent_egressRejoin_rapid(t *testing.T) {
 	roles := []codecs.Role{codecs.RoleLeader, codecs.RoleFollower, codecs.RoleCandidate}
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		adder := newFakeResponseAdder()

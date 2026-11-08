@@ -205,36 +205,36 @@ func (o *recordingStateObserver) OnElectionStateChange(s election.ElectionState)
 	o.states = append(o.states, s)
 }
 
-func electionDepsForMembers(t *testing.T, members []election.Member) (
+func electionDepsForMembers(tb testing.TB, members []election.Member) (
 	election.ElectionConfig,
 	election.ElectionDeps,
 	*FakeClock,
 	*FakeEpochClock,
 	*recordingNodeState,
 ) {
-	t.Helper()
-	return electionDepsForMemberPtrs(t, election.MembersPtrs(members), members[0].ID)
+	tb.Helper()
+	return electionDepsForMemberPtrs(tb, election.MembersPtrs(members), members[0].ID)
 }
 
-func electionDepsForMemberPtrs(t *testing.T, memberPtrs []*election.Member, memberID int32) (
+func electionDepsForMemberPtrs(tb testing.TB, memberPtrs []*election.Member, memberID int32) (
 	election.ElectionConfig,
 	election.ElectionDeps,
 	*FakeClock,
 	*FakeEpochClock,
 	*recordingNodeState,
 ) {
-	t.Helper()
+	tb.Helper()
 
 	clock := &FakeClock{nowNs: 1_000_000_000}
 	epochClock := &FakeEpochClock{nowMs: 42_000}
 
-	store, err := election.OpenNodeStateFile(t.TempDir(), true, recordinglog.FileSyncNone)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	store, err := election.OpenNodeStateFile(tb.TempDir(), true, recordinglog.FileSyncNone)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { require.NoError(tb, store.Close()) })
 	nodeState := &recordingNodeState{store: store}
 
 	thisMember := memberPtrForID(memberPtrs, memberID)
-	require.NotNil(t, thisMember, "member id %d not in cluster", memberID)
+	require.NotNil(tb, thisMember, "member id %d not in cluster", memberID)
 
 	cfg := election.ElectionTestConfig()
 	cfg.MemberID = memberID
@@ -268,16 +268,16 @@ const (
 	testAppendPosition   = 200
 )
 
-func testElectionDeps(t *testing.T) (
+func testElectionDeps(tb testing.TB) (
 	election.ElectionConfig,
 	election.ElectionDeps,
 	*FakeClock,
 	*FakeEpochClock,
 	*recordingNodeState,
 ) {
-	t.Helper()
+	tb.Helper()
 
-	cfg, deps, clock, epochClock, nodeState := electionDepsForMembers(t, []election.Member{
+	cfg, deps, clock, epochClock, nodeState := electionDepsForMembers(tb, []election.Member{
 		{ID: 0},
 		{ID: 1},
 		{ID: 2},

@@ -23,15 +23,17 @@ const (
 )
 
 func newRegistryWithLogFile(
-	t *testing.T,
+	tb testing.TB,
 	logFileName string,
 ) (*conductor.LogBuffersRegistry, string) {
-	t.Helper()
+	tb.Helper()
 
-	dir := t.TempDir()
+	dir := tb.TempDir()
 	logPath := filepath.Join(dir, logFileName)
-	writeMinimalLogFileForRegistryTest(t, logPath)
-	return conductor.NewLogBuffersRegistry(dir), logPath
+	writeMinimalLogFileForRegistryTest(tb, logPath)
+	registry := conductor.NewLogBuffersRegistry(dir)
+	tb.Cleanup(func() { conductor.CloseLogBuffersRegistryForTest(registry) })
+	return registry, logPath
 }
 
 func newRegistryWithAcquiredLog(

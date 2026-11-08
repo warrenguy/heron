@@ -291,7 +291,7 @@ func (o *winEdgeObserver) OnElectionStateChange(s election.ElectionState) {
 }
 
 type electionRapidCluster struct {
-	t     *testing.T
+	t     testing.TB
 	nodes []*rapidNode
 	// bag is the in-flight network: publish always enqueues, and at rapidBagCap
 	// the oldest drops (lossy FIFO). deliverAllHolding prepends held messages onto
@@ -351,11 +351,11 @@ func rapidClusterMemberPtrs(n int) []*election.Member {
 	return election.MembersPtrs(members)
 }
 
-func newElectionRapidCluster(t *testing.T, n int) *electionRapidCluster {
-	t.Helper()
-	require.GreaterOrEqual(t, n, 2)
+func newElectionRapidCluster(tb testing.TB, n int) *electionRapidCluster {
+	tb.Helper()
+	require.GreaterOrEqual(tb, n, 2)
 
-	c := newRapidClusterShell(t, n)
+	c := newRapidClusterShell(tb, n)
 	for id := range n {
 		c.nodes[id] = c.constructNode(int32(id), n)
 	}
@@ -366,16 +366,16 @@ func newElectionRapidCluster(t *testing.T, n int) *electionRapidCluster {
 	// winEdgeObserver baselined initLoaded/maxCandidateSeen on leave-Init.
 	c.tickAll()
 	for _, node := range c.nodes {
-		require.NotEqual(t, election.ElectionStateInit, node.election.State())
-		require.True(t, node.initLoaded)
+		require.NotEqual(tb, election.ElectionStateInit, node.election.State())
+		require.True(tb, node.initLoaded)
 	}
 	return c
 }
 
 // newRapidClusterShell returns a cluster with n empty node slots.
-func newRapidClusterShell(t *testing.T, n int) *electionRapidCluster {
+func newRapidClusterShell(tb testing.TB, n int) *electionRapidCluster {
 	return &electionRapidCluster{
-		t:          t,
+		t:          tb,
 		nodes:      make([]*rapidNode, n),
 		blocked:    make(map[[2]int32]bool),
 		leaderWins: make(map[int64]int32),
@@ -450,15 +450,6 @@ func (c *electionRapidCluster) constructNodeWithConfig(
 
 	c.bindElection(c.t, node, cfg, memberPtrs, cfg.AppendPosition, opts...)
 	return node
-}
-
-// closeStores releases every node's NodeStateFile fd and mmap. Per-check
-// property closures defer this so stores do not accumulate across rapid checks
-// and shrink replays; the outer t.Cleanup close is then an idempotent no-op.
-func (c *electionRapidCluster) closeStores() {
-	for _, n := range c.nodes {
-		require.NoError(c.t, n.nodeState.store.Close())
-	}
 }
 
 // bindElection builds host/agent/publisher and NewElection for a live node.

@@ -14,22 +14,22 @@ import (
 )
 
 func addLogJoinImage(
-	t *testing.T,
+	tb testing.TB,
 	sub *aeron.Subscription,
 	sessionID int32,
 	correlationID int64,
 	joinPosition int64,
 ) *aeron.Image {
-	t.Helper()
+	tb.Helper()
 
 	image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
-		t,
+		tb,
 		sub,
 		sessionID,
 		correlationID,
 		joinPosition,
 	)
-	require.True(t, aeron.SubscriptionAddImageForHooks(sub, image))
+	require.True(tb, aeron.SubscriptionAddImageForHooks(sub, image))
 	return image
 }
 
@@ -287,15 +287,15 @@ func TestSubscriptionLogJoinSource_fakeClosedThenOpenSameSession(t *testing.T) {
 }
 
 func agentWithLogJoin(
-	t *testing.T,
+	tb testing.TB,
 	sessionID int32,
 	joinPosition int64,
 	cfg AgentConfig,
 ) (*Agent, *aeron.Image, *LogAdapter) {
-	t.Helper()
+	tb.Helper()
 
-	sub := aeron.NewTestSubscriptionForHooks(t)
-	image := addLogJoinImage(t, sub, sessionID, 2000, joinPosition)
+	sub := aeron.NewTestSubscriptionForHooks(tb)
+	image := addLogJoinImage(tb, sub, sessionID, 2000, joinPosition)
 	src := NewSubscriptionLogJoinSource(sub)
 	adapter := NewLogAdapter(0)
 	cfg.LogJoinSource = src

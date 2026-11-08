@@ -12,11 +12,14 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/cnc/cnctest"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		meta := cnc.DrawRapidBufferLengths(rt, cnc.TestRapidMaxField)
 
 		path := filepath.Join(t.TempDir(), cnc.FileName)
@@ -43,6 +46,8 @@ func TestMapCncFile_roundtrip_rapid(t *testing.T) {
 func TestMapCncFile_hugeMetadataShortFile_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		meta := cnc.DrawOverflowBufferLengths(rt)
 
 		path := filepath.Join(t.TempDir(), cnc.FileName)

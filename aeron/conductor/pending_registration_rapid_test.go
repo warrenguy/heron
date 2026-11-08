@@ -18,6 +18,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 var errRapidApplySubscriptionReady = errors.New("conductor_test: apply subscription ready failed")
@@ -34,11 +35,11 @@ var rapidPendingKinds = []conductor.PendingKind{
 	conductor.PendingKindDestination,
 }
 
-func newConductorForRapid(t *testing.T, rt *rapid.T) *conductor.Conductor {
-	t.Helper()
+func newConductorForRapid(tb testing.TB, rt *rapid.T) *conductor.Conductor {
+	tb.Helper()
 	rt.Helper()
 
-	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(tb, func(error) {}, 0)
 	conductorInstance.SeedServiceTimestamps(*nanoNs)
 	return conductorInstance
 }
@@ -80,6 +81,8 @@ func registerPendingForRapid(
 func TestConductor_RegisterPending_correlationUniqueness_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		conductorInstance := newConductorForRapid(t, rt)
 		count := rapid.IntRange(1, 32).Draw(rt, "count")
 		seen := make(map[int64]pendingRapidSeen, count)
@@ -501,13 +504,13 @@ func assertPendingRapidMapModel(
 }
 
 func newConductorForPendingRapidMap(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 ) (*conductor.Conductor, *int64, *pendingRapidMapModel) {
-	t.Helper()
+	tb.Helper()
 	rt.Helper()
 
-	conductorInstance, nanoNs := newConductorForMutableNanoTest(t, func(error) {}, 0)
+	conductorInstance, nanoNs := newConductorForMutableNanoTest(tb, func(error) {}, 0)
 	*nanoNs = pendingRapidBaseNowNs
 	conductorInstance.SeedServiceTimestamps(pendingRapidBaseNowNs)
 	return conductorInstance, nanoNs, &pendingRapidMapModel{
@@ -594,7 +597,6 @@ func drawPendingRapidCompletionCorrelationID(
 }
 
 func runPendingRapidMapOps(
-	t *testing.T,
 	rt *rapid.T,
 	conductorInstance *conductor.Conductor,
 	nanoNs *int64,
@@ -797,6 +799,8 @@ func runPendingRapidMapOps(
 func TestConductor_pendingRegistry_lifecycle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		conductorInstance, nanoNs, model := newConductorForPendingRapidMap(t, rt)
 		seen := make(map[int64]struct{})
 		seedCount := rapid.IntRange(1, 16).Draw(rt, "seedCount")
@@ -813,7 +817,7 @@ func TestConductor_pendingRegistry_lifecycle_rapid(t *testing.T) {
 
 		steps := rapid.IntRange(1, 24).Draw(rt, "steps")
 		for step := range steps {
-			runPendingRapidMapOps(t, rt, conductorInstance, nanoNs, model, seen, step)
+			runPendingRapidMapOps(rt, conductorInstance, nanoNs, model, seen, step)
 			assertPendingRapidMapModel(rt, conductorInstance, *model)
 		}
 	})
@@ -875,6 +879,8 @@ const (
 func TestDriverEventsAdapter_correlated_gate_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		conductorInstance := newConductorForRapid(t, rt)
 		adapter := conductorInstance.EventsAdapterForTest()
 		seen := make(map[int64]struct{})
@@ -1139,17 +1145,17 @@ var (
 )
 
 func ensureRapidPublicationLogBuffersSeeded(
-	t *testing.T,
+	tb testing.TB,
 	conductorInstance *conductor.Conductor,
 	spec rapidPublicationPendingSpec,
 ) {
-	t.Helper()
+	tb.Helper()
 
 	if conductor.LogBuffersRegistryRefCountForTest(
 		conductor.LogBuffersRegistryForTest(conductorInstance),
 		spec.logFileName,
 	) == 0 {
-		spec.seedLog(t, conductorInstance)
+		spec.seedLog(tb, conductorInstance)
 	}
 }
 
@@ -1240,15 +1246,15 @@ func registerAddPendingBindRetirePublication(
 }
 
 func completeAddPendingRapidPublicationReady(
-	t *testing.T,
+	tb testing.TB,
 	conductorInstance *conductor.Conductor,
 	model *addPendingRapidModel,
 	spec rapidPublicationPendingSpec,
 	correlationID int64,
 ) {
-	t.Helper()
+	tb.Helper()
 
-	ensureRapidPublicationLogBuffersSeeded(t, conductorInstance, spec)
+	ensureRapidPublicationLogBuffersSeeded(tb, conductorInstance, spec)
 	event := spec.eventFor(correlationID)
 	event.RegistrationID = correlationID + 1
 	spec.deliverReady(conductorInstance, event)
@@ -1273,21 +1279,21 @@ func applyAddPendingRapidReadyMark(
 }
 
 func completeAddPendingBindRetirePublicationReady(
-	t *testing.T,
+	tb testing.TB,
 	conductorInstance *conductor.Conductor,
 	lifecycle *addPendingBindRetireRapidLifecycle,
 	model *addPendingBindRetireRapidModel,
 	spec rapidPublicationPendingSpec,
 	correlationID int64,
 ) {
-	t.Helper()
+	tb.Helper()
 
 	event := spec.eventFor(correlationID)
 	event.RegistrationID = correlationID + 1
 	if lifecycle.useRealPublication {
-		seedPublicationCountersForTest(t, conductorInstance, event)
+		seedPublicationCountersForTest(tb, conductorInstance, event)
 	}
-	ensureRapidPublicationLogBuffersSeeded(t, conductorInstance, spec)
+	ensureRapidPublicationLogBuffersSeeded(tb, conductorInstance, spec)
 	spec.deliverReady(conductorInstance, event)
 	if !receivedCorrelationMatches(conductorInstance, correlationID) {
 		return
@@ -1444,7 +1450,7 @@ func scanAddPendingRapidEligibility(model addPendingRapidModel) addPendingRapidE
 }
 
 func runAddPendingRapidStep(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 	conductorInstance *conductor.Conductor,
 	lifecycle *recordingResourceLifecycle,
@@ -1536,7 +1542,7 @@ func runAddPendingRapidStep(
 			return
 		}
 		completeAddPendingRapidPublicationReady(
-			t,
+			tb,
 			conductorInstance,
 			model,
 			rapidAddPublicationSpec,
@@ -1552,7 +1558,7 @@ func runAddPendingRapidStep(
 			return
 		}
 		completeAddPendingRapidPublicationReady(
-			t,
+			tb,
 			conductorInstance,
 			model,
 			rapidAddExclusivePublicationSpec,
@@ -1694,6 +1700,8 @@ func runAddPendingRapidStep(
 func TestConductor_addPending_teardown_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		nanoNs := pendingRapidBaseNowNs
 		conductorInstance, lifecycle := newConductorWithResourceLifecycleMutableNanoForTest(t, 0, &nanoNs)
 		conductorInstance.SeedServiceTimestamps(nanoNs)
@@ -2073,7 +2081,7 @@ func assertAddPendingBindRetireRapidInvariants(
 }
 
 func runAddPendingBindRetireFailureRapidStep(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 	conductorInstance *conductor.Conductor,
 	lifecycle *addPendingBindRetireRapidLifecycle,
@@ -2185,7 +2193,7 @@ func runAddPendingBindRetireFailureRapidStep(
 			return
 		}
 		completeAddPendingBindRetirePublicationReady(
-			t,
+			tb,
 			conductorInstance,
 			lifecycle,
 			model,
@@ -2202,7 +2210,7 @@ func runAddPendingBindRetireFailureRapidStep(
 			return
 		}
 		completeAddPendingBindRetirePublicationReady(
-			t,
+			tb,
 			conductorInstance,
 			lifecycle,
 			model,
@@ -2353,6 +2361,8 @@ func runAddPendingBindRetireFailureRapidStep(
 func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		nanoNs := pendingRapidBaseNowNs
 		errorHandler, gotErrors := collectConductorErrors()
 		lifecycle := &addPendingBindRetireRapidLifecycle{}
@@ -2388,6 +2398,8 @@ func TestConductor_addPending_teardown_bindRetireFailure_rapid(t *testing.T) {
 func TestConductor_handlePublicationReady_buildFailure_refCount_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		spec := rapidAddPublicationSpec
 		if rapid.Bool().Draw(rt, "exclusive") {
 			spec = rapidAddExclusivePublicationSpec

@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const asyncSignalRapidOtherRecordingID int64 = 7
@@ -260,6 +261,8 @@ func TestAsyncSignalRequest_model_rapid(t *testing.T) {
 	term := newAsyncRapidTerm(t)
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		pub, proxy := newTestProxy(Config{})
 		client := term.newClient(aeronClient, proxy)
 		model := &asyncSignalModel{}

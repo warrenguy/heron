@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/broadcast"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const (
@@ -114,6 +115,8 @@ func (receiver *pairsRapidReceiver) receive(rt *rapid.T) bool {
 
 func TestCopyBroadcastReceiver_transmittedPairs_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		capacity := rapid.SampledFrom([]int{128, 256, 512, 1024}).Draw(rt, "capacity")
 		scratchLength := rapid.IntRange(8, 64).Draw(rt, "scratchLength")
 

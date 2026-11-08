@@ -10,15 +10,16 @@ import (
 
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func descriptorRapidResponseWire(
-	t *testing.T,
+	tb testing.TB,
 	correlationID int64,
 	code archivewire.ControlResponseCode,
 ) []byte {
-	t.Helper()
-	return encodeControlResponseWire(t, codecs.ControlResponseFields{
+	tb.Helper()
+	return encodeControlResponseWire(tb, codecs.ControlResponseFields{
 		ControlSessionID: controlResponseTestControlSessionID,
 		CorrelationID:    correlationID,
 		Code:             code,
@@ -60,13 +61,15 @@ func (m *descriptorPollerModel) applyDescriptor(correlationID int64) {
 	m.complete = true
 }
 
-// TestRecordingDescriptorPoller_completionModel_rapid checks the descriptor poller
-// completion state machine against a reference model over random event sequences: OK and
-// error responses, and matching and foreign descriptors, applied through the demux
-// dispatch functions.
+// TestRecordingDescriptorPoller_completionModel_rapid checks the poller
+// completion state machine against a reference model. Random sequences mix OK
+// responses, error responses, matching descriptors, and foreign descriptors.
+// The demux dispatch functions deliver each event.
 func TestRecordingDescriptorPoller_completionModel_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const await int64 = 4242
 		const foreign int64 = 9999
 

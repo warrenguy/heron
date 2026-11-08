@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // prepareReseedModel is the reference state for the prepare reseed property.
@@ -27,9 +28,9 @@ type prepareReseedModel struct {
 	missed bool
 }
 
-// Asserts prepare replaces the log subscription exactly when the adapter holds
-// no open image or the last join query missed. Draws random bind, close, query
-// and prepare sequences with scripted add failures.
+// Asserts prepare replaces the log subscription exactly when the adapter does
+// not hold an open image or the last join query missed. Draws random bind,
+// close, query, and prepare sequences with scripted add failures.
 func TestCatchupControl_prepareReseed_rapid(t *testing.T) {
 	t.Parallel()
 
@@ -39,6 +40,8 @@ func TestCatchupControl_prepareReseed_rapid(t *testing.T) {
 	)
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		fixture := openCatchupTestStreams(t)
 		fixture.agent.SetCatchupControl(newTestCatchupControl(t, fixture, &fakeReplayControl{}))
 		cause := errors.New("driver refused")

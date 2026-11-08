@@ -17,11 +17,14 @@ import (
 	"github.com/warrenguy/heron/archive"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestRetainLatestSnapshot_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		serviceCount := rapid.IntRange(0, 2).Draw(rt, "serviceCount")
 		dir, archive := newRetentionDir(t)
 		log := createLog(t, dir)

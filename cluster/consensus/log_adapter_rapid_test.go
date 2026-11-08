@@ -15,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // TestLogAdapter_Poll_boundIsolation_rapid checks Poll against a reference
@@ -25,6 +26,8 @@ import (
 func TestLogAdapter_Poll_boundIsolation_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		limit := rapid.IntRange(1, 6).Draw(rt, "fragmentLimit")
 		a, image := boundLogAdapterWithLimit(t, limit)
 		spy := &logAdapterHandlerSpy{}
@@ -262,22 +265,22 @@ func (m *snapshotHoldModel) expectedAckID() int64 {
 // writeSnapshotHoldFrames writes one frame per kind from position 0. Returns
 // the end of each frame.
 func writeSnapshotHoldFrames(
-	t *testing.T,
+	tb testing.TB,
 	image *aeron.Image,
 	kinds []snapshotHoldFrame,
 ) []int64 {
-	t.Helper()
+	tb.Helper()
 	ends := make([]int64, 0, len(kinds))
 	offset := 0
 	for i, kind := range kinds {
 		var end int64
 		switch kind {
 		case snapshotHoldMessage:
-			end = writeSessionMessageFrame(t, image, offset, int64(i+1))
+			end = writeSessionMessageFrame(tb, image, offset, int64(i+1))
 		case snapshotHoldSnapshot:
-			end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SNAPSHOT, 0)
+			end = writeClusterActionFrame(tb, image, offset, clusterwire.ClusterAction_SNAPSHOT, 0)
 		default:
-			end = writeClusterActionFrame(t, image, offset, clusterwire.ClusterAction_SUSPEND, 0)
+			end = writeClusterActionFrame(tb, image, offset, clusterwire.ClusterAction_SUSPEND, 0)
 		}
 		ends = append(ends, end)
 		offset = int(end)
@@ -287,16 +290,20 @@ func writeSnapshotHoldFrames(
 
 // TestAgent_snapshotActionHold_rapid checks the snapshot hold against a
 // reference model over random logs and random poll, replay, ack, control,
-// module take and prepare steps. A replay binds a replay image at commit,
-// replays to a drawn stop, unbinds, then rebinds the live image at the replay
-// end. A log poll never passes a pending snapshot wait or an unresolved
-// module take. The adapter never moves below a popped action. The wait FIFO,
-// commit and expected ack id match the model. A final drain pops every
-// remaining wait and resolves every take, so every snapshot action ends popped
-// or retired.
+// module take, and prepare steps.
+//
+// Invariants:
+//   - a log poll never passes a pending snapshot wait or an unresolved
+//     module take
+//   - the adapter never moves below a popped action
+//   - the wait FIFO, commit, and expected ack id match the model
+//   - a final drain pops every wait and resolves every take. Every snapshot
+//     action then ends popped or retired.
 func TestAgent_snapshotActionHold_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
 		adapter, image := boundLogAdapter(t)
 		replayImage := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
@@ -494,11 +501,11 @@ type replayTimerRequest struct {
 }
 
 // TestTimerEventConsume_replayRange_rapid checks that a promoted follower
-// fires no timer whose TimerEvent sat in its log, steady range or election
-// replay range alike. A service model schedules one timer per schedule point
-// it reads under commit, with a drawn lag. Every id fires once in total: a
-// TimerEvent in the log counts as the fire. No service cancel or reschedule
-// runs.
+// does not fire a timer whose TimerEvent is already in its log. The check
+// covers the steady range and the election replay range. A service model
+// schedules one timer per schedule point it reads under commit, with a drawn
+// lag. Every id fires once in total. A TimerEvent in the log counts as the
+// fire.
 func TestTimerEventConsume_replayRange_rapid(t *testing.T) {
 	t.Parallel()
 
@@ -507,6 +514,8 @@ func TestTimerEventConsume_replayRange_rapid(t *testing.T) {
 		nowNs     int64 = 5
 	)
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		limit := rapid.IntRange(1, 3).Draw(rt, "fragmentLimit")
 		adapter, image := boundLogAdapterWithLimit(t, limit)
 		replayImage := aeron.NewTestImageForHooks(t, aeron.NewTestSubscriptionForHooks(t), 0)
@@ -653,13 +662,15 @@ func TestTimerEventConsume_replayRange_rapid(t *testing.T) {
 // leads again and runs timer work past every deadline, or follows and reads
 // a new leader's TimerEvent for each truncated id.
 //
-// A re-led member fires each truncated id exactly once. Either way no timer
-// and no count remains.
+// A re-led member fires each truncated id exactly once. Either way, the member
+// ends without a timer or a count.
 func TestTimerEventConsume_formerLeaderReplayRange_rapid(t *testing.T) {
 	t.Parallel()
 
 	const logTermID int64 = 3
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		a, q, pub := leaderWithTimerIngress(t, AgentConfig{
 			LeadershipTermID: logTermID,
 			Commit:           new(atomic.Int64),

@@ -554,11 +554,11 @@ func TestJoinLogAsLeader_unbindsLogImage(t *testing.T) {
 
 // copyLogFrames writes each frame of pub below end into image at the same
 // term offset, so each frame keeps its log position.
-func copyLogFrames(t *testing.T, pub *aeron.ExclusivePublication, image *aeron.Image, end int64) {
-	t.Helper()
+func copyLogFrames(tb testing.TB, pub *aeron.ExclusivePublication, image *aeron.Image, end int64) {
+	tb.Helper()
 	for offset := 0; int64(offset) < end; {
-		payload, next := termWireAt(t, pub, offset)
-		writeLogAdapterUnfragmentedFrame(t, image, offset, payload)
+		payload, next := termWireAt(tb, pub, offset)
+		writeLogAdapterUnfragmentedFrame(tb, image, offset, payload)
 		offset = next
 	}
 }

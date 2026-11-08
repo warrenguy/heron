@@ -18,16 +18,16 @@ import (
 	"github.com/warrenguy/heron/internal/testutil"
 )
 
-func openInDir(t *testing.T, content []byte, createNew bool) (*recordinglog.Log, string) {
-	t.Helper()
-	dir := t.TempDir()
+func openInDir(tb testing.TB, content []byte, createNew bool) (*recordinglog.Log, string) {
+	tb.Helper()
+	dir := tb.TempDir()
 	path := filepath.Join(dir, "recording.log")
 	if content != nil {
-		require.NoError(t, os.WriteFile(path, content, 0o600))
+		require.NoError(tb, os.WriteFile(path, content, 0o600))
 	}
 	log, err := recordinglog.Open(dir, createNew)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, log.Close()) })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { require.NoError(tb, log.Close()) })
 	return log, path
 }
 
@@ -39,11 +39,11 @@ func encodeEntries(entries ...recordinglog.Entry) []byte {
 	return content
 }
 
-// openWithEntries encodes entries to a fresh recording.log, opens it, registers
-// Close, and returns the open Log with the file path for Reload comparisons.
-func openWithEntries(t *testing.T, entries ...recordinglog.Entry) (*recordinglog.Log, string) {
-	t.Helper()
-	return openInDir(t, encodeEntries(entries...), false)
+// openWithEntries writes entries to a new recording.log and opens it.
+// tb.Cleanup closes the log. Returns the log and the file path.
+func openWithEntries(tb testing.TB, entries ...recordinglog.Entry) (*recordinglog.Log, string) {
+	tb.Helper()
+	return openInDir(tb, encodeEntries(entries...), false)
 }
 
 func requireReloadMatchesLog(tb testing.TB, path string, log *recordinglog.Log) {
@@ -279,9 +279,9 @@ func TestEnsureCoherent_recordingIDRegimes(t *testing.T) {
 	})
 }
 
-func newLog(t *testing.T) (*recordinglog.Log, string) {
-	t.Helper()
-	return openInDir(t, nil, true)
+func newLog(tb testing.TB) (*recordinglog.Log, string) {
+	tb.Helper()
+	return openInDir(tb, nil, true)
 }
 
 func TestAppend_roundtripEqualsReload(t *testing.T) {

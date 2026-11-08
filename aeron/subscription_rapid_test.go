@@ -12,6 +12,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type subImageOp int
@@ -68,6 +69,8 @@ func TestSubscription_imageMapInvariants_rapid(t *testing.T) {
 	t.Parallel()
 	sessionIDs := []int32{11, 22, 33}
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		sub := testSubscription(t)
 
 		opCount := rapid.IntRange(1, 12).Draw(rt, "opCount")
@@ -173,6 +176,8 @@ func addSubscriptionPollImageWithRandomFrames(
 func TestSubscription_Poll_invariants_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		sub := testSubscription(t)
 		imageCount := rapid.IntRange(1, 4).Draw(rt, "imageCount")
 		images := make([]*aeron.Image, 0, imageCount)
@@ -254,6 +259,8 @@ func (model *subscriptionRotationModel) poll(limit int) [][]byte {
 func TestSubscription_Poll_roundRobinModel_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		sub := testSubscription(t)
 		slotCount := rapid.IntRange(0, 4).Draw(rt, "slotCount")
 		model := &subscriptionRotationModel{queues: make([][][]byte, slotCount)}

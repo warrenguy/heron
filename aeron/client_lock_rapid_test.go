@@ -10,7 +10,8 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 var closedGuardAfterPollPendingKinds = []conductor.PendingKind{
@@ -28,11 +29,11 @@ func drawClosedGuardAfterPollPendingKind(rt *rapid.T) conductor.PendingKind {
 }
 
 func setupPreMarkedClosedGuardPending(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 	kind conductor.PendingKind,
 ) (*Client, int64, func(*Client) int) {
-	t.Helper()
+	tb.Helper()
 	rt.Helper()
 
 	var nanoNs int64
@@ -42,7 +43,7 @@ func setupPreMarkedClosedGuardPending(
 	switch kind {
 	case conductor.PendingKindNextSessionID:
 		client, fixture := newClientAwaitFixture(
-			t,
+			tb,
 			func() int64 { return nanoNs },
 			driverTimeout,
 			idleSleep,
@@ -62,15 +63,15 @@ func setupPreMarkedClosedGuardPending(
 
 	case conductor.PendingKindAddPublication, conductor.PendingKindAddExclusivePublication:
 		testCase := clientAddPublicationKindCaseFor(kind)
-		dir, logPath := testCase.setupLog(t)
+		dir, logPath := testCase.setupLog(tb)
 		client, fixture := newClientAddFixture(
-			t,
+			tb,
 			func() int64 { return nanoNs },
 			driverTimeout,
 			idleSleep,
 			dir,
 		)
-		fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(t))
+		fixture.Conductor.SetCountersReaderForTest(countersReaderForClientAddTest(tb))
 		correlationID := client.NextCorrelationID()
 		deadlineNs := client.nanoClock() + driverTimeout.Nanoseconds()
 		require.NoError(
@@ -91,9 +92,9 @@ func setupPreMarkedClosedGuardPending(
 		return client, correlationID, (*Client).PublicationCountForTest
 
 	case conductor.PendingKindAddSubscription:
-		dir := t.TempDir()
+		dir := tb.TempDir()
 		client, fixture := newClientAddFixture(
-			t,
+			tb,
 			func() int64 { return nanoNs },
 			driverTimeout,
 			idleSleep,
@@ -145,6 +146,8 @@ func wantGuardClosedBeforeOfferErr(
 func TestClient_awaitPendingPoll_closedGuardAfterPollPending_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		kind := drawClosedGuardAfterPollPendingKind(rt)
@@ -165,6 +168,8 @@ func TestClient_awaitPendingPoll_closedGuardAfterPollPending_rapid(t *testing.T)
 func TestClient_guardClosedBeforeOffer_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		closed := rapid.Bool().Draw(rt, "closed")
@@ -185,7 +190,7 @@ func TestClient_guardClosedBeforeOffer_rapid(t *testing.T) {
 
 		driverProxy := fixture.DriverProxy
 		if !proxyMatch {
-			driverProxy = conductor.NewDriverProxy(fixture.Ring, testutil.TestClientID+1)
+			driverProxy = conductor.NewDriverProxy(fixture.Ring, aerontestutil.TestClientID+1)
 		}
 
 		err := client.GuardClosedBeforeOfferForTest(driverProxy, cncMappedAtOfferStart)

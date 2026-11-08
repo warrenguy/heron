@@ -72,17 +72,17 @@ func writeTermLog(t *testing.T, dir string, terms int) {
 //   - stride*terms as the committed position when commitLast is true
 //   - stride*terms as the last term's end when commitLast is false
 func writeTermHistory(
-	t *testing.T,
+	tb testing.TB,
 	dir string,
 	recordingID int64,
 	terms int,
 	commitLast bool,
 ) int64 {
-	t.Helper()
+	tb.Helper()
 	log, err := recordinglog.Open(dir, true)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	for i := range terms {
-		require.NoError(t, log.AppendTerm(
+		require.NoError(tb, log.AppendTerm(
 			recordingID,
 			int64(i),
 			termBaseStride*int64(i),
@@ -91,9 +91,9 @@ func writeTermHistory(
 	}
 	end := termBaseStride * int64(terms)
 	if commitLast {
-		require.NoError(t, log.CommitLogPosition(int64(terms-1), end))
+		require.NoError(tb, log.CommitLogPosition(int64(terms-1), end))
 	}
-	require.NoError(t, log.Close())
+	require.NoError(tb, log.Close())
 	return end
 }
 

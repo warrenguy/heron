@@ -9,6 +9,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type resourceMapOpKind int
@@ -190,6 +191,8 @@ func TestConductor_resourceMap_operations_rapid(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			rapid.Check(t, func(rt *rapid.T) {
+				t := testutil.IterationTB(t, rt)
+
 				conductorInstance := newBareConductorForResourceMapTest(t)
 				runResourceMapOpsRapid(rt, conductorInstance, testCase.harness)
 			})

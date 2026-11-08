@@ -11,18 +11,21 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // TestLogPublisher_AppendSessionOpen_lengthBounds_rapid asserts AppendSessionOpen
-// accepts totals within MaxMessageLength and rejects oversize with
-// UnsupportedMessageLength before Offer.
+// accepts totals within MaxMessageLength. AppendSessionOpen rejects an oversize
+// total with UnsupportedMessageLength before Offer.
 //
-// Draws stratify into reject, single-frame accept, and mid-band accept with fixed
-// mass each. Fresh publisher per draw keeps term capacity out of the oracle.
-// Field roundtrip runs only when total fits MaxPayloadLength.
+// Draws split into reject, single-frame accept, and mid-band accept. A fresh
+// publisher per draw keeps term capacity out of the oracle. The field roundtrip
+// runs only when the total fits MaxPayloadLength.
 func TestLogPublisher_AppendSessionOpen_lengthBounds_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		p, pub := boundLogPublisher(t)

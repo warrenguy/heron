@@ -13,6 +13,7 @@ import (
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // logShape names the recording-log fixture shapes the properties draw over.
@@ -151,7 +152,7 @@ type restartHistory struct {
 // recordinglog.NullPosition. That draw hits the still-active-recording path in
 // election.ApplyRecoveryPlan.
 func drawRestartHistory(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 	dir string,
 	lister *fakeLister,
@@ -166,7 +167,7 @@ func drawRestartHistory(
 		recordinglog.NullPosition,
 	}).Draw(rt, "stop_position")
 
-	writeTermHistory(t, dir, recordingID, terms, lastCommitted)
+	writeTermHistory(tb, dir, recordingID, terms, lastCommitted)
 
 	if lister != nil {
 		lister.extents[recordingID] = extent(0, stopPosition)
@@ -199,6 +200,8 @@ func TestOpenRecovery_guardMatrix_rapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 
 		haveLister := rapid.Bool().Draw(rt, "have_lister")
@@ -351,6 +354,8 @@ func TestRecoveryElectionConfig_seedOracle_rapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 		cfg, lister, _ := drawSeededConfig(rt, dir)
 
@@ -376,6 +381,8 @@ func TestOpenRecovery_reopenStable_rapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 		cfg, lister, shape := drawSeededConfig(rt, dir)
 		wroteTerms := shape == shapeTerms
@@ -428,6 +435,8 @@ func TestOpenRecovery_restartSeed_rapid(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 		lister := &fakeLister{
 			extents: make(map[int64]recordinglog.LogRecordingExtents),
