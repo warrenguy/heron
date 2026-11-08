@@ -233,11 +233,9 @@ const (
 	// MixedTestTimeoutJavaLeader bounds the java-leader smoke wall clock.
 	MixedTestTimeoutJavaLeader = 120 * time.Second
 
-	// MixedTestTimeoutGoLeader bounds the go-leader smoke wall clock.
-	// Stack: Startup, Election, Election for service probe, Commit.
-	//
-	// No client connect wait.
-	MixedTestTimeoutGoLeader = 120 * time.Second
+	// MixedTestTimeoutGoLeader bounds the go-leader smoke wall clock. The
+	// wait stack inside the test is 130s.
+	MixedTestTimeoutGoLeader = 140 * time.Second
 
 	// MixedRejoinStartupCanvassTimeout shortens the Go member's startup canvass
 	// from the 60s default. A restart keeps the value. Java rejects a Go vote

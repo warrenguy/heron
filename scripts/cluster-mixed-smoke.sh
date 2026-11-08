@@ -24,8 +24,8 @@ usage() {
 	exit 1
 }
 
-# Outer wall-clock cap for the compose run. The 130s default covers a 120s Go
-# -test.timeout plus teardown. 310s covers a 300s -test.timeout plus teardown.
+# Outer wall-clock cap for compose wait. Each cap is the overlay -test.timeout
+# plus 10s.
 OUTER_TIMEOUT_S=130
 
 # Max subnet picks before compose up gives up. Each attempt walks one octet.
@@ -47,6 +47,7 @@ go-leader)
 	OVERLAY_FILES=("${COMPOSE_DIR}/compose.go-leader.yaml")
 	SMOKE_NAME="TestClusterMixedGoLeader"
 	OCTET_BASE=51
+	OUTER_TIMEOUT_S=150
 	;;
 ex-leader-rejoin)
 	OVERLAY_FILES=("${COMPOSE_DIR}/compose.ex-leader-rejoin.yaml")

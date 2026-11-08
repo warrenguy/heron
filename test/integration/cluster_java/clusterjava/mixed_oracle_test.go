@@ -259,7 +259,7 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedTestTimeoutGoLeader",
 			got:  clusterjava.MixedTestTimeoutGoLeader,
-			want: 120 * time.Second,
+			want: 140 * time.Second,
 		},
 		{
 			name: "MixedRejoinStartupCanvassTimeout",
@@ -653,11 +653,12 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 		2*clusterjava.MixedCommitBudget
 	require.Less(t, stackedJavaLeader, clusterjava.MixedTestTimeoutJavaLeader)
 
-	// go-leader has no client connect wait. Service probe reuses MixedElectionBudget.
+	// The service probe reuses MixedElectionBudget. The third MixedCommitBudget
+	// bounds the shutdown wait.
 	stackedGoLeader := clusterjava.MixedStartupBudget +
 		clusterjava.MixedElectionBudget +
 		clusterjava.MixedElectionBudget +
-		2*clusterjava.MixedCommitBudget
+		3*clusterjava.MixedCommitBudget
 	require.Less(t, stackedGoLeader, clusterjava.MixedTestTimeoutGoLeader)
 
 	// Ex-leader rejoin stack: startup twice, election twice, the Java term, the

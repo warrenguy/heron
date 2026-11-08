@@ -3,10 +3,13 @@
 package cluster_mixed_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
 )
 
@@ -97,19 +100,12 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 	markMixedSmokeCompleted(t)
 }
 
-// TestClusterMixedGoLeader elects the Go appointed leader and advances Java
-// commit counters from term-start log frames. Runs only under
+// TestClusterMixedGoLeader elects the Go appointed leader, then shuts down the
+// cluster from that leader. Runs only under
 // HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE.
 //
-// Asserts durable log recording after elect. The Go leader records its own
-// cluster log publication locally. The recorded position reaches the commit
-// position the Java followers advanced. Each Java member's recording-position
-// counter for that log session reaches the same commit.
-//
-// No client session offer: Go ServiceCount is 0.
-//
-// No t.Parallel: single owner of compose-fixed MixedAeronDir*, MixedClusterDir*,
-// PortBase 9000, and MixedLogEndpoint. Do not Parallelize.
+// Do not add t.Parallel. The test is the single owner of compose-fixed
+// MixedAeronDir*, MixedClusterDir*, PortBase 9000, and MixedLogEndpoint.
 func TestClusterMixedGoLeader(t *testing.T) {
 	requireMixedCompose(
 		t,
@@ -129,7 +125,15 @@ func TestClusterMixedGoLeader(t *testing.T) {
 	recorded := recordJavaCommitPositions(t, java)
 
 	// Open the Go module as appointed leader 2. Multicast log channel.
-	f := openMixedGoMember(t, buildMixedGoLeaderConfig(t))
+	//
+	// ServiceCount is 0, so the shutdown skips the service termination wait. The
+	// leader stops waiting for TerminationAck at the TerminationTimeoutNs
+	// deadline. The default deadline is shorter than MixedCommitBudget. With this
+	// override, a planned return inside MixedCommitBudget needs a TerminationAck
+	// from each Java follower.
+	cfg := buildMixedGoLeaderConfig(t)
+	cfg.TerminationTimeoutNs = int64(2 * clusterjava.MixedCommitBudget)
+	f := openMixedGoMember(t, cfg)
 	writeReady(t)
 
 	// Elect: Go leads; both Java members follow; terms agree. Uses the mid-wait
@@ -187,6 +191,38 @@ func TestClusterMixedGoLeader(t *testing.T) {
 		commitAfter,
 		clusterjava.MixedCommitBudget,
 	)
+
+	// Shutdown: write SHUTDOWN on the leader toggle.
+	reader, err := f.module.Client().CountersReader()
+	require.NoError(t, err)
+	control, found := cluster.FindControlToggle(reader, 0)
+	require.True(t, found, "Go leader control toggle")
+	require.True(t, consensus.ControlToggleShutdown.Toggle(control))
+
+	ctx, cancel := context.WithTimeout(context.Background(), clusterjava.MixedCommitBudget)
+	defer cancel()
+	runErr := f.runner.Run(ctx)
+
+	require.ErrorIs(
+		t,
+		runErr,
+		consensus.ErrClusterTerminated,
+		"shutdown did not end Run:\n%s",
+		dumpMixedState(f.module, java),
+	)
+
+	var planned *consensus.TerminationError
+	require.ErrorAs(t, runErr, &planned)
+	require.True(t, planned.Expected, planned)
+	require.Equal(t, consensus.ModuleStateClosed, f.module.ModuleState())
+
+	position := f.module.Agent().TerminationPosition()
+
+	take, takeOK := f.module.Agent().LastSnapshotTake()
+	require.True(t, takeOK)
+	require.NoError(t, take.Err)
+	require.Equal(t, position, take.LogPosition)
+	require.Equal(t, position, f.module.CommitPosition())
 
 	require.NoError(t, f.module.Close())
 	require.True(t, pub.IsClosed(), "log publication must report closed after Close")
