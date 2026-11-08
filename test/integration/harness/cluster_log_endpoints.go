@@ -159,6 +159,16 @@ const (
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
 )
 
+// Process cluster smoke endpoints. The pair reserves one three-member
+// consensus port block (15601-15805) and one shared cluster-log multicast
+// endpoint.
+//
+// The final octet of the group address must be odd.
+const (
+	ProcessClusterSmokePortBase    = 15600
+	ProcessClusterSmokeLogEndpoint = "239.255.12.107:15604"
+)
+
 // Cluster termination endpoints. The pair reserves one three-member consensus
 // port block (17101-17305) and one shared cluster-log multicast endpoint. The
 // next block above starts at 18301 (ClusterControlPortBase).
@@ -884,6 +894,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterJavaPortBase,
 			memberCount: ClusterJavaMemberCount,
 			logEndpoint: ClusterJavaMixedLogEndpoint,
+		},
+		{
+			name:        "process-cluster-smoke",
+			portBase:    ProcessClusterSmokePortBase,
+			memberCount: 3,
+			logEndpoint: ProcessClusterSmokeLogEndpoint,
 		},
 		{
 			name:        "cluster-termination",
