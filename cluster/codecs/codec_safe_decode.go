@@ -710,6 +710,10 @@ func decodeTemplateFields(
 		}, true
 	case clusterwire.StopCatchupSbeTemplateID:
 		return decodeStopCatchupFields(buf, body, block, version, bufLen), true
+	case clusterwire.TerminationPositionSbeTemplateID:
+		return decodeTerminationPositionFields(buf, body, block, version, bufLen), true
+	case clusterwire.TerminationAckSbeTemplateID:
+		return decodeTerminationAckFields(buf, body, block, version, bufLen), true
 	case clusterwire.TimerEventSbeTemplateID:
 		return decodeTimerEventFields(buf, body, block, version, bufLen), true
 	case clusterwire.SessionOpenEventSbeTemplateID:

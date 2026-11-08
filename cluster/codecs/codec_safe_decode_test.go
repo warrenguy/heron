@@ -45,6 +45,8 @@ var fastSlowDecodeParities = []func(tb require.TestingT, buf []byte, offset int)
 	requireClusterSessionFastSlowParity,
 	requirePendingMessageTrackerFastSlowParity,
 	requireServiceTerminationPositionFastSlowParity,
+	requireTerminationPositionFastSlowParity,
+	requireTerminationAckFastSlowParity,
 }
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
@@ -661,5 +663,27 @@ func requireServiceTerminationPositionFastSlowParity(tb require.TestingT, buf []
 		0,
 		clusterwire.ServiceTerminationPositionSbeTemplateID,
 		codecs.TryDecodeServiceTerminationPositionAt,
+	)
+}
+
+func requireTerminationPositionFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.TerminationPositionSbeTemplateID,
+		codecs.TryDecodeTerminationPositionAt,
+	)
+}
+
+func requireTerminationAckFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		0,
+		clusterwire.TerminationAckSbeTemplateID,
+		codecs.TryDecodeTerminationAckAt,
 	)
 }

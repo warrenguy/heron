@@ -216,7 +216,9 @@ func (r *Runner) DoWork() int {
 //   - ctx.Err when ctx is done
 //   - [ErrTransportTerminating] when the transport client enters termination,
 //     even when the member terminates in the same tick
-//   - the agent's [consensus.TerminationError] when the member terminates
+//   - the agent's [consensus.TerminationError] when the member terminates. A
+//     planned termination has cause [consensus.ErrClusterTerminated] and
+//     Expected true
 //
 // A caller that drives [Runner.DoWork] reads [consensus.Agent.TerminationError]
 // itself.

@@ -151,22 +151,12 @@ func (a *Agent) SetNodeControlToggle(counter ToggleCounter) {
 // clusterControlToggleWork acts on the cluster control toggle on a settled
 // leader.
 //
-// Behaviour:
-//   - ACTIVE, SUSPEND: appends a SUSPEND action. Then enters SUSPENDED. The
-//     toggle stays SUSPEND until RESUME or the next election.
-//   - ACTIVE, SNAPSHOT: calls [Agent.RequestSnapshot]. The toggle stays
-//     SNAPSHOT until the snapshot ends.
-//   - ACTIVE, STANDBY_SNAPSHOT: appends a SNAPSHOT action with
-//     [clusterActionFlagsStandbySnapshot]. Then sets NEUTRAL by
-//     compare-and-set from STANDBY_SNAPSHOT. A tool write during the append
-//     stays.
-//   - SUSPENDED, RESUME: appends a RESUME action. Then enters ACTIVE. Then
-//     sets NEUTRAL by compare-and-set from RESUME.
-//   - Any other state or value: does not act or report.
-//   - A refusal or a failed append keeps the toggle. The next slow tick
-//     retries.
+// STANDBY_SNAPSHOT and RESUME reset the toggle to NEUTRAL by compare-and-set,
+// so a tool write during the append survives. Every other toggle stays set
+// after it acts. A refusal or a failed append also keeps the toggle, and the
+// next slow tick retries.
 //
-// Returns 1 after an append, else 0.
+// Returns 1 after an append or an ABORT start, else 0.
 func (a *Agent) clusterControlToggleWork(nowNs int64) int {
 	if a.controlToggle == nil {
 		return 0
@@ -206,6 +196,25 @@ func (a *Agent) clusterControlToggleWork(nowNs int64) int {
 			return 0
 		}
 		a.resetControlToggleFrom(ControlToggleStandbySnapshot)
+		return 1
+
+	case int64(ControlToggleShutdown):
+		if a.RequestSnapshot(nowNs) != nil {
+			return 0
+		}
+
+		a.startClusterTermination()
+		return 1
+
+	case int64(ControlToggleAbort):
+		if !a.startClusterTermination() {
+			return 0
+		}
+
+		if a.termination == nil {
+			a.terminateServices(moduleStateReasonControlAbort, nowNs)
+		}
+
 		return 1
 	}
 	return 0

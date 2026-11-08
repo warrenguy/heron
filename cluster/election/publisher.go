@@ -28,6 +28,14 @@ type Publisher interface {
 	// StopCatchup asks the follower to detach the catchup receive destination.
 	// Returns false when the send does not complete.
 	StopCatchup(dst PublicationTarget, fields codecs.StopCatchupFields) bool
+
+	// TerminationPosition asks a follower to stop at LogPosition. Returns false
+	// when the send does not complete.
+	TerminationPosition(dst PublicationTarget, fields codecs.TerminationPositionFields) bool
+
+	// TerminationAck tells the leader that this member's services stopped at
+	// LogPosition. Returns false when the send does not complete.
+	TerminationAck(dst PublicationTarget, fields codecs.TerminationAckFields) bool
 }
 
 type SentMessage struct {

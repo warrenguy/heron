@@ -335,10 +335,11 @@ func TestModuleAgentConfig_carriesErrorHandler(t *testing.T) {
 
 	auth := &recordingConnectAuthenticator{}
 	cfg := Config{
-		MemberID:         3,
-		SessionTimeoutNs: 7_000,
-		Authenticator:    auth,
-		ServiceCount:     2,
+		MemberID:             3,
+		SessionTimeoutNs:     7_000,
+		TerminationTimeoutNs: 19_000,
+		Authenticator:        auth,
+		ServiceCount:         2,
 	}
 	electionCfg := election.ElectionConfig{
 		LeaderHeartbeatIntervalNs: 11_000,
@@ -362,6 +363,7 @@ func TestModuleAgentConfig_carriesErrorHandler(t *testing.T) {
 		LeaderHeartbeatIntervalNs: 11_000,
 		LeaderHeartbeatTimeoutNs:  13_000,
 		SessionTimeoutNs:          7_000,
+		TerminationTimeoutNs:      19_000,
 		AppVersion:                17,
 		Authenticator:             auth,
 		ServiceCount:              2,

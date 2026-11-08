@@ -235,6 +235,10 @@ func requireDecodedClusterFields(tb require.TestingT, want, got any) {
 		requireDecodedFieldsEqual[codecs.AppendPositionFields](tb, wantFields, got)
 	case codecs.CommitPositionFields:
 		requireDecodedFieldsEqual[codecs.CommitPositionFields](tb, wantFields, got)
+	case codecs.TerminationPositionFields:
+		requireDecodedFieldsEqual[codecs.TerminationPositionFields](tb, wantFields, got)
+	case codecs.TerminationAckFields:
+		requireDecodedFieldsEqual[codecs.TerminationAckFields](tb, wantFields, got)
 	case codecs.TimerEventFields:
 		requireDecodedFieldsEqual[codecs.TimerEventFields](tb, wantFields, got)
 	case codecs.SessionOpenEventFields:
@@ -671,6 +675,21 @@ func codecFuzzSeedBuffers() [][]byte {
 			LeadershipTermID: 1,
 			LogPosition:      2,
 			LeaderMemberID:   3,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeTerminationPosition(b, 0, actingVersion, codecs.TerminationPositionFields{
+			LeadershipTermID: 1,
+			LogPosition:      2,
+		})
+	})
+
+	addEncoded(func(b []byte) (int, bool) {
+		return codecs.EncodeTerminationAck(b, 0, actingVersion, codecs.TerminationAckFields{
+			LeadershipTermID: 1,
+			LogPosition:      2,
+			MemberID:         3,
 		})
 	})
 

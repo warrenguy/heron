@@ -20,8 +20,8 @@ type ArchiveConnection interface {
 // Behaviour: errors.Is matches ErrTerminated and every error in the Cause
 // chain.
 type TerminationError struct {
-	// Cause is the first fatal error, or the planned reason. A planned
-	// termination may leave Cause nil.
+	// Cause is the first fatal error, or [ErrClusterTerminated] for a planned
+	// termination.
 	Cause error
 
 	// Expected is true for a planned termination.

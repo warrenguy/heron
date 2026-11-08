@@ -334,6 +334,82 @@ func TestCommitPosition_roundtrip(t *testing.T) {
 	)
 }
 
+func TestTerminationPosition_roundtrip(t *testing.T) {
+	runCodecRoundtripCases(
+		t,
+		clusterwire.TerminationPositionSbeTemplateID,
+		clusterwire.TerminationPositionSbeSchemaVersion,
+		[]codecRoundtripCase{
+			{
+				name: "zeros",
+				encode: func(buf []byte, offset int) (int, bool) {
+					return codecs.EncodeTerminationPosition(
+						buf, offset, clusterwire.TerminationPositionSbeSchemaVersion,
+						codecs.TerminationPositionFields{LeadershipTermID: 1, LogPosition: 2},
+					)
+				},
+				wantFields: codecs.TerminationPositionFields{LeadershipTermID: 1, LogPosition: 2},
+			},
+			{
+				name: "max_int",
+				encode: func(buf []byte, offset int) (int, bool) {
+					return codecs.EncodeTerminationPosition(
+						buf, offset, clusterwire.TerminationPositionSbeSchemaVersion,
+						codecs.TerminationPositionFields{
+							LeadershipTermID: math.MaxInt64,
+							LogPosition:      math.MaxInt64,
+						},
+					)
+				},
+				wantFields: codecs.TerminationPositionFields{
+					LeadershipTermID: math.MaxInt64,
+					LogPosition:      math.MaxInt64,
+				},
+			},
+		},
+	)
+}
+
+func TestTerminationAck_roundtrip(t *testing.T) {
+	runCodecRoundtripCases(
+		t,
+		clusterwire.TerminationAckSbeTemplateID,
+		clusterwire.TerminationAckSbeSchemaVersion,
+		[]codecRoundtripCase{
+			{
+				name: "zeros",
+				encode: func(buf []byte, offset int) (int, bool) {
+					return codecs.EncodeTerminationAck(
+						buf, offset, clusterwire.TerminationAckSbeSchemaVersion,
+						codecs.TerminationAckFields{LeadershipTermID: 1, LogPosition: 2, MemberID: 3},
+					)
+				},
+				wantFields: codecs.TerminationAckFields{
+					LeadershipTermID: 1, LogPosition: 2, MemberID: 3,
+				},
+			},
+			{
+				name: "max_int",
+				encode: func(buf []byte, offset int) (int, bool) {
+					return codecs.EncodeTerminationAck(
+						buf, offset, clusterwire.TerminationAckSbeSchemaVersion,
+						codecs.TerminationAckFields{
+							LeadershipTermID: math.MaxInt64,
+							LogPosition:      math.MaxInt64,
+							MemberID:         math.MaxInt32,
+						},
+					)
+				},
+				wantFields: codecs.TerminationAckFields{
+					LeadershipTermID: math.MaxInt64,
+					LogPosition:      math.MaxInt64,
+					MemberID:         math.MaxInt32,
+				},
+			},
+		},
+	)
+}
+
 func TestEncodeConsensusWire_BufferBounds(t *testing.T) {
 	actingVersion := uint16(clusterwire.CanvassPositionSbeSchemaVersion)
 	cases := []struct {
@@ -398,6 +474,24 @@ func TestEncodeConsensusWire_BufferBounds(t *testing.T) {
 			encode: func(buf []byte) (int, bool) {
 				return codecs.EncodeCommitPosition(buf, 0, actingVersion, codecs.CommitPositionFields{
 					LeadershipTermID: 1, LogPosition: 2, LeaderMemberID: 3,
+				})
+			},
+		},
+		{
+			name:    "TerminationPosition",
+			wireLen: mustClusterWireMessageLen(t, clusterwire.TerminationPositionSbeBlockLength),
+			encode: func(buf []byte) (int, bool) {
+				return codecs.EncodeTerminationPosition(buf, 0, actingVersion, codecs.TerminationPositionFields{
+					LeadershipTermID: 1, LogPosition: 2,
+				})
+			},
+		},
+		{
+			name:    "TerminationAck",
+			wireLen: mustClusterWireMessageLen(t, clusterwire.TerminationAckSbeBlockLength),
+			encode: func(buf []byte) (int, bool) {
+				return codecs.EncodeTerminationAck(buf, 0, actingVersion, codecs.TerminationAckFields{
+					LeadershipTermID: 1, LogPosition: 2, MemberID: 3,
 				})
 			},
 		},
@@ -498,6 +592,32 @@ func TestEncodeConsensusTemplates_ZeroAllocs(t *testing.T) {
 			encode: func(buf []byte) {
 				_, ok := codecs.EncodeCommitPosition(buf, 0, actingVersion, codecs.CommitPositionFields{
 					LeadershipTermID: 1, LogPosition: 2, LeaderMemberID: 3,
+				})
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
+			name:   "EncodeTerminationPosition",
+			bufLen: messageHeaderLen + int(clusterwire.TerminationPositionSbeBlockLength),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeTerminationPosition(
+					buf, 0, actingVersion, codecs.TerminationPositionFields{
+						LeadershipTermID: 1, LogPosition: 2,
+					},
+				)
+				if !ok {
+					panic("encode failed")
+				}
+			},
+		},
+		{
+			name:   "EncodeTerminationAck",
+			bufLen: messageHeaderLen + int(clusterwire.TerminationAckSbeBlockLength),
+			encode: func(buf []byte) {
+				_, ok := codecs.EncodeTerminationAck(buf, 0, actingVersion, codecs.TerminationAckFields{
+					LeadershipTermID: 1, LogPosition: 2, MemberID: 3,
 				})
 				if !ok {
 					panic("encode failed")

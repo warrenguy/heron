@@ -59,7 +59,15 @@ func agentWithServiceControl(
 	serviceCount int,
 ) (*Agent, *QueueConsensusIngress, *aeron.Publication) {
 	t.Helper()
-	a, q := agentWithServiceIngress(serviceCount)
+	return agentWithServiceControlConfig(t, AgentConfig{ServiceCount: serviceCount})
+}
+
+func agentWithServiceControlConfig(
+	t testing.TB,
+	cfg AgentConfig,
+) (*Agent, *QueueConsensusIngress, *aeron.Publication) {
+	t.Helper()
+	a, q := agentWithServiceIngressConfig(cfg)
 	p, pub := boundServiceProxy(t)
 	a.SetServiceProxy(p)
 	return a, q, pub

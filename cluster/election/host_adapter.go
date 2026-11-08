@@ -10,7 +10,8 @@ import (
 // [consensus.ConsensusEgress] through [consensus.Agent.SetPositions] and
 // [consensus.Agent.SetEgress].
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork].
+// Not safe from other goroutines.
 //
 // Lifetime: outlives Election after Agent.ElectionComplete. Continues to serve
 // Agent.positions and Agent.egress for steady-state ranking and publish.
@@ -27,6 +28,9 @@ type HostAdapter struct {
 	memberByID map[int32]*Member
 	thisMember *Member
 	ranked     []int64
+
+	// peerIDs holds every member id except this one, in member order.
+	peerIDs []int32
 
 	// leaderHeartbeatTimeoutNs is the IsActive window passed to QuorumPosition.
 	leaderHeartbeatTimeoutNs int64
@@ -139,16 +143,22 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 	}
 
 	memberByID := make(map[int32]*Member, len(cfg.Members))
+	peerIDs := make([]int32, 0, len(cfg.Members)-1)
 	thisInMembers := false
 	for _, m := range cfg.Members {
 		if _, dup := memberByID[m.ID]; dup {
 			panic("election: duplicate member id")
 		}
 		memberByID[m.ID] = m
+
 		if m == cfg.ThisMember {
 			thisInMembers = true
+			continue
 		}
+
+		peerIDs = append(peerIDs, m.ID)
 	}
+
 	if !thisInMembers {
 		panic("election: ThisMember not in Members")
 	}
@@ -159,6 +169,7 @@ func NewHostAdapter(cfg HostAdapterConfig) *HostAdapter {
 		members:                  cfg.Members,
 		memberByID:               memberByID,
 		thisMember:               cfg.ThisMember,
+		peerIDs:                  peerIDs,
 		ranked:                   make([]int64, QuorumThreshold(len(cfg.Members))),
 		leaderHeartbeatTimeoutNs: cfg.LeaderHeartbeatTimeoutNs,
 		nanoClock:                cfg.NanoClock,
@@ -237,12 +248,9 @@ func (h *HostAdapter) UpdateLeaderPosition(nowNs, appendPosition, quorumPosition
 
 func (h *HostAdapter) PublishCommitPosition(commitPosition, leadershipTermID int64) {
 	leaderID := h.thisMember.ID
-	for _, member := range h.members {
-		if member.ID == leaderID {
-			continue
-		}
+	for _, memberID := range h.peerIDs {
 		h.pub.CommitPosition(
-			PublicationTarget{MemberID: member.ID},
+			PublicationTarget{MemberID: memberID},
 			codecs.CommitPositionFields{
 				LeadershipTermID: leadershipTermID,
 				LogPosition:      commitPosition,
@@ -256,12 +264,13 @@ func (h *HostAdapter) PublishAppendPosition(
 	leadershipTermID, logPosition int64,
 	flags uint8,
 ) bool {
-	leaderID := h.agent.LeaderMemberID()
-	if leaderID == NullMemberID || leaderID == h.thisMember.ID {
+	leader, ok := h.leaderTarget()
+	if !ok {
 		return false
 	}
+
 	return h.pub.AppendPosition(
-		PublicationTarget{MemberID: leaderID},
+		leader,
 		codecs.AppendPositionFields{
 			LeadershipTermID: leadershipTermID,
 			LogPosition:      logPosition,
@@ -418,6 +427,41 @@ func (h *HostAdapter) PublishStopCatchup(leadershipTermID int64, followerMemberI
 	)
 }
 
+// PeerMemberIDs returns every member id except this one, in member order.
+func (h *HostAdapter) PeerMemberIDs() []int32 { return h.peerIDs }
+
+func (h *HostAdapter) PublishTerminationPosition(
+	memberID int32,
+	leadershipTermID, logPosition int64,
+) bool {
+	if memberID == h.thisMember.ID || h.memberByID[memberID] == nil {
+		return false
+	}
+	return h.pub.TerminationPosition(
+		PublicationTarget{MemberID: memberID},
+		codecs.TerminationPositionFields{
+			LeadershipTermID: leadershipTermID,
+			LogPosition:      logPosition,
+		},
+	)
+}
+
+func (h *HostAdapter) PublishTerminationAck(leadershipTermID, logPosition int64) bool {
+	leader, ok := h.leaderTarget()
+	if !ok {
+		return false
+	}
+
+	return h.pub.TerminationAck(
+		leader,
+		codecs.TerminationAckFields{
+			LeadershipTermID: leadershipTermID,
+			LogPosition:      logPosition,
+			MemberID:         h.thisMember.ID,
+		},
+	)
+}
+
 func (h *HostAdapter) CommitPosition() int64 {
 	return h.agent.CommitPosition()
 }
@@ -476,3 +520,14 @@ var (
 	_ consensus.PositionTable   = (*HostAdapter)(nil)
 	_ consensus.ConsensusEgress = (*HostAdapter)(nil)
 )
+
+// leaderTarget returns the current leader as a send target. Returns false when
+// the leader is unknown or this member leads.
+func (h *HostAdapter) leaderTarget() (PublicationTarget, bool) {
+	leaderID := h.agent.LeaderMemberID()
+	if leaderID == NullMemberID || leaderID == h.thisMember.ID {
+		return PublicationTarget{}, false
+	}
+
+	return PublicationTarget{MemberID: leaderID}, true
+}

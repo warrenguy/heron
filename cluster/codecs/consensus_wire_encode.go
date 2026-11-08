@@ -266,3 +266,50 @@ func EncodeStopCatchup(
 		},
 	)
 }
+
+// EncodeTerminationPosition writes a cluster TerminationPosition at offset.
+func EncodeTerminationPosition(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields TerminationPositionFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.TerminationPositionSbeBlockLength,
+		clusterwire.TerminationPositionSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.TerminationPosition
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.SetLeadershipTermId(fields.LeadershipTermID).
+				SetLogPosition(fields.LogPosition)
+		},
+	)
+}
+
+// EncodeTerminationAck writes a cluster TerminationAck at offset.
+func EncodeTerminationAck(
+	buf []byte,
+	offset int,
+	actingVersion uint16,
+	fields TerminationAckFields,
+) (wireEnd int, ok bool) {
+	return encodeWithClusterWireHeader(
+		buf,
+		offset,
+		clusterwire.TerminationAckSbeBlockLength,
+		clusterwire.TerminationAckSbeTemplateID,
+		actingVersion,
+		nil,
+		func(dst []byte, bodyOffset uint64, blockLength, actingVersion uint16) {
+			var msg clusterwire.TerminationAck
+			msg.Wrap(dst, bodyOffset, uint64(len(dst)), uint64(blockLength), uint64(actingVersion))
+			msg.SetLeadershipTermId(fields.LeadershipTermID).
+				SetLogPosition(fields.LogPosition).
+				SetMemberId(fields.MemberID)
+		},
+	)
+}

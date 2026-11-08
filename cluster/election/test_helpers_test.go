@@ -524,5 +524,47 @@ func publisherRoundtripCases(dst election.PublicationTarget) []publisherRoundtri
 				LeaderMemberID:   13,
 			},
 		},
+		{
+			name: "TerminationPosition",
+			publish: func(p election.Publisher) {
+				p.TerminationPosition(
+					dst,
+					codecs.TerminationPositionFields{
+						LeadershipTermID: 14,
+						LogPosition:      15,
+					},
+				)
+			},
+			templateID: clusterwire.TerminationPositionSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeTerminationPositionAt(wire, 0)
+			},
+			want: codecs.TerminationPositionFields{
+				LeadershipTermID: 14,
+				LogPosition:      15,
+			},
+		},
+		{
+			name: "TerminationAck",
+			publish: func(p election.Publisher) {
+				p.TerminationAck(
+					dst,
+					codecs.TerminationAckFields{
+						LeadershipTermID: 16,
+						LogPosition:      17,
+						MemberID:         18,
+					},
+				)
+			},
+			templateID: clusterwire.TerminationAckSbeTemplateID,
+			decode: func(wire []byte) (any, bool) {
+				return codecs.TryDecodeTerminationAckAt(wire, 0)
+			},
+			want: codecs.TerminationAckFields{
+				LeadershipTermID: 16,
+				LogPosition:      17,
+				MemberID:         18,
+			},
+		},
 	}
 }

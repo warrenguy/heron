@@ -204,8 +204,9 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 // enterElection installs a settled-state election for trigger when allowed.
 //
 // Behaviour:
-//   - refuses when an election is already live or no factory is wired
-//   - reads the append seed while the current role still applies
+//   - refuses in TERMINATING, during a live election, or without a factory
+//   - reads the append seed before the role flip, since a leader's append
+//     source reports the publication position
 //   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
 //   - after a non-nil runner returns: clears pendingJoinLog and the replay
@@ -215,17 +216,11 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //     else the null member id. A leader holds the null id, so a leader
 //     install seeds the null id
 //
-// Role flip order: append read first, then RoleFollower. Cluster append
-// sources are role-sensitive. A leader must report the publication
-// position. After RoleFollower, the follower image path returns 0.
-//
 // Returns: 1 when a runner was installed, else 0.
 func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) int {
-	if a.election != nil || a.electionFactory == nil {
+	if a.moduleState == ModuleStateTerminating || a.election != nil || a.electionFactory == nil {
 		return 0
 	}
-	// Read append while still leader when role is leader: cluster append
-	// sources are role-sensitive (LogAppendPosition).
 	position, ready := a.appendPositionForSeed()
 	gracefulClosedLeaderID := nullMemberID
 	if isLogEndOfStream {
@@ -275,14 +270,15 @@ func (a *Agent) slowTickIfDue(nowNs int64) int {
 // slowTickWork runs the settled timeout triggers when no election is live.
 //
 // Behaviour: returns 0 while an election is live so the deadline still advances
-// from slowTickIfDue. A leader acts on the cluster control toggle, then checks
-// active-member quorum. Any other role checks the leader heartbeat timeout.
+// from slowTickIfDue. A leader runs terminationTick, the cluster control
+// toggle, then the active-member quorum check. Any other role checks the
+// leader heartbeat timeout.
 func (a *Agent) slowTickWork(nowNs int64) int {
 	if a.election != nil {
 		return 0
 	}
 	if a.role == RoleLeader {
-		return a.clusterControlToggleWork(nowNs) + a.activeQuorumTick(nowNs)
+		return a.terminationTick(nowNs) + a.clusterControlToggleWork(nowNs) + a.activeQuorumTick(nowNs)
 	}
 	return a.leaderWentQuietTick(nowNs)
 }
@@ -303,13 +299,22 @@ func (a *Agent) activeQuorumTick(nowNs int64) int {
 
 // leaderWentQuietTick re-enters election when a non-leader's settled
 // log-update clock is older than the leader heartbeat timeout.
+//
+// A termination position suppresses the timeout, since the leader goes quiet
+// once it closes.
 func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 	if !a.isActiveOrSuspended() {
 		return 0
 	}
+
+	if a.terminationPosition != nullValue {
+		return 0
+	}
+
 	if nowNs < a.timeOfLastLogUpdateNs+a.leaderHeartbeatTimeoutNs {
 		return 0
 	}
+
 	return a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false)
 }
 
@@ -319,20 +324,24 @@ func (a *Agent) leaderWentQuietTick(nowNs int64) int {
 // The method consumes a STOP before the install checks. A later tick does
 // not see a STOP that does not install an election. Outside ACTIVE, the STOP
 // check does not install an election. In SUSPENDED, the closed-image check
-// still installs an election in the same tick.
+// still installs an election in the same tick. Neither check installs an
+// election once the log reaches the termination position.
 func (a *Agent) logStopTick() int {
 	stopPosition, stopped := a.consumeLogRecordingStop()
-	if a.election != nil {
+	if a.election != nil || a.hasReachedTerminationPosition() {
 		return 0
 	}
+
 	if stopped && a.moduleState == ModuleStateActive {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStreamAt(stopPosition)
 		return a.enterElection(ElectionTriggerLogRecordingStopped, isLogEndOfStream)
 	}
+
 	if a.isActiveOrSuspended() && a.isFollowerLogImageClosed() {
 		isLogEndOfStream := a.logAdapter.IsLogEndOfStream()
 		return a.enterElection(ElectionTriggerLogImageClosed, isLogEndOfStream)
 	}
+
 	return 0
 }
 

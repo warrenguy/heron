@@ -19,6 +19,8 @@ const (
 	serviceControlOpAckNext
 	serviceControlOpWrongAck
 	serviceControlOpWork
+	serviceControlOpTerminate
+	serviceControlOpAckBelow
 )
 
 // Asserts wait sequencing against a model service that acks every published
@@ -53,8 +55,14 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 		// failed latches after ErrServiceAckOutOfSequence (marks once). Model
 		// then expects no further wait progress.
 		failed := false
+		terminated := false
+		var terminationPos, terminationLogPos int64
+		var termLog *terminationCommitLog
 		startPos := rapid.Int64Range(1, 1_000).Draw(rt, "startPos")
 		handlerRuns := 0
+		// startHandled records the start wait's pop. A termination wait can
+		// reuse startPos, so modelWaits does not show whether the handler ran.
+		startHandled := false
 		require.NoError(rt, a.AwaitServiceStart(startPos, func() { handlerRuns++ }))
 		modelWaits = append(modelWaits, startPos)
 		delivered = append(delivered, startPos)
@@ -64,7 +72,7 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 			require.Equal(rt, len(modelWaits), a.PendingServiceAckWaits())
 			require.Equal(rt, expectedID, a.ExpectedServiceAckID())
 			wantRuns := 0
-			if !slices.Contains(modelWaits, startPos) {
+			if startHandled {
 				wantRuns = 1
 			}
 			require.Equal(rt, wantRuns, handlerRuns)
@@ -94,6 +102,12 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 			return true
 		}
 
+		// terminationWaitIsHead reports whether the termination wait is the
+		// only wait left. Every earlier wait has then popped.
+		terminationWaitIsHead := func() bool {
+			return terminated && len(modelWaits) == 1
+		}
+
 		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
 		for range nOps {
 			kinds := []serviceControlOpKind{
@@ -105,6 +119,12 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 			if !failed {
 				kinds = append(kinds, serviceControlOpWrongAck)
 			}
+			if !terminated && !failed && a.TerminationError() == nil {
+				kinds = append(kinds, serviceControlOpTerminate)
+			}
+			if terminated && !failed {
+				kinds = append(kinds, serviceControlOpAckBelow)
+			}
 			kind := rapid.SampledFrom(kinds).Draw(rt, "kind")
 
 			switch kind {
@@ -113,10 +133,14 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 				for slices.Contains(delivered, pos) {
 					pos = rapid.Int64Range(1, 1_000_000).Draw(rt, "posRetry")
 				}
-				if failed {
+				switch {
+				case failed:
 					err := a.RequestServiceAck(pos)
 					require.ErrorIs(rt, err, ErrServiceAckOutOfSequence)
-				} else {
+				case a.ModuleState() == ModuleStateTerminating || a.TerminationError() != nil:
+					err := a.RequestServiceAck(pos)
+					require.ErrorIs(rt, err, errTerminationInProgress)
+				default:
 					require.NoError(rt, a.RequestServiceAck(pos))
 					modelWaits = append(modelWaits, pos)
 					delivered = append(delivered, pos)
@@ -128,13 +152,26 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 					continue
 				}
 				sid := rapid.IntRange(0, serviceCount-1).Draw(rt, "sid")
-				if cursor[sid] >= len(delivered) {
+				idx := cursor[sid]
+				var ackPos int64
+
+				switch {
+				case idx < len(delivered):
+					ackPos = delivered[idx]
+
+				// The termination ack follows every delivered frame, so its
+				// ack id is len(delivered). Send it only after every earlier
+				// wait pops.
+				case idx == len(delivered) && terminationWaitIsHead():
+					ackPos = terminationLogPos
+
+				default:
 					assertInvariants()
 					continue
 				}
-				idx := cursor[sid]
+
 				q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
-					LogPosition: delivered[idx],
+					LogPosition: ackPos,
 					AckID:       int64(idx),
 					RelevantID:  int64(sid + 1),
 					ServiceID:   int32(sid),
@@ -143,6 +180,13 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 				cursor[sid]++
 
 			case serviceControlOpWrongAck:
+				// A lone termination wait pairs at the first queued position.
+				// A position past terminationPos counts as an overshoot, not a
+				// wrong pair.
+				if terminationWaitIsHead() {
+					assertInvariants()
+					continue
+				}
 				// Need a first wait and an empty service-0 queue so the wrong
 				// pair becomes the first entry (not behind a matching ack).
 				if len(modelWaits) == 0 || a.ServiceAckQueueDepth(0) != 0 {
@@ -174,14 +218,61 @@ func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 					require.Equal(rt, 1, work)
 					require.Equal(rt, beforeWaits-1, a.PendingServiceAckWaits())
 					require.Equal(rt, beforeID+1, a.ExpectedServiceAckID())
+					popped := modelWaits[0]
 					modelWaits = modelWaits[1:]
 					expectedID++
+					startHandled = true
+					if terminated && popped == terminationPos && len(modelWaits) == 0 {
+						require.Equal(rt, []terminationCommitCall{{
+							term: a.LeadershipTermID(),
+							pos:  terminationLogPos,
+						}}, termLog.calls)
+						require.ErrorIs(rt, a.TerminationError(), ErrClusterTerminated)
+					}
 				} else {
 					// Marked failure or partial first entries: no wait completes.
 					require.Equal(rt, beforeWaits, a.PendingServiceAckWaits())
 					require.Equal(rt, beforeID, a.ExpectedServiceAckID())
 					require.Equal(rt, 0, work)
 				}
+
+			case serviceControlOpTerminate:
+				terminationPos = rapid.Int64Range(2, 1_000_000).Draw(rt, "termP")
+				terminationLogPos = rapid.Int64Range(terminationPos, terminationPos+10_000).Draw(rt, "termL")
+				termLog = &terminationCommitLog{}
+				a.SetTerminationRecordingLog(termLog)
+				a.handleTerminationPosition(codecs.TerminationPositionFields{
+					LeadershipTermID: a.LeadershipTermID(),
+					LogPosition:      terminationPos,
+				}, 1)
+				a.terminateFollower()
+				require.Equal(rt, ModuleStateTerminating, a.ModuleState())
+				modelWaits = append(modelWaits, terminationPos)
+				terminated = true
+
+			case serviceControlOpAckBelow:
+				ready := terminationWaitIsHead()
+				for sid := range serviceCount {
+					if cursor[sid] != len(delivered) || a.ServiceAckQueueDepth(int32(sid)) != 0 {
+						ready = false
+						break
+					}
+				}
+
+				if !ready {
+					assertInvariants()
+					continue
+				}
+				q.Enqueue(encodeServiceAckWire(t, codecs.ServiceAckFields{
+					LogPosition: terminationPos - 1,
+					AckID:       a.ExpectedServiceAckID(),
+					RelevantID:  1,
+					ServiceID:   0,
+				}))
+				require.Equal(rt, 1, a.pollServiceControl())
+				require.Equal(rt, 0, a.serviceControlWork())
+				require.ErrorIs(rt, a.ServiceAckFailure(), ErrServiceAckOutOfSequence)
+				failed = true
 			}
 			assertInvariants()
 		}
@@ -685,9 +776,14 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 				pos := rapid.SampledFrom(positions).Draw(rt, "requestPos")
 				a.SetServiceProxy(connected)
 				err := a.RequestServiceAck(pos)
-				if failed {
+				switch {
+				case failed:
 					require.ErrorIs(rt, err, ErrServiceAckOutOfSequence)
-				} else {
+
+				case a.TerminationError() != nil:
+					require.ErrorIs(rt, err, errTerminationInProgress)
+
+				default:
 					require.NoError(rt, err)
 					queueWait(pos, false)
 				}

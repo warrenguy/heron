@@ -55,6 +55,57 @@ func termWireAt(
 	return wire, termOffset + logbuffer.AlignFrameLength(frameLength)
 }
 
+type termPublication interface {
+	termBufferSource
+	Position() int64
+}
+
+// termFrame is one DATA frame in term 0 after a decode attempt.
+type termFrame[T any] struct {
+	fields  T
+	decoded bool
+	// end is the aligned term offset after the frame.
+	end int64
+}
+
+// scanTermFrames runs decode on each DATA frame in term 0 below the
+// publication position, in log order.
+func scanTermFrames[T any](
+	t fragmentRequireT,
+	pub termPublication,
+	decode func(buf []byte, offset int) (T, bool),
+) []termFrame[T] {
+	t.Helper()
+	end := pub.Position()
+	var frames []termFrame[T]
+	for offset := 0; int64(offset) < end; {
+		var wire []byte
+		wire, offset = termWireAt(t, pub, offset)
+		fields, ok := decode(wire, 0)
+		frames = append(frames, termFrame[T]{fields: fields, decoded: ok, end: int64(offset)})
+	}
+
+	return frames
+}
+
+// decodeTermFrames returns the fields of each term 0 frame that decode
+// accepts, in log order.
+func decodeTermFrames[T any](
+	t fragmentRequireT,
+	pub termPublication,
+	decode func(buf []byte, offset int) (T, bool),
+) []T {
+	t.Helper()
+	var got []T
+	for _, frame := range scanTermFrames(t, pub, decode) {
+		if frame.decoded {
+			got = append(got, frame.fields)
+		}
+	}
+
+	return got
+}
+
 func termStartWire(t *testing.T, pub *aeron.ExclusivePublication) []byte {
 	t.Helper()
 	wire, _ := termWireAt(t, pub, 0)

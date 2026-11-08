@@ -719,6 +719,82 @@ func TestHostAdapter_PublishStopCatchup(t *testing.T) {
 	require.Equal(t, int32(2), fields.FollowerMemberID)
 }
 
+func TestHostAdapter_PeerMemberIDs(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, _, _, _ := newTestHostAdapter(t, members, 1)
+	ids := host.PeerMemberIDs()
+	require.Equal(t, []int32{0, 2}, ids)
+	again := host.PeerMemberIDs()
+	require.Same(t, &ids[0], &again[0])
+}
+
+func TestHostAdapter_PublishTerminationPosition(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	host, _, pub, _ := newTestHostAdapter(t, members, 1)
+
+	require.True(t, host.PublishTerminationPosition(2, 6, 80))
+	require.Len(t, pub.Sent, 1)
+	require.Equal(t, uint16(clusterwire.TerminationPositionSbeTemplateID), pub.Sent[0].TemplateID)
+	require.Equal(t, int32(2), pub.Sent[0].Dst.MemberID)
+	fields := pub.Sent[0].Fields.(codecs.TerminationPositionFields)
+	require.Equal(t, int64(6), fields.LeadershipTermID)
+	require.Equal(t, int64(80), fields.LogPosition)
+
+	// An unknown member and this member refuse.
+	require.False(t, host.PublishTerminationPosition(99, 6, 80))
+	require.False(t, host.PublishTerminationPosition(1, 6, 80))
+	require.Len(t, pub.Sent, 1)
+}
+
+type refuseTerminationAckPublisher struct {
+	*election.SbePublisher
+}
+
+func (refuseTerminationAckPublisher) TerminationAck(
+	election.PublicationTarget,
+	codecs.TerminationAckFields,
+) bool {
+	return false
+}
+
+func TestHostAdapter_PublishTerminationAck(t *testing.T) {
+	t.Parallel()
+
+	members := hostAdapterMembers(3)
+	leaderZero := func(c *election.HostAdapterConfig) { c.LeaderMemberID = 0 }
+	host, _, pub, _ := newTestHostAdapter(t, members, 1, leaderZero)
+
+	require.True(t, host.PublishTerminationAck(6, 80))
+	require.Len(t, pub.Sent, 1)
+	require.Equal(t, uint16(clusterwire.TerminationAckSbeTemplateID), pub.Sent[0].TemplateID)
+	require.Equal(t, int32(0), pub.Sent[0].Dst.MemberID)
+	fields := pub.Sent[0].Fields.(codecs.TerminationAckFields)
+	require.Equal(t, int64(6), fields.LeadershipTermID)
+	require.Equal(t, int64(80), fields.LogPosition)
+	require.Equal(t, int32(1), fields.MemberID)
+
+	// No leader, then this member as leader.
+	host.SetLeaderMemberID(election.NullMemberID)
+	require.False(t, host.PublishTerminationAck(6, 80))
+	host.SetLeaderMemberID(1)
+	require.False(t, host.PublishTerminationAck(6, 80))
+	require.Len(t, pub.Sent, 1)
+
+	// A publisher refusal returns false.
+	refuseAck := func(c *election.HostAdapterConfig) {
+		sbe := c.Publisher.(*election.SbePublisher)
+		c.Publisher = refuseTerminationAckPublisher{SbePublisher: sbe}
+	}
+
+	refused, _, refusing, _ := newTestHostAdapter(t, members, 1, leaderZero, refuseAck)
+	require.False(t, refused.PublishTerminationAck(6, 80))
+	require.Empty(t, refusing.Sent)
+}
+
 func TestHostAdapter_UpdateMemberLogPosition_nilMember(t *testing.T) {
 	t.Parallel()
 

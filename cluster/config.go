@@ -216,6 +216,12 @@ type Config struct {
 	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
 	SessionTimeoutNs int64
 
+	// TerminationTimeoutNs bounds the leader's wait for follower termination
+	// acks. The wait starts when the leader enters TERMINATING. It does not
+	// bound the service acks. Zero takes the 10s upstream default
+	// (consensus.DefaultTerminationTimeoutNs). Negative fails Validate.
+	TerminationTimeoutNs int64
+
 	// ErrorHandler receives each error the consensus module reports, including
 	// each unsolicited archive ERROR. Nil drops each report.
 	//
@@ -384,6 +390,9 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 	}
 	if cfg.SessionTimeoutNs < 0 {
 		return nil, 0, errors.New("cluster: SessionTimeoutNs must not be negative")
+	}
+	if cfg.TerminationTimeoutNs < 0 {
+		return nil, 0, errors.New("cluster: TerminationTimeoutNs must not be negative")
 	}
 
 	if err := election.ValidateElectionConfig(cfg.Election); err != nil {

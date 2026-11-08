@@ -85,6 +85,22 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		require.Empty(t, fac.seeds)
 	})
 
+	t.Run("leader_heartbeat_with_termination_position", func(t *testing.T) {
+		fac := &recordingElectionFactory{}
+		a := NewAgent(AgentConfig{
+			Role:                     RoleFollower,
+			LeaderHeartbeatTimeoutNs: timeoutNs,
+		})
+		a.timeOfLastLogUpdateNs = 0
+		a.terminationPosition = 64
+		a.SetElectionFactory(fac.factory())
+
+		require.Equal(t, 0, a.DoWork(timeoutNs))
+		require.Nil(t, a.Election())
+		require.Equal(t, int64(0), a.ElectionCount())
+		require.Empty(t, fac.seeds)
+	})
+
 	t.Run("inactive_follower_quorum", func(t *testing.T) {
 		fac := &recordingElectionFactory{}
 		const nowNs int64 = 42
@@ -533,11 +549,19 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 				LogPosition:      999,
 				LeaderMemberID:   2,
 			}, 700)
+			require.Equal(t, int64(10), a.NotifiedCommitPosition())
+			require.Equal(t, state, a.ModuleState())
+
+			if state == ModuleStateTerminating {
+				require.Nil(t, a.Election())
+				require.Zero(t, a.ElectionCount())
+				require.Empty(t, fac.seeds)
+				return
+			}
+
 			require.NotNil(t, a.Election())
 			require.Equal(t, ElectionTriggerHigherTerm, a.LastElectionTrigger())
 			require.Equal(t, int64(1), a.ElectionCount())
-			require.Equal(t, int64(10), a.NotifiedCommitPosition())
-			require.Equal(t, state, a.ModuleState())
 			require.Len(t, fac.seeds, 1)
 		})
 	}

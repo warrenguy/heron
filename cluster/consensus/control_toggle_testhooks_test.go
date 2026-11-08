@@ -19,19 +19,33 @@ const (
 	toggleTestNowNs  int64 = 1000
 )
 
-type toggleLeader struct {
-	agent  *Agent
-	pub    *aeron.ExclusivePublication
-	toggle *fakeToggle
+type toggleAction struct {
+	action clusterwire.ClusterAction
+	flags  int32
 }
 
-func newToggleLeader(t testing.TB, toggle int64) toggleLeader {
+type toggleLeader struct {
+	agent      *Agent
+	pub        *aeron.ExclusivePublication
+	queue      *QueueConsensusIngress
+	servicePub *aeron.Publication
+	toggle     *fakeToggle
+}
+
+func newToggleLeader(t testing.TB, toggle int64, serviceCount int) toggleLeader {
 	t.Helper()
-	a, _, pub := settledLeaderWithControl(t, 1)
+	a, q, servicePub := agentWithServiceControl(t, serviceCount)
+	pub := bindLeaderLog(t, a)
 	a.SetLeadershipTermID(toggleTestTermID)
 	counter := newFakeToggle(toggle)
 	a.SetClusterControlToggle(counter)
-	return toggleLeader{agent: a, pub: pub, toggle: counter}
+	return toggleLeader{
+		agent:      a,
+		pub:        pub,
+		queue:      q,
+		servicePub: servicePub,
+		toggle:     counter,
+	}
 }
 
 // scanClusterActions decodes each ClusterActionRequest in term 0 in log
@@ -41,43 +55,48 @@ func scanClusterActions(
 	pub *aeron.ExclusivePublication,
 ) []codecs.ClusterActionRequestFields {
 	t.Helper()
-	end := pub.Position()
-	require.Less(t, end, int64(pub.TermBuffer(0).Capacity()))
+	require.Less(t, pub.Position(), int64(pub.TermBuffer(0).Capacity()))
 	var actions []codecs.ClusterActionRequestFields
-	for offset := 0; int64(offset) < end; {
-		var wire []byte
-		wire, offset = termWireAt(t, pub, offset)
-		fields, ok := codecs.TryDecodeClusterActionRequestAt(wire, 0)
-		require.True(t, ok)
-		require.Equal(t, int64(offset), fields.LogPosition)
-		actions = append(actions, fields)
+	for _, frame := range scanTermFrames(t, pub, codecs.TryDecodeClusterActionRequestAt) {
+		require.True(t, frame.decoded)
+		require.Equal(t, frame.end, frame.fields.LogPosition)
+		actions = append(actions, frame.fields)
 	}
+
 	return actions
 }
 
 func TestClusterControlToggleWork(t *testing.T) {
 	t.Parallel()
 
-	type action struct {
-		action clusterwire.ClusterAction
-		flags  int32
-	}
 	type setupFunc = func(*testing.T, toggleLeader)
 	type row struct {
 		name   string
 		toggle int64
 		setup  setupFunc
 		// direct calls RequestSnapshot in place of the slow tick.
-		direct     bool
-		wantErr    error
-		wantWork   int
-		wantToggle int64
-		wantState  ModuleState
-		wantAction *action
-		wantWaits  int
+		direct       bool
+		zeroServices bool
+		// retryAfterPop acks the pending wait, then expects the retry to
+		// enter SNAPSHOT.
+		retryAfterPop   bool
+		wantTermination bool
+		wantErr         error
+		wantWork        int
+		wantToggle      int64
+		wantState       ModuleState
+		wantAction      *toggleAction
+		wantWaits       int
 	}
 	unbindPublisher := func(_ *testing.T, l toggleLeader) {
 		l.agent.SetLogPublisher(NewLogPublisher())
+	}
+	closePublication := func(t *testing.T, l toggleLeader) {
+		t.Helper()
+		require.NotNil(t, l.agent.logPublisher.Publication())
+		require.NoError(t, l.pub.Close())
+		require.Equal(t, aeron.Closed, l.agent.logPublisher.Position())
+		require.Same(t, l.pub, l.agent.logPublisher.Publication())
 	}
 	inState := func(state ModuleState) setupFunc {
 		return func(_ *testing.T, l toggleLeader) {
@@ -104,7 +123,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleSuspend),
 			wantState:  ModuleStateSuspended,
-			wantAction: &action{action: clusterwire.ClusterAction_SUSPEND},
+			wantAction: &toggleAction{action: clusterwire.ClusterAction_SUSPEND},
 		},
 		unchanged(
 			"SUSPEND append fails",
@@ -119,7 +138,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleNeutral),
 			wantState:  ModuleStateActive,
-			wantAction: &action{action: clusterwire.ClusterAction_RESUME},
+			wantAction: &toggleAction{action: clusterwire.ClusterAction_RESUME},
 		},
 		unchanged(
 			"RESUME append fails",
@@ -136,7 +155,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleSnapshot),
 			wantState:  ModuleStateSnapshot,
-			wantAction: &action{action: clusterwire.ClusterAction_SNAPSHOT},
+			wantAction: &toggleAction{action: clusterwire.ClusterAction_SNAPSHOT},
 			wantWaits:  1,
 		},
 		{
@@ -145,7 +164,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			direct:     true,
 			wantToggle: int64(ControlToggleNeutral),
 			wantState:  ModuleStateSnapshot,
-			wantAction: &action{action: clusterwire.ClusterAction_SNAPSHOT},
+			wantAction: &toggleAction{action: clusterwire.ClusterAction_SNAPSHOT},
 			wantWaits:  1,
 		},
 		{
@@ -164,7 +183,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleNeutral),
 			wantState:  ModuleStateActive,
-			wantAction: &action{
+			wantAction: &toggleAction{
 				action: clusterwire.ClusterAction_SNAPSHOT,
 				flags:  clusterActionFlagsStandbySnapshot,
 			},
@@ -197,7 +216,7 @@ func TestClusterControlToggleWork(t *testing.T) {
 			wantWork:   1,
 			wantToggle: int64(ControlToggleSnapshot),
 			wantState:  ModuleStateActive,
-			wantAction: &action{
+			wantAction: &toggleAction{
 				action: clusterwire.ClusterAction_SNAPSHOT,
 				flags:  clusterActionFlagsStandbySnapshot,
 			},
@@ -214,10 +233,48 @@ func TestClusterControlToggleWork(t *testing.T) {
 			ModuleStateActive,
 			unbindPublisher,
 		),
+		{
+			name:            "SHUTDOWN in ACTIVE",
+			toggle:          int64(ControlToggleShutdown),
+			wantWork:        1,
+			wantToggle:      int64(ControlToggleShutdown),
+			wantState:       ModuleStateSnapshot,
+			wantAction:      &toggleAction{action: clusterwire.ClusterAction_SNAPSHOT},
+			wantWaits:       1,
+			wantTermination: true,
+		},
+		{
+			name:          "SHUTDOWN refused, coordination wait",
+			toggle:        int64(ControlToggleShutdown),
+			setup:         pendingAck,
+			wantToggle:    int64(ControlToggleShutdown),
+			wantState:     ModuleStateActive,
+			wantWaits:     1,
+			retryAfterPop: true,
+		},
+		{
+			name:            "ABORT in ACTIVE, zero services",
+			toggle:          int64(ControlToggleAbort),
+			zeroServices:    true,
+			wantWork:        1,
+			wantToggle:      int64(ControlToggleAbort),
+			wantState:       ModuleStateTerminating,
+			wantTermination: true,
+		},
+		unchanged(
+			"ABORT refused, unbound publisher",
+			int64(ControlToggleAbort),
+			ModuleStateActive,
+			unbindPublisher,
+		),
+		unchanged(
+			"ABORT refused, closed publication",
+			int64(ControlToggleAbort),
+			ModuleStateActive,
+			closePublication,
+		),
 	}
 	for _, toggle := range []int64{
-		int64(ControlToggleShutdown),
-		int64(ControlToggleAbort),
 		int64(ControlToggleResume),
 		int64(ControlToggleNeutral),
 		int64(ControlToggleInactive),
@@ -244,6 +301,8 @@ func TestClusterControlToggleWork(t *testing.T) {
 	for _, toggle := range []ControlToggleState{
 		ControlToggleSuspend,
 		ControlToggleSnapshot,
+		ControlToggleShutdown,
+		ControlToggleAbort,
 		ControlToggleStandbySnapshot,
 	} {
 		rows = append(rows,
@@ -278,7 +337,12 @@ func TestClusterControlToggleWork(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			l := newToggleLeader(t, tt.toggle)
+			services := 1
+			if tt.zeroServices {
+				services = 0
+			}
+			l := newToggleLeader(t, tt.toggle, services)
+
 			if tt.setup != nil {
 				tt.setup(t, l)
 			}
@@ -297,7 +361,10 @@ func TestClusterControlToggleWork(t *testing.T) {
 			require.Equal(t, tt.wantToggle, l.toggle.Load())
 			require.Equal(t, tt.wantState, l.agent.ModuleState())
 			require.Equal(t, tt.wantWaits, l.agent.PendingServiceAckWaits())
-			if tt.wantState == preState || tt.wantState == ModuleStateSnapshot {
+
+			if tt.wantState == preState ||
+				tt.wantState == ModuleStateSnapshot ||
+				tt.wantState == ModuleStateTerminating {
 				require.Empty(t, l.agent.uncommittedModuleStates)
 			} else {
 				require.Equal(t, []uncommittedModuleState{{
@@ -305,19 +372,54 @@ func TestClusterControlToggleWork(t *testing.T) {
 					previous:       preState,
 				}}, l.agent.uncommittedModuleStates)
 			}
-			var wantActions []codecs.ClusterActionRequestFields
-			if tt.wantAction != nil {
-				wantActions = []codecs.ClusterActionRequestFields{{
-					LeadershipTermID: toggleTestTermID,
-					LogPosition:      l.pub.Position(),
-					Timestamp:        toggleTestNowNs,
-					Action:           tt.wantAction.action,
-					Flags:            tt.wantAction.flags,
-				}}
+
+			requireToggleActions(t, l, tt.wantAction)
+
+			if tt.wantTermination {
+				require.Equal(t, l.pub.Position(), l.agent.TerminationPosition())
+				require.Equal(t, toggleTestTermID, l.agent.terminationLeadershipTermID)
+			} else {
+				require.Equal(t, int64(nullValue), l.agent.TerminationPosition())
+				require.Equal(t, int64(nullValue), l.agent.terminationLeadershipTermID)
 			}
-			require.Equal(t, wantActions, scanClusterActions(t, l.pub))
+
+			if !tt.retryAfterPop {
+				return
+			}
+
+			enqueueServiceAck(t, l.queue, 42, 0, 0)
+			require.Equal(t, 1, l.agent.pollServiceControl())
+			require.Equal(t, 1, l.agent.serviceControlWork())
+			require.Equal(t, 0, l.agent.PendingServiceAckWaits())
+
+			require.Equal(t, 1, l.agent.slowTickWork(toggleTestNowNs))
+			require.Equal(t, int64(ControlToggleShutdown), l.toggle.Load())
+			require.Equal(t, ModuleStateSnapshot, l.agent.ModuleState())
+			require.Equal(t, 1, l.agent.PendingServiceAckWaits())
+			requireToggleActions(t, l, &toggleAction{action: clusterwire.ClusterAction_SNAPSHOT})
+			require.Equal(t, l.pub.Position(), l.agent.TerminationPosition())
+			require.Equal(t, toggleTestTermID, l.agent.terminationLeadershipTermID)
 		})
 	}
+}
+
+func requireToggleActions(
+	t *testing.T,
+	l toggleLeader,
+	want *toggleAction,
+) {
+	t.Helper()
+	var wantActions []codecs.ClusterActionRequestFields
+	if want != nil {
+		wantActions = []codecs.ClusterActionRequestFields{{
+			LeadershipTermID: toggleTestTermID,
+			LogPosition:      l.pub.Position(),
+			Timestamp:        toggleTestNowNs,
+			Action:           want.action,
+			Flags:            want.flags,
+		}}
+	}
+	require.Equal(t, wantActions, scanClusterActions(t, l.pub))
 }
 
 func wireToggles(a *Agent, control, node int64) (*fakeToggle, *fakeToggle) {

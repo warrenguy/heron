@@ -180,6 +180,20 @@ type StopCatchupFields struct {
 	FollowerMemberID int32
 }
 
+// TerminationPositionFields holds TerminationPosition body fields
+// (template 75).
+type TerminationPositionFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+}
+
+// TerminationAckFields holds TerminationAck body fields (template 76).
+type TerminationAckFields struct {
+	LeadershipTermID int64
+	LogPosition      int64
+	MemberID         int32
+}
+
 // TimerEventFields holds TimerEvent body fields (SBE template id 20).
 type TimerEventFields struct {
 	LeadershipTermID int64

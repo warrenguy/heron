@@ -30,6 +30,7 @@ func TestDoWork_stepOrder(t *testing.T) {
 				"snapshotTakeWork",
 				"election.DoWork",
 				"retryPendingJoinLog",
+				"retryServiceTermination",
 			},
 		},
 		{
@@ -47,6 +48,7 @@ func TestDoWork_stepOrder(t *testing.T) {
 				"timerWork",
 				"consensusWork",
 				"retryPendingJoinLog",
+				"retryServiceTermination",
 			},
 		},
 	}

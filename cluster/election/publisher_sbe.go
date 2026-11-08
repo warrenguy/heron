@@ -184,3 +184,35 @@ func (p *SbePublisher) StopCatchup(
 		codecs.EncodeStopCatchup,
 	)
 }
+
+func (p *SbePublisher) TerminationPosition(
+	dst PublicationTarget,
+	fields codecs.TerminationPositionFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publish(
+		p,
+		dst,
+		clusterwire.TerminationPositionSbeTemplateID,
+		clusterwire.TerminationPositionSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeTerminationPosition,
+	)
+}
+
+func (p *SbePublisher) TerminationAck(
+	dst PublicationTarget,
+	fields codecs.TerminationAckFields,
+) bool {
+	ver := actingVersion(p.ActingVersion)
+	return publish(
+		p,
+		dst,
+		clusterwire.TerminationAckSbeTemplateID,
+		clusterwire.TerminationAckSbeBlockLength,
+		ver,
+		fields,
+		codecs.EncodeTerminationAck,
+	)
+}

@@ -60,6 +60,20 @@ func rapidEncodeCommitPosition(
 	return rapidEncodeAt(actingVersion, fields, codecs.EncodeCommitPosition)
 }
 
+func rapidEncodeTerminationPosition(
+	actingVersion uint16,
+	fields codecs.TerminationPositionFields,
+) func([]byte, int) (int, bool) {
+	return rapidEncodeAt(actingVersion, fields, codecs.EncodeTerminationPosition)
+}
+
+func rapidEncodeTerminationAck(
+	actingVersion uint16,
+	fields codecs.TerminationAckFields,
+) func([]byte, int) (int, bool) {
+	return rapidEncodeAt(actingVersion, fields, codecs.EncodeTerminationAck)
+}
+
 func rapidBooleanType(rt *rapid.T, name string) clusterwire.BooleanType {
 	rt.Helper()
 	return rapid.SampledFrom([]clusterwire.BooleanType{

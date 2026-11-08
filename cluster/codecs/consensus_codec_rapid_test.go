@@ -155,3 +155,42 @@ func TestCommitPosition_codec_rapid(t *testing.T) {
 		)
 	})
 }
+
+func TestTerminationPosition_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.TerminationPositionFields{
+			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
+			LogPosition:      rapid.Int64().Draw(rt, "logPosition"),
+		}
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.TerminationPositionSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeTerminationPosition(actingVersion, fields),
+			fields,
+		)
+	})
+}
+
+func TestTerminationAck_codec_rapid(t *testing.T) {
+	t.Parallel()
+	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
+		actingVersion, offset := rapidCodecContext(rt)
+		fields := codecs.TerminationAckFields{
+			LeadershipTermID: rapid.Int64().Draw(rt, "leadershipTermID"),
+			LogPosition:      rapid.Int64().Draw(rt, "logPosition"),
+			MemberID:         rapid.Int32().Draw(rt, "memberID"),
+		}
+		runCodecRoundtripAtOffset(
+			rt,
+			clusterwire.TerminationAckSbeTemplateID,
+			actingVersion,
+			offset,
+			rapidEncodeTerminationAck(actingVersion, fields),
+			fields,
+		)
+	})
+}
