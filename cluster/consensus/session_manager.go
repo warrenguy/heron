@@ -93,9 +93,9 @@ type clientSession struct {
 	state             sessionState
 	openedLogPosition int64
 
-	// lastActivityNs is set at accept. ChallengeResponse, keepalive, and
-	// session message success refresh the field. Pending deadline reclaim and
-	// the open-session idle sweep read the field.
+	// lastActivityNs is set at accept. ChallengeResponse, keepalive, session
+	// message success, and an OK admin reply refresh the field. Pending
+	// deadline reclaim and the open-session idle sweep read the field.
 	lastActivityNs int64
 
 	// closeReason is the decided close reason, valid in sessionClosing.

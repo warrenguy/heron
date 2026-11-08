@@ -88,19 +88,17 @@ var ErrAppendPositionUnavailable = errors.New(
 //
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines. Caller runs the media-driver/client duty cycle and
-// [Agent.DoWork] on one goroutine. Agent does not spawn threads and does not
-// own a Client field.
+// [Agent.DoWork] on one goroutine. Agent does not start goroutines. Agent does
+// not hold a Client.
 //
 // Lifetime: the host adapter outlives the election as implementer of positions
-// and egress. [Agent.ElectionComplete] clears the election runner and stamps
-// timeOfLastLogUpdateNs (settled log-update clock). With an [ElectionFactory]
-// wired, a settled member may install a further election after that clear.
-// [Agent.SetElectionFactory] wires or clears the factory.
+// and egress. [Agent.ElectionComplete] clears the election runner. With an
+// [ElectionFactory] wired, a settled member may then install a further
+// election.
 //
-// Positions and egress may be set at construct or later via
-// [Agent.SetPositions] and [Agent.SetEgress]. Agent must exist before the host
-// adapter can take *Agent. Constructor may also set them for unit tests that
-// skip the host adapter.
+// Agent must exist before the host adapter can take *Agent, so
+// [Agent.SetPositions] and [Agent.SetEgress] set positions and egress after
+// construction.
 type Agent struct {
 	// election is nil in steady-state after [Agent.ElectionComplete].
 	election ElectionRunner
@@ -224,6 +222,9 @@ type Agent struct {
 	// NewAgent. A nil AgentConfig.Authenticator installs acceptAllAuthenticator.
 	authenticator Authenticator
 
+	// authoriser is never nil after NewAgent.
+	authoriser Authoriser
+
 	// sessionAuthProxy is the reused SessionProxy handed to authenticator
 	// handlers. proxyFor rebinds the proxy for each call.
 	sessionAuthProxy sessionAuthProxy
@@ -237,8 +238,7 @@ type Agent struct {
 	// SessionEvent REDIRECT detail ("0=host:port,1=host:port").
 	ingressEndpoints string
 
-	// egressScratch holds one SessionEvent, Challenge, or NewLeaderEvent
-	// encode for the egress offer helpers.
+	// egressScratch holds one encoded message for the egress offer helpers.
 	egressScratch []byte
 
 	// egressEvents is the capped REDIRECT/ERROR queue. Each entry owns a
@@ -546,16 +546,11 @@ type Agent struct {
 	terminationRecordingLog TerminationRecordingLog
 }
 
-// AgentConfig is the constructor config. Nil interface fields are allowed for
-// unit tests that exercise Agent host-delegate stubs only, and for production
-// bootstrap before the host adapter exists (then call [Agent.SetPositions] /
-// [Agent.SetEgress] / [Agent.SetElection]).
-//
-// Member ids: zero is a valid member id. Constructor stores ThisMemberID and
-// LeaderMemberID as given - never rewrites 0 to -1. Production: HostAdapter
-// construct seeds ThisMemberID from ThisMember.ID and LeaderMemberID from
-// config (including 0 / -1). Unit tests that need "unset" pass -1
-// (nullMemberID) explicitly.
+// AgentConfig is the constructor config. Unit tests that exercise only Agent
+// host-delegate stubs may leave interface fields nil. Production bootstrap may
+// leave interface fields nil before the host adapter exists. After the host
+// adapter exists, call [Agent.SetPositions], [Agent.SetEgress], and
+// [Agent.SetElection].
 type AgentConfig struct {
 	Election  ElectionRunner  // optional until election wired
 	Positions PositionTable   // optional at construct; set via [Agent.SetPositions]
@@ -633,6 +628,12 @@ type AgentConfig struct {
 	// Ownership: the agent does not own the authenticator. No Close duty.
 	Authenticator Authenticator
 
+	// Authoriser decides whether a session principal may run an admin
+	// request. Nil refuses every admin request.
+	//
+	// Ownership: the agent does not own the authoriser.
+	Authoriser Authoriser
+
 	// SessionTimeoutNs: zero -> DefaultSessionTimeoutNs (10s). Negative panics
 	// at NewAgent.
 	//
@@ -671,7 +672,6 @@ type AgentConfig struct {
 // NewAgent constructs an [Agent] from cfg.
 //
 // Defaults and panics:
-//   - localLogRecordingID zero becomes nullValue
 //   - LeaderHeartbeatIntervalNs zero becomes
 //     DefaultLeaderHeartbeatIntervalNs; negative panics
 //   - LeaderHeartbeatTimeoutNs zero becomes
@@ -684,16 +684,10 @@ type AgentConfig struct {
 //   - ServiceCount negative panics; zero builds a ServiceAck tracker with zero
 //     queues (hasReached returns true)
 //
-// Member ids are stored as given (0 is valid; -1 is unset).
-//
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines. See [Agent].
 //
-// Lifetime: caller owns the returned Agent. Positions, egress, election, and
-// election factory may be wired later via [Agent.SetPositions],
-// [Agent.SetEgress], [Agent.SetElection], and [Agent.SetElectionFactory]. With
-// a factory wired, a settled member may install further elections after
-// [Agent.ElectionComplete].
+// Ownership: caller owns the returned Agent.
 func NewAgent(cfg AgentConfig) *Agent {
 	interval := cmp.Or(cfg.LeaderHeartbeatIntervalNs, DefaultLeaderHeartbeatIntervalNs)
 	if interval < 0 {
@@ -730,6 +724,12 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if auth == nil {
 		auth = acceptAllAuthenticator{}
 	}
+
+	authoriser := cfg.Authoriser
+	if authoriser == nil {
+		authoriser = denyAllAuthoriser{}
+	}
+
 	a := &Agent{
 		election:                    cfg.Election,
 		positions:                   cfg.Positions,
@@ -758,6 +758,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		catchupReplays:              make(map[int32]catchupReplay),
 		sessions:                    newSessionManager(),
 		authenticator:               auth,
+		authoriser:                  authoriser,
 		serviceAcks:                 newServiceAckTracker(cfg.ServiceCount),
 		timers:                      newTimerService(),
 		errorHandler:                cfg.ErrorHandler,

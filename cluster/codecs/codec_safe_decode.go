@@ -321,6 +321,46 @@ func TryDecodeChallengeResponseAt(
 	)
 }
 
+func adminRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+	vars templateVarFields,
+) AdminRequestFields {
+	var msg clusterwire.AdminRequest
+	msg.WrapForDecode(buf, body, block, version, bufLen)
+	return AdminRequestFields{
+		LeadershipTermID: msg.LeadershipTermId(),
+		ClusterSessionID: msg.ClusterSessionId(),
+		CorrelationID:    msg.CorrelationId(),
+		RequestType:      msg.RequestType(),
+		Payload:          vars.payload,
+	}
+}
+
+func decodeAdminRequestFields(
+	buf []byte,
+	body, block, version, bufLen uint64,
+) AdminRequestFields {
+	return adminRequestFields(buf, body, block, version, bufLen, templateVarFields{})
+}
+
+// TryDecodeAdminRequestAt decodes AdminRequest without interface boxing.
+//
+// TryDecodeAdminRequestAt checks the payload bounds. The Payload field of the
+// result stays nil.
+func TryDecodeAdminRequestAt(
+	buf []byte,
+	offset int,
+) (AdminRequestFields, bool) {
+	return tryDecodeClusterAt(
+		buf,
+		offset,
+		clusterwire.AdminRequestSbeTemplateID,
+		ClusterDecodeMaxVarLen,
+		decodeAdminRequestFields,
+	)
+}
+
 func decodeSessionCloseRequestFields(
 	buf []byte,
 	body, block, version, bufLen uint64,
@@ -667,15 +707,7 @@ func decodeTemplateFields(
 	case clusterwire.ChallengeResponseSbeTemplateID:
 		return challengeResponseFields(buf, body, block, version, bufLen, vars), true
 	case clusterwire.AdminRequestSbeTemplateID:
-		var msg clusterwire.AdminRequest
-		msg.WrapForDecode(buf, body, block, version, bufLen)
-		return AdminRequestFields{
-			LeadershipTermID: msg.LeadershipTermId(),
-			ClusterSessionID: msg.ClusterSessionId(),
-			CorrelationID:    msg.CorrelationId(),
-			RequestType:      msg.RequestType(),
-			Payload:          vars.payload,
-		}, true
+		return adminRequestFields(buf, body, block, version, bufLen, vars), true
 	case clusterwire.AdminResponseSbeTemplateID:
 		var msg clusterwire.AdminResponse
 		msg.WrapForDecode(buf, body, block, version, bufLen)

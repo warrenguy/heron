@@ -3,6 +3,7 @@
 package cluster_archive_test
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster"
+	"github.com/warrenguy/heron/cluster/client"
 	"github.com/warrenguy/heron/cluster/consensus"
 	"github.com/warrenguy/heron/test/integration/harness"
 )
@@ -62,7 +64,7 @@ func TestClusterControl_actsOnTogglesThroughTheLog(t *testing.T) {
 		t,
 		harness.ClusterControlPortBase,
 		harness.ClusterControlLogEndpoint,
-		amendServiceMember,
+		amendClusterControlMember,
 	)
 	set := sc.set
 	leader := requireSingleLeader(t, set, "")
@@ -115,7 +117,8 @@ func TestClusterControl_actsOnTogglesThroughTheLog(t *testing.T) {
 	require.Positive(t, result.LogPosition, sc.dump())
 	require.Equal(t, consensus.ModuleStateActive, leader.ModuleState(), sc.dump())
 
-	transport, session := connectServiceSession(t, sc, leader)
+	adminCap := &adminSnapshotCapture{}
+	transport, session := connectServiceSessionWithEgress(t, sc, leader, adminCap.handler())
 
 	// Phase: SUSPEND on the leader's toggle moves every member to SUSPENDED.
 	// The leader holds a client message. The toggle stays SUSPEND.
@@ -163,6 +166,82 @@ func TestClusterControl_actsOnTogglesThroughTheLog(t *testing.T) {
 		payload,
 	)
 	requireNoServiceFailures(t, sc, " after resume")
+
+	// Phase: an admin snapshot request on the open session makes every member
+	// take a snapshot at one log position.
+	priorPosition := result.LogPosition
+	correlationID := transport.NextCorrelationID()
+	requireServiceAwaitTick(
+		t, sc,
+		"admin snapshot request",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			return session.SendSnapshotRequest(correlationID) > 0
+		}),
+	)
+	requireServiceAwaitTick(
+		t, sc,
+		"admin snapshot response",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool { return adminCap.seen }),
+	)
+	require.Equal(t, session.ClusterSessionID(), adminCap.sessionID, sc.dump())
+	require.Equal(t, correlationID, adminCap.correlationID, sc.dump())
+	require.Equal(t, client.AdminRequestTypeSnapshot, adminCap.requestType, sc.dump())
+	require.Equal(t, client.AdminResponseCodeOK, adminCap.responseCode, sc.dump())
+	require.Empty(t, adminCap.message, sc.dump())
+	require.Empty(t, adminCap.payload, sc.dump())
+	requireServiceAwaitTick(
+		t, sc,
+		"admin snapshot on every member",
+		durableWorkBound,
+		sessionPump(transport, session, func() bool {
+			requireNoServiceFailures(t, sc, " during admin snapshot")
+			result, ok := leader.Agent().LastSnapshotTake()
+			if !ok || result.LogPosition <= priorPosition {
+				return false
+			}
+			return snapshotTakenOnEveryMember(t, set, result.LogPosition, sc.dump) &&
+				leaderToggle.Load() == neutral
+		}),
+	)
+}
+
+func amendClusterControlMember(cfg cluster.Config) cluster.Config {
+	cfg = amendServiceMember(cfg)
+	cfg.Authoriser = consensus.AllowAllAuthoriser{}
+	return cfg
+}
+
+type adminSnapshotCapture struct {
+	sessionID     int64
+	correlationID int64
+	requestType   client.AdminRequestType
+	responseCode  client.AdminResponseCode
+	message       []byte
+	payload       []byte
+	seen          bool
+}
+
+func (c *adminSnapshotCapture) handler() client.EgressHandler {
+	return &client.EgressHandlers{
+		AdminResponseFunc: func(
+			clusterSessionID int64,
+			correlationID int64,
+			requestType client.AdminRequestType,
+			responseCode client.AdminResponseCode,
+			message []byte,
+			payload []byte,
+		) {
+			c.sessionID = clusterSessionID
+			c.correlationID = correlationID
+			c.requestType = requestType
+			c.responseCode = responseCode
+			c.message = bytes.Clone(message)
+			c.payload = bytes.Clone(payload)
+			c.seen = true
+		},
+	}
 }
 
 const (

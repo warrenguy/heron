@@ -211,6 +211,12 @@ type Config struct {
 	// Ownership: the module does not own the authenticator. No Close duty.
 	Authenticator consensus.Authenticator
 
+	// Authoriser decides whether a session principal may run an admin
+	// request. Nil refuses every admin request.
+	//
+	// Ownership: the module does not own the authoriser.
+	Authoriser consensus.Authoriser
+
 	// SessionTimeoutNs bounds pre-open session egress, queued egress events,
 	// and open-session idle close. Zero takes the 10s upstream default
 	// (consensus.DefaultSessionTimeoutNs). Negative fails Validate.
