@@ -113,8 +113,8 @@ type catchupTestStreams struct {
 	streamID int32
 }
 
-func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
-	t.Helper()
+func openCatchupTestStreams(tb testing.TB) *catchupTestStreams {
+	tb.Helper()
 
 	// Shared-log topology resolves the live multicast URI from members.
 	cfg := Config{
@@ -125,15 +125,15 @@ func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
 			"127.0.0.1:9105,127.0.0.1:9106,127.0.0.1:9107|" +
 			"2,127.0.0.1:9202,127.0.0.1:9203,239.255.12.1:9004," +
 			"127.0.0.1:9205,127.0.0.1:9206,127.0.0.1:9207",
-		ClusterDir:                    t.TempDir(),
-		AeronDir:                      t.TempDir(),
+		ClusterDir:                    tb.TempDir(),
+		AeronDir:                      tb.TempDir(),
 		LogChannel:                    "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0",
 		ReplicationChannel:            testReplicationChannel,
 		ArchiveControlRequestChannel:  "aeron:ipc",
 		ArchiveControlResponseChannel: "aeron:ipc",
 	}.Normalize()
 	tp, err := NewTopology(cfg)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	adder := &catchupLogStreamAdder{}
 	agent := testReplayAgent(testCatchupRecordingID)
@@ -146,11 +146,11 @@ func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
 		LogPublisher: logPublisher,
 		LogAdapter:   logAdapter,
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ls.Close() })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = ls.Close() })
 
 	return &catchupTestStreams{
-		tb:       t,
+		tb:       tb,
 		streams:  ls,
 		adder:    adder,
 		agent:    agent,
@@ -161,11 +161,11 @@ func openCatchupTestStreams(t *testing.T) *catchupTestStreams {
 }
 
 func newTestCatchupControl(
-	t *testing.T,
+	tb testing.TB,
 	fixture *catchupTestStreams,
 	control replayControl,
 ) *catchupControl {
-	t.Helper()
+	tb.Helper()
 	return newCatchupControl(
 		context.Background(),
 		control,

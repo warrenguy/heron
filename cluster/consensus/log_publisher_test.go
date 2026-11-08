@@ -106,9 +106,9 @@ func decodeTermFrames[T any](
 	return got
 }
 
-func termStartWire(t *testing.T, pub *aeron.ExclusivePublication) []byte {
-	t.Helper()
-	wire, _ := termWireAt(t, pub, 0)
+func termStartWire(tb testing.TB, pub *aeron.ExclusivePublication) []byte {
+	tb.Helper()
+	wire, _ := termWireAt(tb, pub, 0)
 	return wire
 }
 

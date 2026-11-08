@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type serviceControlOpKind int
@@ -24,22 +25,27 @@ const (
 )
 
 // Asserts wait sequencing against a model service that acks every published
-// coordination point in publish order (every delivered frame). Ops: publish a
-// point, advance one service cursor and inject its next ack, inject a wrong-pair
-// ack, run one serviceControlWork tick.
+// coordination point in publish order.
 //
-// Invariants each step: waits complete in FIFO order only when every service
-// has acked the first wait pair; ExpectedServiceAckID advances once per
-// completed wait; PendingServiceAckWaits matches the model; after any wrong-pair
-// injection the failure marks once and no later wait completes.
+// Ops: publish a point, advance one service cursor and inject its next ack,
+// inject a wrong-pair ack, and run one serviceControlWork tick.
+//
+// Invariants each step:
+//   - Waits complete in FIFO order only when every service has acked the first
+//     wait pair.
+//   - ExpectedServiceAckID advances once per completed wait.
+//   - PendingServiceAckWaits matches the model.
+//   - After any wrong-pair injection, the failure marks once. A later wait
+//     never completes.
 func TestServiceControl_waitSequencing_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		serviceCount := rapid.IntRange(1, 3).Draw(rt, "serviceCount")
 		a := NewAgent(AgentConfig{ServiceCount: serviceCount})
-		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
 		p, _ := boundServiceProxy(t)
 		a.SetServiceProxy(p)
 		q := &QueueConsensusIngress{}
@@ -339,8 +345,9 @@ type retiredAckFrame struct {
 func TestServiceControl_retiredSnapshotAcks_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		serviceCount := rapid.IntRange(1, 3).Draw(rt, "serviceCount")
-		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
 		a, q, _ := agentWithServiceControl(t, serviceCount)
 		a.SetLogTruncateControl(&fakeLogTruncateControl{})
 		a.SetLogRecordingID(77)
@@ -656,12 +663,13 @@ type replayJoinModelWait struct {
 func TestReplayJoinTracking_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		a := NewAgent(AgentConfig{ServiceCount: 1})
 		q := &QueueConsensusIngress{}
 		a.SetServiceIngress(q)
-		// Outer t: rapid.T is not testing.TB (missing ArtifactDir).
 		connected, _ := boundServiceProxy(t)
 		a.SetServiceProxy(connected)
 		disconnected := boundServiceProxyWithLimit(t, 0, false)

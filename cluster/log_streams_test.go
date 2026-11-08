@@ -200,7 +200,7 @@ func sharedLogTopology(t *testing.T, memberID int32, logChannel string) *cluster
 }
 
 func openLogStreamsDeps(
-	t *testing.T,
+	tb testing.TB,
 	topology *cluster.Topology,
 	adder cluster.LogStreamAdder,
 ) (
@@ -209,7 +209,7 @@ func openLogStreamsDeps(
 	*consensus.LogAdapter,
 	cluster.LogStreamsDeps,
 ) {
-	t.Helper()
+	tb.Helper()
 	agent := consensus.NewAgent(consensus.AgentConfig{})
 	logPublisher := consensus.NewLogPublisher()
 	logAdapter := consensus.NewLogAdapter(0)

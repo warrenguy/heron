@@ -162,6 +162,8 @@ func returnOnInsufficientCapacity(
 func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const clientID int64 = 7
 		ring, _ := newDriverProxyTestRing(t)
 		proxy := conductor.NewDriverProxy(ring, clientID)
@@ -366,6 +368,8 @@ func TestDriverProxy_offerReadRoundtrip_rapid(t *testing.T) {
 func TestDriverProxy_encodeFailureAborts_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const clientID int64 = 3
 		ring, buffer := newDriverProxyTestRing(t)
 		proxy := conductor.NewDriverProxy(ring, clientID)

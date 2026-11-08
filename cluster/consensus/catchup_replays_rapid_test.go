@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // Asserts TrackCatchupCompletion against a reference model over random
@@ -17,6 +18,8 @@ import (
 func TestTrackCatchupCompletion_sequences_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		eg := &recordingEgress{}
@@ -94,11 +97,13 @@ func TestTrackCatchupCompletion_sequences_rapid(t *testing.T) {
 	})
 }
 
-// Asserts one replay per member and that the control ledger matches the agent
-// map under random request, complete, and teardown sequences.
+// Asserts one replay per member under random request, complete, and teardown
+// sequences. The control ledger matches the agent map.
 func TestCatchupReplays_mapLifecycle_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		a, control, _ := newLeaderCatchupAgent(t, AgentConfig{}, "")

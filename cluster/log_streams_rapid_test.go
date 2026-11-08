@@ -13,15 +13,18 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster"
 	"github.com/warrenguy/heron/cluster/consensus"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
-// TestLogStreams_openAndTeardown_rapid checks the open/bind/close roundtrip
-// over arbitrary valid topologies: adds target the topology log channel and
-// stream id for any member, and Close returns the agent to the unbound state.
-// Fixed-input failure and rollback cases live in the table tests.
+// TestLogStreams_openAndTeardown_rapid checks the open, bind, and close
+// roundtrip over random valid topologies. Adds target the topology log channel
+// and stream id for any member. Close returns the agent to the unbound state.
+// The table tests cover the fixed-input failure and rollback cases.
 func TestLogStreams_openAndTeardown_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		memberCount, startID, portBase := drawValidMembersPorts(rt)
 		thisIdx := rapid.IntRange(0, memberCount-1).Draw(rt, "thisIdx")
 		memberID := startID + int32(thisIdx)
@@ -80,7 +83,7 @@ const (
 	reseedPublicationClose  = "close"
 )
 
-// TestLogStreams_reseedPublication_rapid checks reseeds, failed reseed adds
+// TestLogStreams_reseedPublication_rapid checks reseeds, failed reseed adds,
 // and Close over random sequences. The model tracks the bound state, whether
 // Close ran, and every publication added.
 func TestLogStreams_reseedPublication_rapid(t *testing.T) {
@@ -88,6 +91,8 @@ func TestLogStreams_reseedPublication_rapid(t *testing.T) {
 	topology := sharedLogTopology(t, 0, "")
 	cause := errors.New("driver refused reseed")
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		adder := &fakeLogStreamAdder{}
 		_, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
 		ls, err := cluster.OpenLogStreams(deps)
@@ -174,6 +179,8 @@ func TestLogStreams_reseedSubscription_rapid(t *testing.T) {
 	cause := errors.New("driver refused reseed")
 	destCause := errors.New("driver refused live destination")
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		adder := &fakeLogStreamAdder{}
 		agent, _, _, deps := openLogStreamsDeps(t, topology, adder)
 		ls, err := cluster.OpenLogStreams(deps)

@@ -12,7 +12,8 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	aerontestutil "github.com/warrenguy/heron/aeron/internal/testutil"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type closeAllRapidOpKind int
@@ -63,6 +64,8 @@ func assertCloseOrderPublicationsBeforeSubscriptions(
 func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		lifecycle := &closeOrderResourceLifecycle{}
 		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 
@@ -108,6 +111,8 @@ func TestConductor_CloseAllResources_ordering_rapid(t *testing.T) {
 func TestConductor_CloseResource_idempotent_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		lifecycle := &recordingResourceLifecycle{}
 		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 		ring := conductorInstance.DriverProxyForTest().Ring()
@@ -143,7 +148,7 @@ func TestConductor_CloseResource_idempotent_rapid(t *testing.T) {
 			require.Equal(rt, 0, conductorInstance.SubscriptionCountForTest())
 		}
 
-		require.Equal(rt, []int{removeTypeID}, testutil.CommittedRecordTypeIDs(ring))
+		require.Equal(rt, []int{removeTypeID}, aerontestutil.CommittedRecordTypeIDs(ring))
 	})
 }
 
@@ -202,6 +207,8 @@ func assertMapsEmptyRingAndRetires(
 func TestConductor_forceCloseResources_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		lifecycle := &recordingResourceLifecycle{}
 		conductorInstance, _ := newConductorWithResourceLingerForTest(t, 0, lifecycle)
 		ring := conductorInstance.DriverProxyForTest().Ring()
@@ -222,7 +229,7 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 		applyForceClose := func() {
 			rt.Helper()
 
-			beforeTypeIDs := testutil.CommittedRecordTypeIDs(ring)
+			beforeTypeIDs := aerontestutil.CommittedRecordTypeIDs(ring)
 			accountLiveRetires()
 
 			conductorInstance.ForceCloseResourcesForTest()
@@ -249,7 +256,7 @@ func TestConductor_forceCloseResources_rapid(t *testing.T) {
 		applyCloseAll := func() {
 			rt.Helper()
 
-			beforeTypeIDs := testutil.CommittedRecordTypeIDs(ring)
+			beforeTypeIDs := aerontestutil.CommittedRecordTypeIDs(ring)
 			wantTypeIDs := appendRemoveOfferTypeIDs(
 				beforeTypeIDs,
 				livePublications,
@@ -375,13 +382,15 @@ func registerSharedDriverPublicationReady(
 // Invariants:
 //   - each add stays in the map under its own correlation id until its own
 //     Close, CancelPending rollback, or CloseAllResources
-//   - a repeat Close sends no REMOVE_PUBLICATION and releases no log buffer
-//     reference
+//   - a repeat Close does not send REMOVE_PUBLICATION or release a log
+//     buffer reference
 //   - an error frame calls the handler once per open add that shares the
-//     frame driver registration id
+//     frame's driver registration id
 func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		lifecycle := &recordingResourceLifecycle{}
 		var frames []conductor.PublicationError
 		config := conductorTestConfig(t, func(error) {}, fixedClocks{epochMs: resourceMapTestEpochMs})
@@ -524,13 +533,13 @@ func TestConductor_sharedDriverPublication_addClose_rapid(t *testing.T) {
 				}
 			}
 
-			for _, typeID := range testutil.CommittedRecordTypeIDs(ring) {
+			for _, typeID := range aerontestutil.CommittedRecordTypeIDs(ring) {
 				require.Equal(rt, conductor.RemovePublication, typeID)
 			}
 
 			// CloseAllResources offers one REMOVE_PUBLICATION per publication in
 			// map iteration order. Sort before comparing.
-			gotRemoveIDs := testutil.RemovePublicationRegistrationIDs(rt, ring)
+			gotRemoveIDs := aerontestutil.RemovePublicationRegistrationIDs(rt, ring)
 			slices.Sort(gotRemoveIDs)
 			require.Equal(rt, wantRemoveIDs, gotRemoveIDs)
 			require.Equal(rt, retireCallsBefore+wantRetireCalls, lifecycle.retirePublicationCalls)

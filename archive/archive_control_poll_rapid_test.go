@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const (
@@ -181,7 +182,7 @@ func appendLatchRapidFrames(
 }
 
 // TestPollControlEvents_latchOrder_rapid asserts that the demux latch, hold,
-// disarmed clear, error route and latch copy match a frame queue model over
+// disarmed clear, error route, and latch copy match a frame queue model over
 // random operation sequences.
 func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 	sub := aeron.NewTestSubscriptionForHooks(t)
@@ -190,6 +191,8 @@ func TestPollControlEvents_latchOrder_rapid(t *testing.T) {
 	termBuffer := aeron.ImageTermBufferForHooks(image)
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		termBuffer.SetBytes(0, termBuffer.Capacity(), 0)
 		aeron.ImageSetSubscriberPositionForHooks(image, 0)
 

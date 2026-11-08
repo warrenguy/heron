@@ -14,6 +14,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/conductor"
 	"github.com/warrenguy/heron/aeron/logbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const registryRapidBaseNowNs int64 = 1_000_000_000
@@ -347,32 +348,32 @@ type registryCloseRapidFixture struct {
 }
 
 func newRegistryCloseRapidFixture(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 ) registryCloseRapidFixture {
-	t.Helper()
+	tb.Helper()
 	rt.Helper()
 
 	resourceLingerNs := drawRegistryRapidPositiveLingerNs(rt, "resourceLingerNs")
 
-	dir := t.TempDir()
+	dir := tb.TempDir()
 	logPath := filepath.Join(dir, "close-rapid.log")
-	writeMinimalLogFileForRegistryTest(t, logPath)
+	writeMinimalLogFileForRegistryTest(tb, logPath)
 
 	lifecycle := &lingerPublicationLifecycle{registryKey: logPath}
-	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(t, resourceLingerNs, lifecycle)
+	conductorInstance, nanoNs := newConductorWithResourceLingerForTest(tb, resourceLingerNs, lifecycle)
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
-	rt.Cleanup(func() { conductor.StopLogBuffersRegistryUnmapperForTest(registry) })
+	tb.Cleanup(conductorInstance.CloseLogBuffersForTest)
 
 	buffers, err := conductorInstance.AcquireLogBuffersForTest(logPath)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	var liveMapped any = buffers.MappedLogBuffer()
 
 	conductorInstance.InsertPublicationForTest(
 		registryRapidClosePublicationRegID,
 		stubPublication{registrationID: registryRapidClosePublicationRegID},
 	)
-	require.Equal(t, 1, conductorInstance.PublicationCountForTest())
+	require.Equal(tb, 1, conductorInstance.PublicationCountForTest())
 
 	state := registryRapidKeyStateForLog(rt, registry, logPath)
 	return registryCloseRapidFixture{
@@ -392,30 +393,31 @@ func clearRegistryRapidLiveMappedIfEvicted(target registryRapidStepTarget) {
 }
 
 func newRegistryRapidFixture(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 ) (*conductor.LogBuffersRegistry, registryRapidKeyState) {
-	t.Helper()
+	tb.Helper()
 	rt.Helper()
 
-	registry, logPath := newRegistryWithLogFile(t, "rapid.log")
+	registry, logPath := newRegistryWithLogFile(tb, "rapid.log")
 	return registry, registryRapidKeyStateForLog(rt, registry, logPath)
 }
 
 func newMultiKeyRegistryRapidFixture(
-	t *testing.T,
+	tb testing.TB,
 	rt *rapid.T,
 	keyCount int,
 ) (*conductor.LogBuffersRegistry, []registryRapidKeyState) {
-	t.Helper()
+	tb.Helper()
 	rt.Helper()
 
-	dir := t.TempDir()
+	dir := tb.TempDir()
 	registry := conductor.NewLogBuffersRegistry(dir)
+	tb.Cleanup(func() { conductor.CloseLogBuffersRegistryForTest(registry) })
 	states := make([]registryRapidKeyState, keyCount)
 	for i := range keyCount {
 		logPath := filepath.Join(dir, fmt.Sprintf("rapid-%d.log", i))
-		writeMinimalLogFileForRegistryTest(t, logPath)
+		writeMinimalLogFileForRegistryTest(tb, logPath)
 		states[i] = registryRapidKeyStateForLog(rt, registry, logPath)
 	}
 	return registry, states
@@ -441,6 +443,8 @@ func assertOtherRegistryRapidKeysUnchanged(
 func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		registry, state := newRegistryRapidFixture(t, rt)
 		model := registryRapidModel{}
 
@@ -463,6 +467,8 @@ func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) 
 func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		fixture := newRegistryCloseRapidFixture(t, rt)
 		model := registryRapidModel{refCount: 1, contains: true}
 		publicationInMap := true
@@ -491,6 +497,8 @@ func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T
 func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		keyCount := rapid.IntRange(2, 8).Draw(rt, "keyCount")
 		registry, states := newMultiKeyRegistryRapidFixture(t, rt, keyCount)
 
@@ -530,11 +538,13 @@ func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
 func TestLogBuffersRegistry_unmapper_invariants_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "unmapper-rapid.log")
 		writeMinimalLogFileForRegistryTest(t, logPath)
 		registry := conductor.NewUnmappingLogBuffersRegistryForTest(dir)
-		rt.Cleanup(func() { conductor.StopLogBuffersRegistryUnmapperForTest(registry) })
+		t.Cleanup(func() { conductor.CloseLogBuffersRegistryForTest(registry) })
 		state := registryRapidKeyStateForLog(rt, registry, logPath)
 		model := registryRapidModel{}
 

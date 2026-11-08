@@ -4,7 +4,6 @@ package election_test
 
 import (
 	"fmt"
-	"os"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -13,14 +12,13 @@ import (
 
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestProposeMaxCandidateTermID_monotonic_rapid(t *testing.T) {
 	t.Parallel()
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		dir, err := os.MkdirTemp("", "node-state-rapid-*")
-		require.NoError(rt, err)
-		rt.Cleanup(func() { require.NoError(rt, os.RemoveAll(dir)) })
+		dir := testutil.IterationTB(t, rt).TempDir()
 
 		f, err := election.OpenNodeStateFile(dir, true, recordinglog.FileSyncNone)
 		require.NoError(rt, err)

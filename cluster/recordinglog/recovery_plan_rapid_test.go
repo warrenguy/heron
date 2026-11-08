@@ -12,6 +12,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func isRecoveryAnchorError(err error) bool {
@@ -55,6 +56,8 @@ func requireSnapshotSourcesInEntries(
 func TestPlanRecovery_invariants_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		n := rapid.IntRange(0, 10).Draw(rt, "n")
 		serviceCount := rapid.IntRange(0, 3).Draw(rt, "serviceCount")
 		entries := recordinglog.DrawIndexedEntries(rt, n, "")
@@ -67,7 +70,6 @@ func TestPlanRecovery_invariants_rapid(t *testing.T) {
 			}
 		}
 		log, path := openWithEntries(t, entries...)
-		defer func() { require.NoError(rt, log.Close()) }()
 		cfg := recoveryPlanConfig(serviceCount)
 
 		plan, err := log.PlanRecovery(archive, cfg)

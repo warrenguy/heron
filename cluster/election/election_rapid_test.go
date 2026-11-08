@@ -29,8 +29,9 @@ func runElectionSafetyPBT(t *testing.T, crashWeighted bool) {
 	}
 
 	testutil.RapidCheckSteps(t, checks, steps, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		c := newElectionRapidCluster(t, rapidClusterSize)
-		defer c.closeStores()
 		c.crashWeighted = crashWeighted
 		c.checkInvariants(rt)
 		c.runActions(rt)
@@ -106,12 +107,12 @@ func drawDivergentRejoin(rt *rapid.T) divergentRejoin {
 // and the returning member on the term before it. The returning member starts
 // down.
 func newDivergentRejoinCluster(
-	t *testing.T,
+	tb testing.TB,
 	d divergentRejoin,
 ) (*electionRapidCluster, *rapidRecordingLog) {
-	t.Helper()
+	tb.Helper()
 
-	c := newRapidClusterShell(t, rapidClusterSize)
+	c := newRapidClusterShell(tb, rapidClusterSize)
 
 	missedEnd := d.missedEnd()
 	if d.missedTermOpen {
@@ -379,10 +380,10 @@ func (c *electionRapidCluster) runRejoinPrefix(rt *rapid.T) {
 //
 // The leader wins on one vote. The voter crashes before it joins. The member
 // returns with a drawn divergent tail past the missed term's base. A drawn
-// prefix of ticks, deliveries and clock steps runs, then a drain with no
-// partition, crash or restart. A missed term with log routes the member
-// through FOLLOWER_LOG_REPLICATION over model helpers. A drawn failure fails
-// the first helper part way.
+// prefix of ticks, deliveries, and clock steps runs. A drain without a
+// partition, crash, or restart follows. A missed term with log routes the
+// member through FOLLOWER_LOG_REPLICATION over model helpers. A drawn failure
+// fails the first helper partway.
 func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 	checks := 100
 	if testing.Short() {
@@ -390,9 +391,10 @@ func TestElection_divergentExLeaderRejoin_rapid(t *testing.T) {
 	}
 
 	rapidCheck(t, checks, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		d := drawDivergentRejoin(rt)
 		c, memberLog := newDivergentRejoinCluster(t, d)
-		defer c.closeStores()
 
 		leader := c.nodes[rejoinLeaderID]
 		member := c.nodes[rejoinMemberID]
@@ -656,11 +658,9 @@ func TestElectionRapidCluster_handleErrorReopensCandidateTermWindow(t *testing.T
 
 func TestElectionRapid_handleErrorSyncsLogPosition(t *testing.T) {
 	rapidCheck(t, rapidChecksSBEDefault, func(rt *rapid.T) {
-		cfg, deps, _, _, nodeState := testElectionDeps(t)
+		t := testutil.IterationTB(t, rt)
 
-		// Close the per-iteration store so open files do not accumulate across rapid
-		// checks. The outer t.Cleanup close is then an idempotent no-op.
-		defer func() { require.NoError(rt, nodeState.store.Close()) }()
+		cfg, deps, _, _, _ := testElectionDeps(t)
 
 		// Draw commit past append and the initial log position. HandleError assigns
 		// Host.CommitPosition raw. The truncate path owns any clamp against append.

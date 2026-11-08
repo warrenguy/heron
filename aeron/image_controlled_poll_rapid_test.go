@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type controlledPollFrameKind int
@@ -282,6 +283,8 @@ func requireControlledPollMatchesOracle(
 func TestImage_BoundedControlledPoll_boundStart_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		capacity := aeron.TestPublicationTermLength
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)
@@ -330,6 +333,8 @@ func TestImage_BoundedControlledPoll_boundStart_rapid(t *testing.T) {
 func TestImage_BoundedControlledPoll_actions_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		capacity := aeron.TestPublicationTermLength
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)
@@ -377,6 +382,8 @@ func TestImage_BoundedControlledPoll_actions_rapid(t *testing.T) {
 func TestImage_ControlledPoll_actions_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		capacity := aeron.TestPublicationTermLength
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)

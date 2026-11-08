@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // modelAckEntry is one pending ServiceAck in the reference model.
@@ -47,20 +48,23 @@ type pendingControlOp struct {
 	apply  func()
 }
 
-// Asserts delivery-order ack pairing. The agent acks each pending ServiceAck
-// exactly once, in queue order, with ids 0..n-1. A drawn start entry is
-// index 0 exactly once. Every later ack id shifts by one. The start ack
-// carries the configured relevant id. Join, request and failed snapshot acks
-// carry nullValue. A passing snapshot ack carries the take's recording id.
-// The ready prefix gate never sends past the first unready entry. A passed
-// request position marks ServiceFailure and freezes.
+// Asserts delivery-order ack pairing against a model:
+//   - the agent acks each pending ServiceAck exactly once, in queue order,
+//     with ids 0..n-1
+//   - a drawn start entry is index 0 exactly once. Every later ack id shifts
+//     by one.
+//   - the start ack carries the configured relevant id. A passing snapshot
+//     ack carries the take's recording id. Join, request, and failed snapshot
+//     acks carry nullValue.
+//   - the ready prefix gate never sends past the first unready entry
+//   - a passed request position marks ServiceFailure and freezes the agent
 //
 // Each SNAPSHOT frame starts a take over the take fake with a drawn hook
 // outcome. The poll holds at that frame until the take resolves. A failed
 // hook readies its entry with its cause. The drain marks the cause after the
 // ack sends, or first on a terminal offer code. A retriable code holds the
-// entry and marks nothing. With no sender bound, the cause marks at once. An
-// earlier cause stays first.
+// entry and does not mark the cause. With no sender bound, the cause marks at
+// once. An earlier cause stays first.
 //
 // A drawn Start error sets the start entry ready. The model sets
 // RelevantID to NULL_VALUE. Each later tick drains only the start entry.
@@ -87,6 +91,8 @@ func TestControlWork_deliveryOrderAck_rapid(t *testing.T) {
 	t.Parallel()
 	termEvent := termEventPayload(t, clusterwire.ClusterTimeUnit_NANOS, 0)
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		hookErr := errors.New("rapid hook failure")

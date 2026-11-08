@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // Load mutations the round trip draws.
@@ -64,6 +65,8 @@ func editBeginMarker(
 func TestSnapshotLoad_takeRoundTrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 		sessionCount := rapid.IntRange(0, 8).Draw(rt, "sessionCount")
 		ids := rapid.SliceOfNDistinct(

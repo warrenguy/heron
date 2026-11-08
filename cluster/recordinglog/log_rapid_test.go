@@ -16,6 +16,7 @@ import (
 
 	"github.com/warrenguy/heron/atomicbuffer"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func requireReloadMatchesLogRapid(rt *rapid.T, path string, log *recordinglog.Log) {
@@ -134,8 +135,9 @@ func drawAppend(
 func TestAppendInsertionOrder_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 
 		usedTerms := make(map[int64]bool)
 		termRecordingID := int64(-1)
@@ -157,8 +159,9 @@ func TestAppendInsertionOrder_rapid(t *testing.T) {
 func TestSnapshotGroupAppendOrder_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 
 		const (
 			termRecordingID = 1
@@ -298,9 +301,10 @@ func TestSnapshotGroupAppendOrder_rapid(t *testing.T) {
 func TestTermRecordingID_matchesEveryTermEntry_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 		log, _ := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 
 		usedTerms := make(map[int64]bool)
 		termRecordingID := int64(-1)
@@ -328,6 +332,8 @@ func TestTermRecordingID_matchesEveryTermEntry_rapid(t *testing.T) {
 func TestTermRecordingID_survivesCloseReopen_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 		dir := t.TempDir()
 		log, err := recordinglog.Open(dir, true)
@@ -360,8 +366,9 @@ func TestTermRecordingID_survivesCloseReopen_rapid(t *testing.T) {
 func TestMutateThenReload_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 		usedTerms := make(map[int64]bool)
 		termRecordingID := int64(-1)
 		n := rapid.IntRange(0, 14).Draw(rt, "n")
@@ -412,8 +419,9 @@ func collectValidTerms(entries []recordinglog.Entry) map[int64]recordinglog.Entr
 func TestEnsureCoherentEmptyLog_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 		initialTerm := rapid.Int64Range(-2, 10).Draw(rt, "initialTerm")
 		lowest := max(int64(0), initialTerm)
 		targetTerm := lowest + rapid.Int64Range(1, 6).Draw(rt, "gap")
@@ -485,8 +493,9 @@ type termState struct {
 func TestEnsureCoherentNonEmptyLog_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 		const timestamp = 10000
 		const step = 100
 
@@ -623,6 +632,8 @@ func minTruncToKeep(rec recordinglog.Entry) int {
 func TestPartialWriteTolerance_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
 		usedTerms := make(map[int64]bool)
 		termRecordingID := int64(-1)
@@ -685,6 +696,8 @@ func TestPartialWriteTolerance_rapid(t *testing.T) {
 func TestOpenReloadRoundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		dir := t.TempDir()
 		slots := writeLogFile(rt, dir)
 
@@ -980,8 +993,9 @@ func predictInvalidateRapid(entries []recordinglog.Entry, bound int64) ([]record
 func TestInvalidateEntriesBeforeAndCompact_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, path := newLog(t)
-		defer func() { require.NoError(rt, log.Close()) }()
 		dir := filepath.Dir(path)
 
 		const (

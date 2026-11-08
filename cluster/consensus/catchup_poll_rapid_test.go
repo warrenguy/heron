@@ -11,6 +11,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // catchupPollModel is the reference model for TestCatchupPoll_bound_rapid.
@@ -45,7 +46,7 @@ func (m *catchupPollModel) isPublishDue(recorded, nowNs, intervalNs int64) bool 
 }
 
 // TestCatchupPoll_bound_rapid checks CatchupPoll against a reference model over
-// random frame layouts, limits, recording lifecycles and tick gaps. Recorded
+// random frame layouts, limits, recording lifecycles, and tick gaps. Recorded
 // and limit positions sit on frame ends, as archive and commit positions do.
 //
 // Properties per tick:
@@ -63,6 +64,8 @@ func TestCatchupPoll_bound_rapid(t *testing.T) {
 		intervalNs  int64 = 5
 	)
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		fragmentLimit := rapid.IntRange(1, 4).Draw(rt, "fragmentLimit")
 		adapter, image := boundLogAdapterWithLimit(t, fragmentLimit)
 

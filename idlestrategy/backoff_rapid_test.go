@@ -11,6 +11,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/idlestrategy"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type backoffParams struct {
@@ -50,6 +51,8 @@ func (p backoffParams) want(idleStreak int) (int, time.Duration) {
 func TestBackoff_idleSequence_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		// Nanosecond park periods keep each parking sleep short.
 		params := backoffParams{
 			maxSpins:      rapid.IntRange(0, 32).Draw(rt, "maxSpins"),

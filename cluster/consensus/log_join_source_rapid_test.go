@@ -9,15 +9,16 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/warrenguy/heron/aeron"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // drawFakeLogJoinImages builds fake SubscriptionImages with a drawn image set.
-// Nil-slot and closed entries are included so both walk filters are exercised.
-func drawFakeLogJoinImages(t *testing.T, rt *rapid.T) *fakeSubscriptionImages {
+// The draw includes nil-slot and closed entries to exercise both walk filters.
+func drawFakeLogJoinImages(tb testing.TB, rt *rapid.T) *fakeSubscriptionImages {
 	rt.Helper()
 
 	count := rapid.IntRange(0, 6).Draw(rt, "imageCount")
-	sub := aeron.NewTestSubscriptionForHooks(t)
+	sub := aeron.NewTestSubscriptionForHooks(tb)
 	images := make([]*aeron.Image, count)
 	for i := range count {
 		nilSlot := rapid.Bool().Draw(rt, "nilSlot")
@@ -28,7 +29,7 @@ func drawFakeLogJoinImages(t *testing.T, rt *rapid.T) *fakeSubscriptionImages {
 		sessionID := rapid.Int32Range(1, 8).Draw(rt, "sessionID")
 		joinPos := rapid.Int64Range(0, 1<<20).Draw(rt, "joinPosition")
 		image := aeron.NewTestImageForSubscriptionHooksWithSessionID(
-			t,
+			tb,
 			sub,
 			sessionID,
 			int64(i+1),
@@ -66,6 +67,8 @@ func firstMatchLogJoinImage(
 func TestSubscriptionLogJoinSource_selection_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		fake := drawFakeLogJoinImages(t, rt)
 		s := NewSubscriptionLogJoinSource(fake)
 		query := rapid.Int32Range(1, 8).Draw(rt, "querySession")
@@ -102,6 +105,8 @@ func isOpenLogJoinImage(images map[int32]*aeron.Image, session int32) bool {
 func TestAgentFollowerLogJoin_sequence_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const (
 			seedLeader int32 = 2
 			seedTerm   int64 = 5

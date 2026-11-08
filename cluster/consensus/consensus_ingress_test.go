@@ -100,15 +100,15 @@ func encodeCanvassPositionWire(t *testing.T, fields codecs.CanvassPositionFields
 	return buf[:end]
 }
 
-func encodeRequestVoteWire(t *testing.T, fields codecs.RequestVoteFields) []byte {
-	t.Helper()
+func encodeRequestVoteWire(tb testing.TB, fields codecs.RequestVoteFields) []byte {
+	tb.Helper()
 	actingVersion := uint16(clusterwire.RequestVoteSbeSchemaVersion)
 	blockLen := codecs.RequestVoteBlockLength(actingVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(blockLen)
-	require.True(t, ok)
+	require.True(tb, ok)
 	buf := make([]byte, wireLen)
 	end, ok := codecs.EncodeRequestVote(buf, 0, actingVersion, fields)
-	require.True(t, ok)
+	require.True(tb, ok)
 	return buf[:end]
 }
 

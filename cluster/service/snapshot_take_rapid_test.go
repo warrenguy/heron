@@ -12,6 +12,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // Handler outcomes the take model draws.
@@ -282,10 +283,11 @@ func (m *takeModel) popAddPoll() snapshotTakeFakeAddPoll {
 //   - at most one ack per action, exactly one once the take resolves
 //   - a success ack carries the START recording id, after a STOP at or above
 //     the close position
-//   - no ack that carries the pre-proof id
+//   - an ack never carries the pre-proof id
 //   - a failure ack of -1, with the mark on the same tick as its send
 //   - with no term event, a failure before any publication add
-//   - no log frame past the action while the take runs
+//   - the agent does not consume a log frame past the action while the take
+//     runs
 //   - after resolution: no pending add, a closed start request, a closed
 //     publication, and no session handler
 func TestSnapshotTake_model_rapid(t *testing.T) {
@@ -296,6 +298,8 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 		sessionPayloads[id] = sessionOpenPayload(t, int64(id+1), "aeron:ipc", "")
 	}
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 		drawErr := errors.New("rapid take failure")
 		svc := &modelSnapshotService{err: drawErr}

@@ -47,11 +47,11 @@ func recordingSignalWire(t *testing.T, signal archivewire.RecordingSignal) []byt
 }
 
 func invokeHandleControlFragment(
-	t *testing.T,
+	tb testing.TB,
 	targets ControlPollTargets,
 	wire []byte,
 ) {
-	t.Helper()
+	tb.Helper()
 	handleControlFragment(targets, nil, atomicbuffer.Wrap(wire), 0, len(wire), &aeron.Header{})
 }
 

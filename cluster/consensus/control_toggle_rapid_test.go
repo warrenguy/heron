@@ -10,6 +10,7 @@ import (
 
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // controlToggleModel models the toggle value, module state and log of one
@@ -126,6 +127,8 @@ func (m *controlToggleModel) requireLog(
 func TestControlToggle_model_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		a, pub := settledLeaderWithLog(t, 0)
 		counter := newFakeToggle(int64(ControlToggleNeutral))
 		a.SetClusterControlToggle(counter)

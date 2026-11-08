@@ -13,12 +13,12 @@ import (
 
 const testRecordingID int64 = 42
 
-func openElectionRecordingLog(t *testing.T) (*recordinglog.Log, string) {
-	t.Helper()
-	dir := t.TempDir()
+func openElectionRecordingLog(tb testing.TB) (*recordinglog.Log, string) {
+	tb.Helper()
+	dir := tb.TempDir()
 	log, err := recordinglog.Open(dir, true)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = log.Close() })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = log.Close() })
 	return log, dir
 }
 
@@ -85,11 +85,11 @@ func termExtents(start, stop int64) recordinglog.LogRecordingExtents {
 	}
 }
 
-func reopenRecordingLog(t *testing.T, dir string) *recordinglog.Log {
-	t.Helper()
+func reopenRecordingLog(tb testing.TB, dir string) *recordinglog.Log {
+	tb.Helper()
 	reopened, err := recordinglog.Open(dir, false)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = reopened.Close() })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = reopened.Close() })
 	return reopened
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestProposeMaxCommit_monotonic_rapid(t *testing.T) {
@@ -115,10 +116,12 @@ var rapidSetModuleStates = []ModuleState{
 // TestElectionInstall_countMonotonicAndSingleRunner_rapid asserts install
 // count, single runner, and seed term invariants over mixed duty steps.
 //
-// An adapter with no image stands for a closed log image.
+// An adapter without an image stands for a closed log image.
 func TestElectionInstall_countMonotonicAndSingleRunner_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const timeoutNs = DefaultLeaderHeartbeatTimeoutNs
 		pt := &scriptedActiveQuorumTable{active: true}
 		a := NewAgent(AgentConfig{
@@ -332,6 +335,8 @@ func (p *heldClientIngressProbe) Poll(
 func TestClientIngress_heldWhileElectionLive_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		const timeoutNs = DefaultLeaderHeartbeatTimeoutNs
 		pt := &scriptedActiveQuorumTable{active: true}
 		a := NewAgent(AgentConfig{

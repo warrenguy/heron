@@ -73,22 +73,22 @@ func (m *asyncControlModel) applyResponse(fields codecs.ControlResponseFields) b
 
 // queueResponse appends a response to term and to the model queue.
 func (m *asyncControlModel) queueResponse(
-	t *testing.T,
+	tb testing.TB,
 	term *asyncRapidTerm,
 	fields codecs.ControlResponseFields,
 ) {
-	term.append(t, encodeControlResponseWire(t, fields))
+	term.append(tb, encodeControlResponseWire(tb, fields))
 	m.pending = append(m.pending, asyncControlModelEvent{response: fields})
 }
 
 // queueEvent appends wire to term. The model runs apply when a poll reaches it.
 func (m *asyncControlModel) queueEvent(
-	t *testing.T,
+	tb testing.TB,
 	term *asyncRapidTerm,
 	wire []byte,
 	apply func(),
 ) {
-	term.append(t, wire)
+	term.append(tb, wire)
 	m.pending = append(m.pending, asyncControlModelEvent{apply: apply})
 }
 
@@ -263,8 +263,8 @@ func (term *asyncRapidTerm) newClient(aeronClient *aeron.Client, proxy *Proxy) *
 	}
 }
 
-func (term *asyncRapidTerm) append(t *testing.T, wire []byte) {
-	t.Helper()
+func (term *asyncRapidTerm) append(tb testing.TB, wire []byte) {
+	tb.Helper()
 
-	appendUnfragmentedWireToTerm(t, term.termBuffer, wire)
+	appendUnfragmentedWireToTerm(tb, term.termBuffer, wire)
 }

@@ -554,9 +554,9 @@ func writeTwoGroups(t *testing.T, serviceCount int) twoGroupFixture {
 	}
 }
 
-func newRetentionDir(t *testing.T) (string, *retentionArchive) {
-	t.Helper()
-	return t.TempDir(), newRetentionArchive()
+func newRetentionDir(tb testing.TB) (string, *retentionArchive) {
+	tb.Helper()
+	return tb.TempDir(), newRetentionArchive()
 }
 
 func newTermLog(
@@ -571,10 +571,10 @@ func newTermLog(
 	return dir, log, archive
 }
 
-func createLog(t *testing.T, dir string) *recordinglog.Log {
-	t.Helper()
+func createLog(tb testing.TB, dir string) *recordinglog.Log {
+	tb.Helper()
 	log, err := recordinglog.Open(dir, true)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return log
 }
 

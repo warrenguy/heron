@@ -198,30 +198,30 @@ func encodeSessionMessageWire(
 }
 
 func encodeSessionKeepAliveFieldsWire(
-	t *testing.T,
+	tb testing.TB,
 	termID, sessionID int64,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 	actingVersion := uint16(clusterwire.SessionKeepAliveSbeSchemaVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.SessionKeepAliveSbeBlockLength)
-	require.True(t, ok)
+	require.True(tb, ok)
 	buf := make([]byte, wireLen)
 	end, ok := codecs.EncodeSessionKeepAlive(buf, 0, actingVersion, codecs.SessionKeepAliveFields{
 		LeadershipTermID: termID,
 		ClusterSessionID: sessionID,
 	})
-	require.True(t, ok)
+	require.True(tb, ok)
 	return buf[:end]
 }
 
 func encodeSessionCloseRequestWire(
-	t *testing.T,
+	tb testing.TB,
 	termID, sessionID int64,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 	actingVersion := uint16(clusterwire.SessionCloseRequestSbeSchemaVersion)
 	wireLen, ok := codecs.ClusterWireMessageLen(clusterwire.SessionCloseRequestSbeBlockLength)
-	require.True(t, ok)
+	require.True(tb, ok)
 	buf := make([]byte, wireLen)
 	end, ok := codecs.EncodeSessionCloseRequest(
 		buf, 0, actingVersion, codecs.SessionCloseRequestFields{
@@ -229,7 +229,7 @@ func encodeSessionCloseRequestWire(
 			ClusterSessionID: sessionID,
 		},
 	)
-	require.True(t, ok)
+	require.True(tb, ok)
 	return buf[:end]
 }
 

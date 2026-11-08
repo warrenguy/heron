@@ -11,6 +11,7 @@ import (
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/election"
 	"github.com/warrenguy/heron/cluster/recordinglog"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 type replayTermModel struct {
@@ -94,6 +95,8 @@ func requireReplayTermModel(
 
 func TestElection_replayNewLeadershipTermEvent_rapid(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		log, dir := openElectionRecordingLog(t)
 
 		seed := rapid.IntRange(0, 4).Draw(rt, "seedRows")

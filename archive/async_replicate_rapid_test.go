@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/archive/codecs"
 	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 const (
@@ -248,6 +249,8 @@ func TestAsyncReplicate_model_rapid(t *testing.T) {
 	termBuffer := aeron.ImageTermBufferForHooks(image)
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		termBuffer.SetBytes(0, termBuffer.Capacity(), 0)
 		aeron.ImageSetSubscriberPositionForHooks(image, 0)
 		pub, proxy := newTestProxy(Config{})

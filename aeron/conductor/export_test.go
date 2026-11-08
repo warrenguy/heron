@@ -165,6 +165,23 @@ func StopLogBuffersRegistryUnmapperForTest(registry *LogBuffersRegistry) {
 	registry.stopUnmapper()
 }
 
+// CloseLogBuffersRegistryForTest unmaps every entry, live or lingering. It then
+// stops the unmapper. Call it after the test stops reading the buffers.
+func CloseLogBuffersRegistryForTest(registry *LogBuffersRegistry) {
+	for key, entry := range registry.entries {
+		registry.deleteEntry(key, entry)
+	}
+	registry.stopUnmapper()
+}
+
+// CloseLogBuffersForTest runs CloseLogBuffersRegistryForTest on the conductor
+// registry under the resource write lock.
+func (conductor *Conductor) CloseLogBuffersForTest() {
+	conductor.underResourceWriteLock(func() {
+		CloseLogBuffersRegistryForTest(conductor.logBuffersRegistry)
+	})
+}
+
 func IsLogBuffersRegistryUnmapperRunningForTest(registry *LogBuffersRegistry) bool {
 	return registry.unmapper != nil && registry.unmapper.queue != nil
 }

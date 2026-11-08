@@ -11,11 +11,14 @@ import (
 
 	"github.com/warrenguy/heron/aeron/cnc"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		typeID := rapid.SampledFrom([]int32{
 			cnc.DriverPublisherLimitTypeID,
 			cnc.DriverSubscriberPositionTypeID,
@@ -57,6 +60,8 @@ func TestCountersReader_isCounterActiveRegistrationSource_rapid(t *testing.T) {
 func TestCounterSlot_Get_matchesCounterValue_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		counterCount := rapid.IntRange(1, 8).Draw(rt, "counterCount")
 		counterID := rapid.Int32Range(0, int32(counterCount-1)).Draw(rt, "counterID")
 		typeID := rapid.SampledFrom([]int32{

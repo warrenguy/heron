@@ -12,6 +12,7 @@ import (
 	"github.com/warrenguy/heron/aeron"
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/atomicbuffer"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 func writePollTestRandomFrames(
@@ -41,6 +42,8 @@ func writePollTestRandomFrames(
 func TestImage_joinAndLivePosition_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		joinPosition := rapid.Int64().Draw(rt, "joinPosition")
 
 		sub := testSubscription(t)
@@ -68,6 +71,8 @@ func TestImage_joinAndLivePosition_rapid(t *testing.T) {
 func TestImage_Poll_positionMonotonic_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 
@@ -120,6 +125,8 @@ func TestImage_Poll_positionMonotonic_rapid(t *testing.T) {
 func TestImage_Poll_paddingSkip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 
@@ -142,6 +149,8 @@ func TestImage_Poll_paddingSkip_rapid(t *testing.T) {
 func TestImage_Poll_fragmentBoundaries_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 
@@ -170,6 +179,8 @@ func TestImage_Poll_fragmentBoundaries_rapid(t *testing.T) {
 func TestImage_Poll_alignRoundtrip_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		image, capture := newPollImage(t, 0)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
 
@@ -196,19 +207,19 @@ func TestImage_Poll_alignRoundtrip_rapid(t *testing.T) {
 // newRapidPollImage builds an image at joinPosition. With errorHandlerSet, the
 // image error handler increments the returned counter.
 func newRapidPollImage(
-	t *testing.T,
+	tb testing.TB,
 	joinPosition int64,
 	errorHandlerSet bool,
 ) (*aeron.Image, *int) {
-	t.Helper()
+	tb.Helper()
 
 	errorCount := new(int)
 	if !errorHandlerSet {
-		return newTestPollImage(t, joinPosition), errorCount
+		return newTestPollImage(tb, joinPosition), errorCount
 	}
 	image := aeron.NewImageForTestWithErrorHandler(
-		t,
-		testSubscription(t),
+		tb,
+		testSubscription(tb),
 		joinPosition,
 		func(error) {
 			*errorCount++
@@ -231,6 +242,8 @@ func pollRecovering(poll func() int) (fragments int, panicked bool) {
 func TestImage_BoundedPoll_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		capacity := aeron.TestPublicationTermLength
 		joinOffset := drawJoinOffset(rt, capacity)
 		joinPosition := int64(joinOffset)
@@ -283,6 +296,8 @@ func TestImage_BoundedPoll_rapid(t *testing.T) {
 func TestImage_Poll_handlerPanicDrain_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		errorHandlerSet := rapid.Bool().Draw(rt, "errorHandlerSet")
 		image, errorCount := newRapidPollImage(t, 0, errorHandlerSet)
 		termBuffer := aeron.ImageTermBuffer0ForTest(image)
@@ -487,6 +502,8 @@ func writeReceivedPositionLayout(
 func TestImage_ReceivedPosition_matchesWrittenLayout_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		start := drawReceivedPositionStart(rt)
 		limit := receivedPositionRingLimit(start)
 		image, _ := newPollImage(t, 0)
@@ -506,6 +523,8 @@ func TestImage_ReceivedPosition_matchesWrittenLayout_rapid(t *testing.T) {
 func TestImage_ReceivedPosition_matchesUnboundedPoll_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		start := drawReceivedPositionStart(rt)
 		image, _ := newPollImage(t, 0)
 		aeron.ImageSetSubscriberPositionForTest(image, start)
@@ -523,6 +542,8 @@ func TestImage_ReceivedPosition_matchesUnboundedPoll_rapid(t *testing.T) {
 func TestImage_ReceivedPosition_monotonicUnderWrites_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		start := drawReceivedPositionStart(rt)
 		limit := receivedPositionRingLimit(start)
 		image, _ := newPollImage(t, 0)

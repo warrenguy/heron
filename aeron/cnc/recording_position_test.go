@@ -11,7 +11,7 @@ import (
 )
 
 func seedRecordingPositionCounter(
-	t *testing.T,
+	tb testing.TB,
 	meta []byte,
 	values []byte,
 	counterID int32,
@@ -22,8 +22,8 @@ func seedRecordingPositionCounter(
 	archiveID int64,
 	value int64,
 ) {
-	t.Helper()
-	require.NoError(t, cnc.WriteRecordingPositionCounterRecord(
+	tb.Helper()
+	require.NoError(tb, cnc.WriteRecordingPositionCounterRecord(
 		meta, values, counterID, cnc.CounterRecordAllocated, typeID,
 		recordingID, sessionID, sourceIdentity, archiveID, value,
 	))

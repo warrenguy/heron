@@ -18,14 +18,14 @@ const (
 )
 
 func encodeArchiveControlWire(
-	t *testing.T,
+	tb testing.TB,
 	encode func(buf []byte, offset int) int,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 
 	buf := make([]byte, 4096)
 	end := encode(buf, 0)
-	require.NotEmpty(t, buf[:end])
+	require.NotEmpty(tb, buf[:end])
 	return buf[:end]
 }
 
@@ -44,12 +44,12 @@ func invokeHandleControlResponseFragment(
 }
 
 func encodeControlResponseWire(
-	t *testing.T,
+	tb testing.TB,
 	fields codecs.ControlResponseFields,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 
-	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
+	return encodeArchiveControlWire(tb, func(buf []byte, offset int) int {
 		var msg archivewire.ControlResponse
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).
@@ -81,12 +81,12 @@ func encodeChallengeWire(
 }
 
 func encodeRecordingSignalEventWire(
-	t *testing.T,
+	tb testing.TB,
 	fields codecs.RecordingSignalEventFields,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 
-	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
+	return encodeArchiveControlWire(tb, func(buf []byte, offset int) int {
 		var msg archivewire.RecordingSignalEvent
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).
@@ -100,12 +100,12 @@ func encodeRecordingSignalEventWire(
 }
 
 func encodeRecordingDescriptorWire(
-	t *testing.T,
+	tb testing.TB,
 	fields codecs.RecordingDescriptorFields,
 ) []byte {
-	t.Helper()
+	tb.Helper()
 
-	return encodeArchiveControlWire(t, func(buf []byte, offset int) int {
+	return encodeArchiveControlWire(tb, func(buf []byte, offset int) int {
 		var msg archivewire.RecordingDescriptor
 		msg.WrapAndApplyHeader(buf, uint64(offset), uint64(len(buf))).
 			SetControlSessionId(fields.ControlSessionID).

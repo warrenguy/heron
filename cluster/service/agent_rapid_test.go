@@ -15,6 +15,7 @@ import (
 	"github.com/warrenguy/heron/aeron/logbuffer"
 	"github.com/warrenguy/heron/cluster/codecs"
 	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"github.com/warrenguy/heron/internal/testutil"
 )
 
 // modelMessage is one append-order log message with stream positions.
@@ -25,22 +26,27 @@ type modelMessage struct {
 	endPos    int64
 }
 
-// Asserts bounded consumption. Recorded callbacks match the model delivered
-// prefix. LogPosition equals the end of the last delivered non-padding
-// message; LogPosition may exceed the raw commit under frame-granular
-// delivery, and is zero when nothing is delivered. Image position tracks the
-// stream cursor including padding. The session registry matches the delivered
-// open/close set. Positions are monotonic. No callback delivers twice.
+// Asserts bounded consumption against a model:
+//   - recorded callbacks match the model delivered prefix
+//   - LogPosition is zero before the first delivery. After it, LogPosition
+//     equals the end of the last delivered non-padding message. LogPosition
+//     may exceed the raw commit under frame-granular delivery.
+//   - image position tracks the stream cursor, including padding
+//   - the session registry matches the delivered open and close set
+//   - positions are monotonic
+//   - a callback never delivers twice
 //
 // End of stream: a zero-fragment tick at the end-of-stream word unbinds.
 // LogPosition then covers trailing padding.
 //
-// Ops: append a committed frame (or padding), advance commit, DoWork, and
-// write the end-of-stream word at the stream end once. Appends stop after the word.
-// Session-open clash is constrained out; unit rows assert the clash path.
+// Ops: append a committed frame or padding, advance commit, DoWork, and write
+// the end-of-stream word once at the stream end. Appends stop after the word.
+// The draws leave out a session-open clash. Table tests assert the clash path.
 func TestAgent_boundedConsume_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		svc := &recordingService{}
@@ -350,6 +356,8 @@ func TestAgent_errorHandler_rapid(t *testing.T) {
 	failedOps := []int{opTimer, opUnknownCloseRequest, opTick, opCloseAgent}
 
 	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
 		rt.Helper()
 
 		adder := newFakeResponseAdder()
