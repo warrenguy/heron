@@ -184,7 +184,13 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 		}
 		work := m.runner.DoWork() + serviceAgent.DoWork(clock())
 
-		if client.IsTerminating() || serviceAgent.ServiceFailure() != nil {
+		failure := serviceAgent.ServiceFailure()
+		if client.IsTerminating() {
+			failure = errors.Join(cluster.ErrTransportTerminating, failure)
+		}
+
+		if failure != nil {
+			m.sink.write(memberRecord{Exit: &MemberExit{Error: failure.Error()}})
 			return 3
 		}
 
