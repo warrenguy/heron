@@ -14,9 +14,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 // boundPublication is *aeron.Publication or *aeron.ExclusivePublication.

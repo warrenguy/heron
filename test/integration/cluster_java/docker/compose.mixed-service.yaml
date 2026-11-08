@@ -5,9 +5,9 @@ services:
   cluster:
     environment:
       # Hand-sync with ClusterNode.ENV_EXTERNAL_SERVICE.
-      HERON_CLUSTER_EXTERNAL_SERVICE: "1"
+      LUAS_CLUSTER_EXTERNAL_SERVICE: "1"
 
   go:
     command: ["-test.timeout=180s", "-test.run", "^TestClusterMixedServiceSmoke$$"]
     environment:
-      HERON_CLUSTER_MIXED_SERVICE_COMPOSE: "1"
+      LUAS_CLUSTER_MIXED_SERVICE_COMPOSE: "1"

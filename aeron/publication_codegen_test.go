@@ -21,7 +21,7 @@ import (
 func TestPublicationCodegen(t *testing.T) {
 	t.Parallel()
 
-	const aeronPrefix = "github.com/warrenguy/heron/aeron."
+	const aeronPrefix = "luas.fast/aeron."
 	offerBounds := []string{
 		"runtime.gopanic", "runtime.convTstring", aeronPrefix + "invalidOfferSliceMessage",
 	}
@@ -39,7 +39,7 @@ func TestPublicationCodegen(t *testing.T) {
 	// IsConnectedVolatile inlines on amd64. Its boundsCheck panic call remains.
 	exclusiveBackPressure := map[string]string{
 		"amd64": "runtime.gopanic",
-		"arm64": "github.com/warrenguy/heron/aeron/logbuffer.IsConnectedVolatile",
+		"arm64": "luas.fast/aeron/logbuffer.IsConnectedVolatile",
 	}
 
 	for goarch, backPressure := range exclusiveBackPressure {

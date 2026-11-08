@@ -1,10 +1,10 @@
 package consensus
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // DefaultLogFragmentLimit matches Aeron LOG_FRAGMENT_LIMIT_DEFAULT (50).

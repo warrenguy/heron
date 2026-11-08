@@ -5,7 +5,7 @@ package main
 import (
 	"time"
 
-	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
+	"luas.fast/examples/cluster-auction-client/auctionwire"
 )
 
 // ClientState holds mutable auction client duty-cycle fields.

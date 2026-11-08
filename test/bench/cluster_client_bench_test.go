@@ -5,12 +5,12 @@ package bench_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/test/bench/harness"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/test/bench/harness"
 )
 
 var (

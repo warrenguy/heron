@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/record"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/record"
+	"luas.fast/ringbuffer"
 )
 
 type closeDrainWireCapture struct {

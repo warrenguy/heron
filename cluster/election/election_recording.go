@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/recordinglog"
 )
 
 var errReplayTermEntry = errors.New("election: append log term entry")

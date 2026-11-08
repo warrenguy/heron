@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/logbuffer"
 )
 
 // TestLogChannelWithInitialPosition_geometry_rapid checks that seeded URI params

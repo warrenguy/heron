@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/internal/buffer"
+	"luas.fast/internal/buffer"
 )
 
 func TestGrowScratch_reuseWhenCapSufficient(t *testing.T) {

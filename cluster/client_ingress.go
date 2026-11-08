@@ -1,8 +1,8 @@
 package cluster
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/aeron"
+	"luas.fast/cluster/consensus"
 )
 
 // ClientIngressSubscriptionDeps are the collaborators

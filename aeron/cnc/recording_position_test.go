@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/atomicbuffer"
 )
 
 func seedRecordingPositionCounter(

@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
+	"luas.fast/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 //go:embed fixtures/catalog.json

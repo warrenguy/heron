@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 type layoutDimensions struct {

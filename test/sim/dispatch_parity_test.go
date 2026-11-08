@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/election"
 )
 
 // parityElection is a standalone Election wired like a sim node, used to compare

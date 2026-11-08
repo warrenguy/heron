@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
 )
 
 const wildcardUDPChannel = "aeron:udp?endpoint=localhost:0"

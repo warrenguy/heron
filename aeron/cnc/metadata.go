@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const (
@@ -94,7 +94,7 @@ func ParseMetadata(buf []byte) (Metadata, error) {
 
 func validateMajorVersion(version int32) error {
 	if MajorVersion(version) != MajorVersion(Version) {
-		return fmt.Errorf("cnc: incompatible major version: file=%d heron=%d", version, Version)
+		return fmt.Errorf("cnc: incompatible major version: file=%d luas=%d", version, Version)
 	}
 	return nil
 }

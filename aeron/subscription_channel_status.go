@@ -3,7 +3,7 @@ package aeron
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 var errSubscriptionCountersNil = errors.New("aeron: subscription counters view is nil")

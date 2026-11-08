@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/archive"
+	"luas.fast/archive/codecs"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/idlestrategy"
 )
 
 // termRecordingStopArchive is the archive surface termRecordingStop uses.

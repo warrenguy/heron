@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron"
+	"luas.fast/archive/codecs"
+	"luas.fast/atomicbuffer"
 )
 
 const (

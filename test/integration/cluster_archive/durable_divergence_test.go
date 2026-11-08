@@ -11,13 +11,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/test/integration/harness"
 )
 
 // lastTermLogPosition returns LogPosition of the highest valid TERM entry, or

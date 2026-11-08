@@ -13,9 +13,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/internal/testutil"
 )
 
 func openInDir(tb testing.TB, content []byte, createNew bool) (*recordinglog.Log, string) {

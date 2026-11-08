@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/atomicbuffer"
+	"luas.fast/mmap"
 )
 
 func WireRingsFromMapping(mapping *mmap.Mapping, meta Metadata) (*Rings, error) {

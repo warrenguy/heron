@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/internal/transportfault"
 )
 
 // ConnectState mirrors Java AsyncConnect.State step values.

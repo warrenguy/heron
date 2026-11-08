@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster"
+	"luas.fast/test/integration/harness"
 )
 
 // isolateNewLeader commits an append in the new leader's term while the

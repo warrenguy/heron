@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/test/integration/cluster_sbe/clustersbe"
 )
 
 const sessionMessageHeaderZerosFixture = "sessionMessageHeader_zeros"

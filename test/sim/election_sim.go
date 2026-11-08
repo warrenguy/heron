@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/internal/electiontest"
+	"luas.fast/cluster/election"
+	"luas.fast/internal/electiontest"
 )
 
 const defaultMaxSteps = 100_000
@@ -407,9 +407,9 @@ func (s *ElectionSim) DumpOnFail(tb testing.TB) {
 
 // Dump writes simulation state to tb.Log.
 //
-// When HERON_SIM_SAVE=1, also writes under FailureDumpsDir and returns that
-// directory path. Returns "" when save is off or the write fails (write errors
-// are logged only so DumpOnFail never fails the failure dump).
+// When LUAS_SIM_SAVE=1, also writes under FailureDumpsDir and returns that
+// directory path. Returns "" when save is off or the write fails. Dump only logs
+// a write error, so DumpOnFail never fails the failure dump.
 func (s *ElectionSim) Dump(tb testing.TB) string {
 	tb.Helper()
 	return dumpElectionSim(tb, s)

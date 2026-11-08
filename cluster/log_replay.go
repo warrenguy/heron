@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/cluster/consensus"
 )
 
 const (

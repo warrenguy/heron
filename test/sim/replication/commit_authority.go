@@ -5,9 +5,9 @@ package replication
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/test/sim"
 )
 
 // scenarioCommitAuthority checks CommitPosition Sent only from leader member id.

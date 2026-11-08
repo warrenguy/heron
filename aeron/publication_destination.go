@@ -1,7 +1,7 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 // AddDestination adds a send destination to a control-mode=manual

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 // logStopEndOfStream is the end-of-stream word the log stop rows write.

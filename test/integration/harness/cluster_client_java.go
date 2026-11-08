@@ -19,21 +19,21 @@ import (
 )
 
 const (
-	envClusterClientIngressChannel     = "HERON_CLUSTER_CLIENT_INGRESS_CHANNEL"
-	envClusterClientIngressEndpoints   = "HERON_CLUSTER_CLIENT_INGRESS_ENDPOINTS"
-	envClusterClientEgressChannel      = "HERON_CLUSTER_CLIENT_EGRESS_CHANNEL"
-	envClusterClientMessageTimeoutMs   = "HERON_CLUSTER_CLIENT_MESSAGE_TIMEOUT_MS"
-	envClusterClientNewLeaderTimeoutMs = "HERON_CLUSTER_CLIENT_NEW_LEADER_TIMEOUT_MS"
-	envClusterClientCredentials        = "HERON_CLUSTER_CLIENT_CREDENTIALS"
-	envClusterClientChallenge          = "HERON_CLUSTER_CLIENT_CHALLENGE"
-	envClusterClientChallengeResponse  = "HERON_CLUSTER_CLIENT_CHALLENGE_RESPONSE"
-	envClusterClientPayloadPrefix      = "HERON_CLUSTER_CLIENT_PAYLOAD_PREFIX"
+	envClusterClientIngressChannel     = "LUAS_CLUSTER_CLIENT_INGRESS_CHANNEL"
+	envClusterClientIngressEndpoints   = "LUAS_CLUSTER_CLIENT_INGRESS_ENDPOINTS"
+	envClusterClientEgressChannel      = "LUAS_CLUSTER_CLIENT_EGRESS_CHANNEL"
+	envClusterClientMessageTimeoutMs   = "LUAS_CLUSTER_CLIENT_MESSAGE_TIMEOUT_MS"
+	envClusterClientNewLeaderTimeoutMs = "LUAS_CLUSTER_CLIENT_NEW_LEADER_TIMEOUT_MS"
+	envClusterClientCredentials        = "LUAS_CLUSTER_CLIENT_CREDENTIALS"
+	envClusterClientChallenge          = "LUAS_CLUSTER_CLIENT_CHALLENGE"
+	envClusterClientChallengeResponse  = "LUAS_CLUSTER_CLIENT_CHALLENGE_RESPONSE"
+	envClusterClientPayloadPrefix      = "LUAS_CLUSTER_CLIENT_PAYLOAD_PREFIX"
 
-	javaClusterClientMainClass = "heron.clusterjava.ClusterClient"
-	javaClusterClientJarName   = "heron-cluster-java.jar"
-	javaClusterClientEnvJar    = "HERON_CLUSTER_JAVA_JAR"
+	javaClusterClientMainClass = "luas.clusterjava.ClusterClient"
+	javaClusterClientJarName   = "luas-cluster-java.jar"
+	javaClusterClientEnvJar    = "LUAS_CLUSTER_JAVA_JAR"
 
-	javaClusterClientEventPrefix = "heron-client"
+	javaClusterClientEventPrefix = "luas-client"
 	javaClusterClientStderrLimit = 64 << 10
 	javaClusterClientStdoutKeep  = 64
 )
@@ -211,8 +211,8 @@ func (c *JavaClusterClient) Dump() string {
 	return b.String()
 }
 
-// Parses one stdout line. An event line is "heron-client" or begins
-// with "heron-client ".
+// ParseJavaClusterClientLine parses one stdout line. An event line is "luas-client" or begins
+// with "luas-client ".
 //
 // Returns:
 //   - false when the line is not an event line.

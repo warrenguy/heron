@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/cluster/consensus"
 )
 
 type Election struct {

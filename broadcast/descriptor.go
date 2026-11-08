@@ -3,7 +3,7 @@ package broadcast
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const (

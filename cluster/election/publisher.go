@@ -1,8 +1,8 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // PublicationTarget identifies where a consensus message is sent.

@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/internal/testutil"
 )
 
 const (

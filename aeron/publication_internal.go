@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 var (

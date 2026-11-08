@@ -3,7 +3,7 @@ package recordinglog
 import (
 	"math"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 // Entry type constants. Values match the recording.log on-disk encoding.

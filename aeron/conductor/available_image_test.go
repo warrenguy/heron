@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 func TestDecodeAvailableImage_sourceIdentityAligned(t *testing.T) {

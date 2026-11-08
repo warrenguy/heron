@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/internal/testutil"
 )
 
 // logRecordingModel is the reference model for the recording lifecycle.

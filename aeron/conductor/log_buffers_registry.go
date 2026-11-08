@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/logbuffer"
 )
 
 func timeNowNs() int64 {

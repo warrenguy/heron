@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
+	"luas.fast/aeron"
+	"luas.fast/archive/codecs"
 )
 
 // TryMatchControlResponse reports whether poller already holds a ControlResponse

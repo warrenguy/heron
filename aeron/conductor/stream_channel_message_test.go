@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
 )
 
 type streamChannelNonASCIICase struct {

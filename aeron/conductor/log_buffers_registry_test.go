@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 func writeMinimalLogFileForRegistryTest(tb testing.TB, path string) {

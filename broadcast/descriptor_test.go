@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
+	"luas.fast/atomicbuffer"
+	"luas.fast/broadcast"
 )
 
 func TestBroadcastDescriptorConstants(t *testing.T) {

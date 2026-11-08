@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 func TestHandleInit_singleNodeUpdateErrorStaysInit(t *testing.T) {

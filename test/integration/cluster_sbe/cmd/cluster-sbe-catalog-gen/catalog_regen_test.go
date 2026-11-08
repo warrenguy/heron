@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
+	"luas.fast/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 func modRoot(t *testing.T) string {

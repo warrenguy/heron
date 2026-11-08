@@ -18,8 +18,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
 )
 
 const (

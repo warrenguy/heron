@@ -3,8 +3,8 @@ package broadcast
 import (
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
+	"luas.fast/atomicbuffer"
+	"luas.fast/record"
 )
 
 // BroadcastReceiver receives records from a broadcast buffer.

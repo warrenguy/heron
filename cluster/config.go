@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/idlestrategy"
 )
 
 // Config holds member process configuration. Call Normalize before Validate and

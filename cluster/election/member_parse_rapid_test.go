@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/election"
 )
 
 func TestParseMembers_validSpecs_rapid(t *testing.T) {

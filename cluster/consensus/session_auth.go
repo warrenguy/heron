@@ -3,8 +3,8 @@ package consensus
 import (
 	"bytes"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // maxEncodedPrincipalLength caps the principal an authenticator may attach to a

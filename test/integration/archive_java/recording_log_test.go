@@ -13,12 +13,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/test/integration/archive_java/archivejava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/test/integration/archive_java/archivejava"
+	"luas.fast/test/integration/harness"
 )
 
 func TestArchiveRecordingLog(t *testing.T) {

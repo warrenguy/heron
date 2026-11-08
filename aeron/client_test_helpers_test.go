@@ -1,9 +1,9 @@
 package aeron_test
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
 )
 
 func newClientTestConductor(

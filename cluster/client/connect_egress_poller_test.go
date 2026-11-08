@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 func TestNewConnectEgressPoller_normalizesFragmentLimit(t *testing.T) {

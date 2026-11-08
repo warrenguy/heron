@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/recordinglog"
 )
 
 // Exclusive log publication URI param prefixes. Names match Aeron CommonContext:

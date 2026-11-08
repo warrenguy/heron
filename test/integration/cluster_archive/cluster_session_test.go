@@ -11,18 +11,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/cluster"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/consensus"
+	"luas.fast/test/integration/harness"
 )
 
 const (
-	sessionSmokeCredentials = "heron-session-smoke-credentials"
-	sessionSmokePrincipal   = "heron-session-smoke-principal"
+	sessionSmokeCredentials = "luas-session-smoke-credentials"
+	sessionSmokePrincipal   = "luas-session-smoke-principal"
 )
 
 // amendSessionAuth installs a fresh SimpleAuthenticator on cfg for one member.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/broadcast"
+	"luas.fast/broadcast"
 )
 
 func TestBroadcastMaxMsgLength(t *testing.T) {

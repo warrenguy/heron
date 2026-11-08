@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/aeron"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 // archiveControlOps bundles session deps for blocking archive control lifecycle helpers.

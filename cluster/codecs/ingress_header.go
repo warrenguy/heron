@@ -3,8 +3,8 @@ package codecs
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 var sessionMessageHeaderEncodedLen = int((&clusterwire.SessionMessageHeader{}).

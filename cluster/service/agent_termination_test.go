@@ -10,10 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 const failedTakeTimestamp int64 = 321

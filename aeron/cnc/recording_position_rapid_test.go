@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/cnc"
+	"luas.fast/internal/testutil"
 )
 
 type recordingPositionSlot struct {

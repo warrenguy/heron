@@ -3,7 +3,7 @@ package consensus
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/cluster/codecs"
 )
 
 // ErrTimerCapacity reports a schedule that the timer wheel refused.

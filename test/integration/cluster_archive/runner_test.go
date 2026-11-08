@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/idlestrategy"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
+	"luas.fast/idlestrategy"
+	"luas.fast/test/integration/harness"
 )
 
 // firstIdleSignal closes ch on the first Idle call, then paces via the embedded

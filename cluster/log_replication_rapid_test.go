@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/cluster/consensus"
 )
 
 // Small timeouts let drawn clock steps cross every deadline.

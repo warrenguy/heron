@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/archive"
+	"luas.fast/cluster"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/internal/testutil"
 )
 
 func TestRetainLatestSnapshot_model_rapid(t *testing.T) {

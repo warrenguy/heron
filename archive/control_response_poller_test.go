@@ -8,10 +8,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/atomicbuffer"
 )
 
 func TestNewControlResponsePoller_freshCaptureDefaults(t *testing.T) {

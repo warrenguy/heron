@@ -3,8 +3,8 @@ package aeron_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
 )
 
 func setupBenchExclusivePublication(b *testing.B) *aeron.ExclusivePublication {

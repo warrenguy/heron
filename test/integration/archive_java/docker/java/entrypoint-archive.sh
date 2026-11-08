@@ -5,5 +5,5 @@ set -euo pipefail
 
 exec java \
 	--add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
-	-cp /app/heron-archive-java.jar \
-	heron.archivejava.ArchiveNode
+	-cp /app/luas-archive-java.jar \
+	luas.archivejava.ArchiveNode

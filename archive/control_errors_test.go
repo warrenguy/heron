@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 func TestControlTerminalError_Error(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/mmap"
 )
 
 func TestOpenNodeStateFile_createInitialiseFailureRemovesPartialFile(t *testing.T) {

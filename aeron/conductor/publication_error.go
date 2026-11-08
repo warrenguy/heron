@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 type PublicationError struct {

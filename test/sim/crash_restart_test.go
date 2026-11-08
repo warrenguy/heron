@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/cluster/election"
+	"luas.fast/test/sim"
 )
 
 func TestCrash_deliverToCrashedNeverPanics(t *testing.T) {

@@ -11,14 +11,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/archive"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/cluster/service"
+	"luas.fast/test/integration/harness"
 )
 
 // snapshotAddRecorder records the id of each add the embedded client starts.

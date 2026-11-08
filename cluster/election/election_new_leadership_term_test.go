@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
 )
 
 func TestOnNewLeadershipTerm_installRoutes(t *testing.T) {

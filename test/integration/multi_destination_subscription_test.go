@@ -10,10 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/test/integration/harness"
 )
 
 // TestMultiDestinationSubscriptionMerge asserts two unicast receive destinations

@@ -8,16 +8,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 // TestClusterMixedGoExLeaderRejoin stops a Go leader after one term. Two Java
 // members then move the log forward. The Go member returns. The Go member
 // copies the missed term from the Java leader. Runs only under
-// HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE.
+// LUAS_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE.
 //
 // Before the Go member stops, Java member 0's recording-position counter for
 // the Go leader's log session reaches the observed commit. After the Go member

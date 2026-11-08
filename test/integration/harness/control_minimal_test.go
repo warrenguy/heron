@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/record"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
+	"luas.fast/record"
+	"luas.fast/ringbuffer"
 )
 
 const (

@@ -1,9 +1,9 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // AeronPublisher implements Publisher over per-member exclusive publications.

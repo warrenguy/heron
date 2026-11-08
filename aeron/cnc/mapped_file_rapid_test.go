@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/cnctest"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/cnc"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/cnctest"
+	"luas.fast/internal/testutil"
 )
 
 func TestMapCncFile_roundtrip_rapid(t *testing.T) {

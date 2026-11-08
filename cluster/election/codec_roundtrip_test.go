@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/election/nodewire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/election/nodewire"
 )
 
 const (

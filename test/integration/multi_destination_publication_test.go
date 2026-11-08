@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/test/integration/harness"
 )
 
 // manualSendChannel has no tag, so the driver gives each publication its own

@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/test/integration/harness"
 )
 
 // TestMain runs one member in a StartProcessCluster child, else the tests.

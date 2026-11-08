@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/cluster/codecs"
+	"luas.fast/internal/testutil"
 )
 
 type serviceControlOpKind int

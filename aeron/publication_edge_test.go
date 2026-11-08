@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
 )
 
 func tryClaimForTest(t *testing.T, pub *aeron.Publication, length int) (int, int) {

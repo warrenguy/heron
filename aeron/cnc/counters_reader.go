@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 var (

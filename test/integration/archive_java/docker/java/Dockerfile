@@ -15,8 +15,8 @@ FROM eclipse-temurin:26-jre AS runtime
 
 WORKDIR /app
 COPY --from=builder \
-	/src/test/integration/archive_java/target/heron-archive-java-*.jar \
-	./heron-archive-java.jar
+	/src/test/integration/archive_java/target/luas-archive-java-*.jar \
+	./luas-archive-java.jar
 COPY --chmod=+x test/integration/archive_java/docker/java/entrypoint-archive.sh ./entrypoint-archive.sh
 
 ENTRYPOINT ["./entrypoint-archive.sh"]

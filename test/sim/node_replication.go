@@ -1,8 +1,8 @@
 package sim
 
 import (
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 // simReplicationHost embeds HostAdapter for production ranking and commit

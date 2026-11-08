@@ -5,9 +5,9 @@ package bench_test
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/test/bench/harness"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/test/bench/harness"
 )
 
 var (

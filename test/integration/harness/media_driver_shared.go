@@ -39,12 +39,12 @@ type testMainRunner interface {
 
 func sharedMediaDriverDisabled() bool {
 	return forceSharedMediaDriverDisabled.Load() ||
-		os.Getenv("HERON_SHARED_MEDIA_DRIVER") == "0"
+		os.Getenv("LUAS_SHARED_MEDIA_DRIVER") == "0"
 }
 
 func sharedMediaDriverKeep() bool {
 	return forceSharedMediaDriverKeep.Load() ||
-		os.Getenv("HERON_SHARED_MEDIA_DRIVER_KEEP") == "1"
+		os.Getenv("LUAS_SHARED_MEDIA_DRIVER_KEEP") == "1"
 }
 
 // forceSharedDriverDisabledForTest makes sharedMediaDriverDisabled report true
@@ -75,7 +75,7 @@ func startSharedDriver() (*MediaDriver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return startDriverInTempDir(aeronmdPath, "heron-aeron-shared-*", nil)
+	return startDriverInTempDir(aeronmdPath, "luas-aeron-shared-*", nil)
 }
 
 func stopSharedDriver(md *MediaDriver) {
@@ -85,7 +85,7 @@ func stopSharedDriver(md *MediaDriver) {
 	if sharedMediaDriverKeep() {
 		fmt.Fprintf(
 			os.Stderr,
-			"harness: keeping shared media driver dir=%s (HERON_SHARED_MEDIA_DRIVER_KEEP=1)\n",
+			"harness: keeping shared media driver dir=%s (LUAS_SHARED_MEDIA_DRIVER_KEEP=1)\n",
 			md.Dir,
 		)
 		return
@@ -96,8 +96,8 @@ func stopSharedDriver(md *MediaDriver) {
 // RunTestMainWithSharedDriver starts the shared driver before m.Run and stops it
 // after. Call it from each package's TestMain. Pass the result to os.Exit.
 //
-// HERON_SHARED_MEDIA_DRIVER_KEEP=1 leaves the driver running after m.Run.
-// HERON_SHARED_MEDIA_DRIVER=0 or a missing aeronmd runs m.Run without a shared
+// LUAS_SHARED_MEDIA_DRIVER_KEEP=1 leaves the driver running after m.Run.
+// LUAS_SHARED_MEDIA_DRIVER=0 or a missing aeronmd runs m.Run without a shared
 // driver. A missing aeronmd logs to stderr first. The package comment documents
 // both environment variables.
 //
@@ -181,7 +181,7 @@ func restoreTestMainSharedDriverGlobals() {
 }
 
 // Shared returns the package-scoped long-lived driver when TestMain started it.
-// Shared falls back to Start(t) when HERON_SHARED_MEDIA_DRIVER=0 or when
+// Shared falls back to Start(t) when LUAS_SHARED_MEDIA_DRIVER=0 or when
 // TestMain did not start a shared driver.
 //
 // Concurrency: parallel-safe when tests use distinct stream IDs. Tests must not
@@ -229,7 +229,7 @@ func SharedAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
 	return md, attach
 }
 
-// AssertSharedDriverWiring proves the calling package's TestMain leaves Shared(t)
+// AssertSharedDriverWiring asserts that the calling package's TestMain leaves Shared(t)
 // returning one stable package driver across subtests.
 //
 // Uses public Shared(t) only; ephemeral Start(t) fallback returns distinct instances,
@@ -237,7 +237,7 @@ func SharedAttachedCnc(t testing.TB) (*MediaDriver, *cncAttach) {
 func AssertSharedDriverWiring(t *testing.T) {
 	t.Helper()
 	if sharedMediaDriverDisabled() {
-		t.Skip("HERON_SHARED_MEDIA_DRIVER=0")
+		t.Skip("LUAS_SHARED_MEDIA_DRIVER=0")
 	}
 
 	var shared *MediaDriver
@@ -252,15 +252,15 @@ func AssertSharedDriverWiring(t *testing.T) {
 	})
 }
 
-// AssertSharedDriverFallback proves Shared(t) falls back to ephemeral Start(t) when
-// Shared mode is disabled so migrated call sites still work with shared off.
+// AssertSharedDriverFallback asserts that Shared(t) falls back to ephemeral Start(t)
+// when shared mode is off, so migrated call sites still work.
 //
 // Uses a process-local force flag rather than os.Setenv. SharedParallel peers
-// that read HERON_SHARED_MEDIA_DRIVER must not race this test.
+// that read LUAS_SHARED_MEDIA_DRIVER must not race this test.
 func AssertSharedDriverFallback(t *testing.T) {
 	t.Helper()
 	if sharedMediaDriverDisabled() {
-		t.Skip("HERON_SHARED_MEDIA_DRIVER=0")
+		t.Skip("LUAS_SHARED_MEDIA_DRIVER=0")
 	}
 
 	shared := Shared(t)

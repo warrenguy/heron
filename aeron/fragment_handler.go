@@ -1,8 +1,8 @@
 package aeron
 
 import (
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/ringbuffer"
 )
 
 // FragmentHandler receives one committed fragment during [Poll]. Offset points past

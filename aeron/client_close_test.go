@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
 )
 
 const testResourceLingerNs = int64(50 * time.Millisecond)

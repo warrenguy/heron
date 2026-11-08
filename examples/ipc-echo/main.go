@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 const (

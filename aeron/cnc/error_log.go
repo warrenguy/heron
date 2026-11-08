@@ -1,6 +1,6 @@
 package cnc
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "luas.fast/atomicbuffer"
 
 const ErrorLogEntryHeaderLength = 24
 

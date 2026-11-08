@@ -19,8 +19,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/aeron"
+	"luas.fast/cluster/client"
 )
 
 func main() {

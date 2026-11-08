@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/election"
 )
 
 func TestRestart_candidateTermAtLeastDurableProposeMax(t *testing.T) {

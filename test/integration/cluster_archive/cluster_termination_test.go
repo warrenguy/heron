@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/service"
+	"luas.fast/test/integration/harness"
 )
 
 func amendTerminationMember(cfg cluster.Config) cluster.Config {

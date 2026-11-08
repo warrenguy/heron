@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 // ErrInvalidReplicationParams reports ReplicationParams that the client

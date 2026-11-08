@@ -1,11 +1,11 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
 )
 
 // imageFromHeader returns the egress Image from the fragment header, or nil when

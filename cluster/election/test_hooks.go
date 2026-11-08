@@ -2,7 +2,7 @@
 
 package election
 
-import "github.com/warrenguy/heron/cluster/consensus"
+import "luas.fast/cluster/consensus"
 
 // Cross-package test hooks. Values mirror export_test.go but live here because
 // export_test.go helpers are not visible to external test packages.

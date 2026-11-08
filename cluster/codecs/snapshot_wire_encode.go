@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
+import "luas.fast/cluster/codecs/clusterwire"
 
 // ConsensusModuleSnapshotTypeID is the SnapshotMarker typeId of a consensus
 // module snapshot.

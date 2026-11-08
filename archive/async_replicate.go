@@ -1,9 +1,9 @@
 package archive
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 // AsyncReplicate is one non-blocking replicate request plus the recording

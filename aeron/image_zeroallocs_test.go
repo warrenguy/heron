@@ -4,9 +4,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 var (

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/logbuffer"
 )
 
 // publicationHandleOps holds the steps that differ between *Publication and

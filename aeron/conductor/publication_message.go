@@ -3,7 +3,7 @@ package conductor
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 var ErrPublicationMessageOutOfBounds = errors.New("conductor: publication message out of bounds")

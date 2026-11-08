@@ -3,7 +3,7 @@ package aeron
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 // PollCommand reports the outcome of an async destination command.

@@ -10,11 +10,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster"
+	"luas.fast/cluster/election"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 // javaDefaultAppVersion matches Java ConsensusModule.Context default appVersion.
@@ -32,12 +32,12 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedComposeJavaLeaderEnvKey",
 			got:  clusterjava.MixedComposeJavaLeaderEnvKey,
-			want: "HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE",
 		},
 		{
 			name: "MixedComposeGoLeaderEnvKey",
 			got:  clusterjava.MixedComposeGoLeaderEnvKey,
-			want: "HERON_CLUSTER_MIXED_GO_LEADER_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE",
 		},
 		{
 			name: "MixedSmokeNameJavaLeader",
@@ -52,7 +52,7 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedHostnamesEnvKey",
 			got:  clusterjava.MixedHostnamesEnvKey,
-			want: "HERON_CLUSTER_HOSTNAMES",
+			want: "LUAS_CLUSTER_HOSTNAMES",
 		},
 		{
 			name: "MixedComposeSkipHintJavaLeader",
@@ -67,7 +67,7 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedComposeExLeaderRejoinEnvKey",
 			got:  clusterjava.MixedComposeExLeaderRejoinEnvKey,
-			want: "HERON_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE",
 		},
 		{
 			name: "MixedSmokeNameExLeaderRejoin",
@@ -82,12 +82,12 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedComposeJavaLeaderSnapshotEnvKey",
 			got:  clusterjava.MixedComposeJavaLeaderSnapshotEnvKey,
-			want: "HERON_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE",
 		},
 		{
 			name: "MixedComposeGoLeaderSnapshotEnvKey",
 			got:  clusterjava.MixedComposeGoLeaderSnapshotEnvKey,
-			want: "HERON_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE",
+			want: "LUAS_CLUSTER_MIXED_GO_LEADER_SNAPSHOT_COMPOSE",
 		},
 		{
 			name: "MixedSmokeNameJavaLeaderSnapshot",
@@ -130,17 +130,17 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedReadyPath",
 			got:  clusterjava.MixedReadyPath,
-			want: "/dev/shm/heron-mixed/member-ready",
+			want: "/dev/shm/luas-mixed/member-ready",
 		},
 		{
 			name: "MixedStopPathMember1",
 			got:  clusterjava.MixedStopPathMember1,
-			want: "/dev/shm/heron-mixed/stop-member-1",
+			want: "/dev/shm/luas-mixed/stop-member-1",
 		},
 		{
 			name: "MixedRestartPathMember1",
 			got:  clusterjava.MixedRestartPathMember1,
-			want: "/dev/shm/heron-mixed/restart-member-1",
+			want: "/dev/shm/luas-mixed/restart-member-1",
 		},
 		{
 			name: "MixedIngressEndpoints",
@@ -167,22 +167,22 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{
 			name: "MixedBaseDirPrefix",
 			got:  clusterjava.MixedBaseDirPrefix,
-			want: "/tmp/heron-cluster-",
+			want: "/tmp/luas-cluster-",
 		},
 		{
 			name: "MixedClusterDirMember0",
 			got:  clusterjava.MixedClusterDirMember0,
-			want: "/tmp/heron-cluster-0",
+			want: "/tmp/luas-cluster-0",
 		},
 		{
 			name: "MixedClusterDirMember1",
 			got:  clusterjava.MixedClusterDirMember1,
-			want: "/tmp/heron-cluster-1",
+			want: "/tmp/luas-cluster-1",
 		},
 		{
 			name: "MixedClusterDirGo",
 			got:  clusterjava.MixedClusterDirGo,
-			want: "/tmp/heron-cluster-2",
+			want: "/tmp/luas-cluster-2",
 		},
 		{
 			name: "ServiceProbeFilename",
@@ -523,7 +523,7 @@ func TestMixedReadyPath_outsideAeronDirs(t *testing.T) {
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember0))
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember1))
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirGo))
-		require.True(t, strings.HasPrefix(path, "/dev/shm/heron-mixed/"))
+		require.True(t, strings.HasPrefix(path, "/dev/shm/luas-mixed/"))
 	}
 }
 
@@ -693,8 +693,8 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 }
 
 func TestSnapshotProbePath_underMemberBaseDir(t *testing.T) {
-	require.Equal(t, "/tmp/heron-cluster-0/snapshot-probe", clusterjava.SnapshotProbePath(0))
-	require.Equal(t, "/tmp/heron-cluster-1/snapshot-probe", clusterjava.SnapshotProbePath(1))
+	require.Equal(t, "/tmp/luas-cluster-0/snapshot-probe", clusterjava.SnapshotProbePath(0))
+	require.Equal(t, "/tmp/luas-cluster-1/snapshot-probe", clusterjava.SnapshotProbePath(1))
 }
 
 func TestParseSnapshotProbe_valid(t *testing.T) {
@@ -767,8 +767,8 @@ func TestParseSnapshotProbe_rejectMatrix(t *testing.T) {
 }
 
 func TestServiceProbePath_underMemberBaseDir(t *testing.T) {
-	require.Equal(t, "/tmp/heron-cluster-0/service-probe", clusterjava.ServiceProbePath(0))
-	require.Equal(t, "/tmp/heron-cluster-1/service-probe", clusterjava.ServiceProbePath(1))
+	require.Equal(t, "/tmp/luas-cluster-0/service-probe", clusterjava.ServiceProbePath(0))
+	require.Equal(t, "/tmp/luas-cluster-1/service-probe", clusterjava.ServiceProbePath(1))
 }
 
 func TestParseServiceProbe_valid(t *testing.T) {

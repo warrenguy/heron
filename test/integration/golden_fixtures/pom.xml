@@ -5,8 +5,8 @@
              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>heron</groupId>
-    <artifactId>heron-golden-fixtures</artifactId>
+    <groupId>luas</groupId>
+    <artifactId>luas-golden-fixtures</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 
     <properties>
@@ -62,7 +62,7 @@
                     <execution>
                         <id>node-state</id>
                         <configuration>
-                            <mainClass>heron.goldenfixtures.NodeStateFixtureGenerator</mainClass>
+                            <mainClass>luas.goldenfixtures.NodeStateFixtureGenerator</mainClass>
                             <arguments>
                                 <argument>${nodestate.fixtures.dir}</argument>
                             </arguments>
@@ -71,7 +71,7 @@
                     <execution>
                         <id>recovery-state-key</id>
                         <configuration>
-                            <mainClass>heron.goldenfixtures.RecoveryStateKeyFixtureGenerator</mainClass>
+                            <mainClass>luas.goldenfixtures.RecoveryStateKeyFixtureGenerator</mainClass>
                             <arguments>
                                 <argument>${recoverystatekey.fixtures.dir}</argument>
                             </arguments>

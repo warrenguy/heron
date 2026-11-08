@@ -1,9 +1,9 @@
 package electiontest
 
 import (
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 // NoopAgentHandler is a zero-value AgentHandler stub for election wiring tests.

@@ -1,7 +1,7 @@
 package election
 
 import (
-	"github.com/warrenguy/heron/cluster/election/nodewire"
+	"luas.fast/cluster/election/nodewire"
 )
 
 const (

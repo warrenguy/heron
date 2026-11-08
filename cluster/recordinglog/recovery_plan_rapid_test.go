@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/internal/testutil"
 )
 
 func isRecoveryAnchorError(err error) bool {

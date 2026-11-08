@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
+	"luas.fast/internal/testutil"
 )
 
 func TestErrorResponse_roundtrip_rapid(t *testing.T) {

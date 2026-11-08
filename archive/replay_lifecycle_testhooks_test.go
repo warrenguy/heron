@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 const (

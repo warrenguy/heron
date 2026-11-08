@@ -3,7 +3,7 @@ package harness
 import (
 	"bytes"
 
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/cluster/consensus"
 )
 
 // ChallengeAuthenticator grants one principal after one challenge round.

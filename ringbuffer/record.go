@@ -1,7 +1,7 @@
 package ringbuffer
 
 import (
-	"github.com/warrenguy/heron/record"
+	"luas.fast/record"
 )
 
 const (

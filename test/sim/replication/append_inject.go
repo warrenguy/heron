@@ -5,8 +5,8 @@ package replication
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/cluster/election"
+	"luas.fast/test/sim"
 )
 
 // scenarioAppendInjectRoundtrip is the 3-node elect + raise + inject smoke path.

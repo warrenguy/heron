@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
 )
 
 const pollTestShortTimeout = 5 * time.Millisecond

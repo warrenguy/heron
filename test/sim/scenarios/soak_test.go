@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/test/sim"
 )
 
 // lossyScenario builds a soft-liveness scenario with a lossy network nemesis.
@@ -51,7 +51,7 @@ func electionSimCatalog() []sim.ScenarioSpec {
 // TestElectionSimSoak runs the weighted catalog serially.
 //
 // ELECTION_SIM_RUNS scales scenario weights (default full 1000).
-// HERON_SIM_SEED overrides the base seed (shifts all derived seeds).
+// LUAS_SIM_SEED overrides the base seed (shifts all derived seeds).
 // -short skips the soak; standalone scenario tests still run one fixed seed.
 func TestElectionSimSoak(t *testing.T) {
 	if testing.Short() {

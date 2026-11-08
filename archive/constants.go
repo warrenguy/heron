@@ -3,7 +3,7 @@ package archive
 import (
 	"time"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 const (
@@ -43,7 +43,7 @@ const (
 	DefaultMessageRetryAttempts = 3
 
 	// MaxClientNameLength caps Config.ClientName at connect validation;
-	// wire clientInfo encodes as "name=<ClientName> heron".
+	// wire clientInfo encodes as "name=<ClientName> luas".
 	MaxClientNameLength = 100
 
 	// Control-response poller fragment limits (connect vs steady-state polling).

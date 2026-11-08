@@ -3,7 +3,7 @@ package codecs
 import (
 	"math"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs/clusterwire"
 )
 
 // ClusterCodecMaxVarLen sizes cluster codec var-field slots in test and

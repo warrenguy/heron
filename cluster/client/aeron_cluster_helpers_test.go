@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/client"
 )
 
 const (

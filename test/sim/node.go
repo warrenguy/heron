@@ -7,10 +7,10 @@ import (
 	"slices"
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
 )
 
 // DefaultThreeNodeMemberSpec is the embedded 3-node ParseMembers fixture for sim tests.

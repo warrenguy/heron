@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 // scriptedOfferPub returns OfferWithOffset results in script order. Calls past

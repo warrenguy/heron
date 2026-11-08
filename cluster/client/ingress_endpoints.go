@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 func appendIngressPairPrefix(b *strings.Builder, memberID int) {

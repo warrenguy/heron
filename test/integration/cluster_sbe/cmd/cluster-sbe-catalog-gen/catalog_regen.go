@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe"
-	"github.com/warrenguy/heron/test/integration/cluster_sbe/clustersbe/catalogschema"
+	"luas.fast/test/integration/cluster_sbe/clustersbe"
+	"luas.fast/test/integration/cluster_sbe/clustersbe/catalogschema"
 )
 
 func regenCatalogFromFile(path string) (catalogschema.CatalogFile, error) {

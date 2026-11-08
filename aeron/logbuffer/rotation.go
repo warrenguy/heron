@@ -1,6 +1,6 @@
 package logbuffer
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "luas.fast/atomicbuffer"
 
 // RawTailVolatile reads active-term count then that partition's raw tail.
 //

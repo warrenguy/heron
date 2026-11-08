@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/warrenguy/heron/test/bench/harness"
+	"luas.fast/test/bench/harness"
 )
 
 var (

@@ -1,9 +1,9 @@
 package sim
 
 import (
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/internal/electiontest"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/internal/electiontest"
 )
 
 const simLogSessionID int32 = 777

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/conductor"
+	"luas.fast/atomicbuffer"
 )
 
 // AddPublication registers a concurrent publication on channel/streamID.

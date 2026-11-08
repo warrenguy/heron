@@ -6,9 +6,9 @@ import (
 	"math"
 	"slices"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/aeron"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 // catchupControl is the production [consensus.CatchupControl].

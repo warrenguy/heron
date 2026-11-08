@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/election"
 )
 
 // advanceWireScan folds CommitPosition rows appended to publisher.Sent since

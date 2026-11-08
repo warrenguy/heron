@@ -5,7 +5,7 @@ Development workflows for this repository. User-facing overview and usage exampl
 
 ## Building blocks
 
-Importable packages under `github.com/warrenguy/heron/...`.
+Importable packages under `luas.fast/...`.
 
 | Package | Detail |
 |---------|--------|
@@ -176,7 +176,7 @@ VS Code / GitHub Codespaces configs live under `.devcontainer/`. Default (check)
 ## License
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Heron, as defined in the Apache License 2.0, is dual licensed
+for inclusion in Luas, as defined in the Apache License 2.0, is dual licensed
 under the MIT license and the Apache License 2.0, as described in the
 [README](README.md#license), without any additional terms or conditions.
 

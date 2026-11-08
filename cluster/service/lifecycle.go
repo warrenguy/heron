@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/cluster/codecs"
 )
 
 // ErrLifecycleRefused reports a module request or session offer that the

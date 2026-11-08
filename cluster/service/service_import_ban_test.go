@@ -21,9 +21,9 @@ func TestServicePackage_importBan(t *testing.T) {
 	dir := filepath.Dir(thisFile)
 
 	denied := []string{
-		"github.com/warrenguy/heron/cluster/consensus",
-		"github.com/warrenguy/heron/cluster/election",
-		"github.com/warrenguy/heron/cluster/recordinglog",
+		"luas.fast/cluster/consensus",
+		"luas.fast/cluster/election",
+		"luas.fast/cluster/recordinglog",
 	}
 
 	entries, err := os.ReadDir(dir)

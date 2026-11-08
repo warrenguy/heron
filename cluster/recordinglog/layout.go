@@ -1,6 +1,6 @@
 package recordinglog
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "luas.fast/atomicbuffer"
 
 const (
 	recordingIDOffset         = 0

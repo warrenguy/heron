@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/election"
+	"luas.fast/test/sim"
 )
 
 // runNemesisUntilAction schedules at Now and advances until that action

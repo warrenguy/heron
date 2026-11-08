@@ -3,7 +3,7 @@ package testutil
 import (
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 func DrawASCIIString(t *rapid.T, name string, maxLen int) string {

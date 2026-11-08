@@ -3,7 +3,7 @@ package codecs
 import (
 	"unsafe"
 
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 // ArchiveMinRootBlockLength returns the minimum root block length for templateID at

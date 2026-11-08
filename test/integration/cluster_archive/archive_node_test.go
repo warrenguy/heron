@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/test/integration/harness"
 )
 
 // TestArchiveNode_startsAndReportsReady asserts one Archive server starts

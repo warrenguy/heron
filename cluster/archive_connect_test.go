@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive"
+	"luas.fast/aeron"
+	"luas.fast/archive"
 )
 
 func TestArchiveConnectConfig(t *testing.T) {

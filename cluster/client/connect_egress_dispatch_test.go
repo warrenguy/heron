@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/aeron/conductor"
+	"luas.fast/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/cluster/codecs"
 )
 
 func TestHandleConnectEgressFragment_sessionEvent(t *testing.T) {

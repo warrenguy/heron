@@ -3,7 +3,7 @@ package aeron
 import (
 	"net/netip"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 // PublicationErrorFrame holds one publication error frame from the media

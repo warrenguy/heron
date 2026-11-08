@@ -3,7 +3,7 @@ package aeron
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron/conductor"
 )
 
 func TestPublication_Close_withBoundConductor(t *testing.T) {

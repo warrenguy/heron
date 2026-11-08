@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
+	"luas.fast/aeron/logbuffer"
 )
 
 func TestComputePosition_table(t *testing.T) {

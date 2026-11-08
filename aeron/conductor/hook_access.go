@@ -3,12 +3,12 @@
 package conductor
 
 import (
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/broadcast"
-	"github.com/warrenguy/heron/internal/testhook"
-	"github.com/warrenguy/heron/ringbuffer"
+	"luas.fast/aeron/cnc"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
+	"luas.fast/broadcast"
+	"luas.fast/internal/testhook"
+	"luas.fast/ringbuffer"
 )
 
 const testRingDataCapacity = 4096

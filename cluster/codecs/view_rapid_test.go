@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/cluster/codecs"
 )
 
 func TestReadVarSlice_rapid(t *testing.T) {

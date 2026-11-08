@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/cluster/recordinglog"
 )
 
 func addLogJoinImage(

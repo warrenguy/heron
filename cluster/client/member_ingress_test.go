@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/cluster/client"
 )
 
 func TestMemberIngressMap_nilEntry(t *testing.T) {

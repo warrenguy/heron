@@ -1,6 +1,6 @@
 package conductor
 
-import "github.com/warrenguy/heron/atomicbuffer"
+import "luas.fast/atomicbuffer"
 
 // Optional wire fields use offset -1 when absent from the body.
 type correlatedStreamChannelLayout struct {

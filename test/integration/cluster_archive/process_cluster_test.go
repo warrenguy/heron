@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/cluster/consensus"
+	"luas.fast/test/integration/harness"
 )
 
 const processClusterMemberCount = 3

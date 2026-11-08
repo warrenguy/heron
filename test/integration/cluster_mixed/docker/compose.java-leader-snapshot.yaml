@@ -6,5 +6,5 @@ services:
   go:
     command: ["-test.timeout=300s", "-test.run", "^TestClusterMixedJavaLeaderSnapshotRestart$$"]
     environment:
-      HERON_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "0"
-      HERON_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE: "1"
+      LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE: "0"
+      LUAS_CLUSTER_MIXED_JAVA_LEADER_SNAPSHOT_COMPOSE: "1"

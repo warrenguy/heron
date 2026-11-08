@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/cluster/client"
 )
 
 const sampleIngressEndpoints = "0=localhost:20110,1=localhost:20111"

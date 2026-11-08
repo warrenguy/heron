@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
 )
 
 const moduleErrorCounterLabel = "Cluster Errors - clusterId=0"

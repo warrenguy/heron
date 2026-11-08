@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/test/sim"
+	"luas.fast/cluster/election"
+	"luas.fast/test/sim"
 )
 
 // RequireSoftLiveness requires a live self-leader under replication mode.

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
-	"github.com/warrenguy/heron/cluster"
+	"luas.fast/cluster"
 )
 
 // TestOpenRecovery_lockWaitsForTrailingRelease asserts a second OpenRecovery

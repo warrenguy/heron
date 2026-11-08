@@ -8,7 +8,7 @@ package javainterop
 import (
 	"time"
 
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/test/integration/harness"
 )
 
 // StreamJavaToGo is the IPC stream for Java publish / Go subscribe smoke.

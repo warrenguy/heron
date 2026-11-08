@@ -7,8 +7,8 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
 )
 
 func rapidParityWire[T any](

@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/mmap"
 )
 
 func testMapPath(t *testing.T, name string) string {

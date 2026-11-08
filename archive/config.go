@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/idlestrategy"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"luas.fast/aeron"
+	"luas.fast/idlestrategy"
+	"luas.fast/internal/transportfault"
 )
 
 // Config holds invoker-only Aeron Archive control client configuration.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/transportfault"
+	"luas.fast/aeron"
+	"luas.fast/internal/transportfault"
 )
 
 // ErrTransportTerminating reports that the connect-owned transport client has

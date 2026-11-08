@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/cluster/codecs"
 )
 
 // catalogVarStringBlobRefKeys lists varAscii fields that may use hex/ref catalog

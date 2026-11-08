@@ -1,6 +1,6 @@
 package consensus
 
-import "github.com/warrenguy/heron/aeron"
+import "luas.fast/aeron"
 
 // LogJoinSource supplies the follower log join with the live cluster log image
 // for a leader-advertised log session id.

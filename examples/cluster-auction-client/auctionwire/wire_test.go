@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/examples/cluster-auction-client/auctionwire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/examples/cluster-auction-client/auctionwire"
 )
 
 func wrapSizedBuffer(offset, length int) (atomicbuffer.AtomicBuffer, []byte) {

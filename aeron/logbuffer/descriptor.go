@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const (

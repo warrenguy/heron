@@ -3,9 +3,9 @@ package cluster
 import (
 	"encoding/binary"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/consensus"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/consensus"
 )
 
 const (

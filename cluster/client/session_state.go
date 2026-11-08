@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 // SessionState mirrors Java AeronCluster.State leadership-recovery values.

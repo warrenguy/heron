@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
 )
 
 func requireImageHandlerEqual[T ~func(*Image)](tb testing.TB, want, got T) {

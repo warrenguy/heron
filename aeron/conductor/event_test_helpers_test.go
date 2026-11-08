@@ -3,9 +3,9 @@ package conductor_test
 import (
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/internal/testutil"
-	"github.com/warrenguy/heron/broadcast"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/internal/testutil"
+	"luas.fast/broadcast"
 )
 
 const (

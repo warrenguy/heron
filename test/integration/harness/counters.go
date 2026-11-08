@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 // PublicationLimitCounterValue resolves the driver publisher-limit counter for

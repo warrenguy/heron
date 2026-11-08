@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/codecs"
+	"luas.fast/internal/testutil"
 )
 
 // catchupPollModel is the reference model for TestCatchupPoll_bound_rapid.

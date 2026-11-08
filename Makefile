@@ -34,7 +34,7 @@ COVERAGE_SLICE ?=
 COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 	-args -test.gocoverdir=$(COVERAGE_ROOT)/$(COVERAGE_SLICE),)
 
-GO_MODULE := github.com/warrenguy/heron
+GO_MODULE := luas.fast
 GO_TEST_PKGS := ./...
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
 export UNIT_TEST_TAGS := testhooks
@@ -151,7 +151,7 @@ GOLDEN_FIXTURES_POM := test/integration/golden_fixtures/pom.xml
 
 recordinglog-fixtures-regen: ## Regenerate cluster/recordinglog testdata from Java
 	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
+		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
 		exit 1; \
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
@@ -159,7 +159,7 @@ recordinglog-fixtures-regen: ## Regenerate cluster/recordinglog testdata from Ja
 
 node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state from Java
 	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
+		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
 		exit 1; \
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
@@ -167,7 +167,7 @@ node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state fr
 
 recovery-state-key-fixtures-regen: ## Regenerate cluster/codecs/testdata/recovery-state-key from Java
 	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
+		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
 		exit 1; \
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
@@ -191,12 +191,12 @@ lint-golangci:
 
 lint-shell:
 	@command -v shellcheck >/dev/null || { \
-		echo "heron: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
+		echo "luas: shellcheck required (e.g. apt install shellcheck, pacman -S shellcheck)" >&2; \
 		exit 1; \
 	}
 	@awk 'length > 100 { print FILENAME ":" NR; bad = 1 } END { exit bad + 0 }' \
 		$(SHELL_SCRIPTS) || { \
-		echo "heron: shell scripts must stay within 100 columns" >&2; \
+		echo "luas: shell scripts must stay within 100 columns" >&2; \
 		exit 1; \
 	}
 	shellcheck $(SHELL_SCRIPTS)
@@ -293,7 +293,7 @@ ELECTION_SIM_TAGS := electionsim,$(UNIT_TEST_TAGS)
 
 .PHONY: test-election-sim
 test-election-sim: ## Election fault sim soak (not part of make check)
-	ELECTION_SIM_RUNS=$(ELECTION_SIM_RUNS) HERON_SIM_SAVE=$${HERON_SIM_SAVE:-0} \
+	ELECTION_SIM_RUNS=$(ELECTION_SIM_RUNS) LUAS_SIM_SAVE=$${LUAS_SIM_SAVE:-0} \
 	  go test -timeout=$(ELECTION_SIM_TIMEOUT) -race -tags=$(ELECTION_SIM_TAGS) \
 	  -count=1 -run 'TestElectionSimSoak' ./test/sim/scenarios/
 
@@ -303,7 +303,7 @@ REPLICATION_SIM_TAGS := replicationsim,$(UNIT_TEST_TAGS)
 
 .PHONY: test-replication-sim
 test-replication-sim: ## Replication safety sim catalog (not part of make check)
-	REPLICATION_SIM_RUNS=$(REPLICATION_SIM_RUNS) HERON_SIM_SAVE=$${HERON_SIM_SAVE:-0} \
+	REPLICATION_SIM_RUNS=$(REPLICATION_SIM_RUNS) LUAS_SIM_SAVE=$${LUAS_SIM_SAVE:-0} \
 	  go test -timeout=$(REPLICATION_SIM_TIMEOUT) -race -tags=$(REPLICATION_SIM_TAGS) \
 	  -count=1 -run 'TestReplicationSimSoak' ./test/sim/replication/
 
@@ -400,7 +400,7 @@ CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java archive-java
 define mvn-integration-unit
 test-$(1)-unit:
 	@command -v mvn >/dev/null || { \
-		echo "heron: mvn required (JDK 26 per $(2))" >&2; \
+		echo "luas: mvn required (JDK 26 per $(2))" >&2; \
 		exit 1; \
 	}
 	mvn -f $(2) test
@@ -500,7 +500,7 @@ bin/aeronmd: specs/versions.yaml test/integration/docker/aeronmd/Dockerfile scri
 CLUSTER_ARCHIVE_TEST_TIMEOUT ?= 5m
 
 .PHONY: test-cluster-archive
-test-cluster-archive: bin/aeronmd bin/heron-archive-java.jar bin/heron-cluster-java.jar ## Live: per-member Archive elect and commit
+test-cluster-archive: bin/aeronmd bin/luas-archive-java.jar bin/luas-cluster-java.jar ## Live: per-member Archive elect and commit
 	go test -timeout=$(CLUSTER_ARCHIVE_TEST_TIMEOUT) -race -count=1 \
 		-tags=integration,archive_live \
 		./test/integration/cluster_archive/
@@ -512,8 +512,8 @@ bin/$(2).jar: $(shell find test/integration/$(1)/src/main -type f) \
 	./scripts/build-java-jar.sh $(1) $(2)
 endef
 
-$(eval $(call build-java-jar,archive_java,heron-archive-java))
-$(eval $(call build-java-jar,cluster_java,heron-cluster-java))
+$(eval $(call build-java-jar,archive_java,luas-archive-java))
+$(eval $(call build-java-jar,cluster_java,luas-cluster-java))
 
 .PHONY: aeronmd-compose-image
 aeronmd-compose-image: bin/aeronmd test/integration/docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes

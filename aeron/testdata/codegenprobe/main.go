@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/warrenguy/heron/aeron"
+	"luas.fast/aeron"
 )
 
 type publisher interface {

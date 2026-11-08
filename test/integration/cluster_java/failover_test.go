@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 // TestClusterFailoverSmoke proves session continuity and byte-identical echo across leader kill.

@@ -3,7 +3,7 @@ package logbuffer
 import (
 	"errors"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 // LogBuffers wraps a MappedLogBuffer for shared pub/image IPC lifetime.

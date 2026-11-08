@@ -7,12 +7,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
+	"luas.fast/cluster/codecs/clusterwire"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs"
 )
 
 func withConnectConfig(mutate func(*client.Config)) func(*client.ConnectResult) {

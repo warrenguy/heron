@@ -3,9 +3,9 @@ package sim
 import (
 	"fmt"
 
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/election"
 )
 
 // InjectCanvassPosition publishes a canvass position from fromID, enqueues delivery

@@ -8,14 +8,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive"
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/election"
-	"github.com/warrenguy/heron/cluster/recordinglog"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/aeron"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive"
+	"luas.fast/archive/codecs"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/election"
+	"luas.fast/cluster/recordinglog"
+	"luas.fast/idlestrategy"
 )
 
 // ConsensusModuleDeps are the collaborators [OpenConsensusModule] needs.

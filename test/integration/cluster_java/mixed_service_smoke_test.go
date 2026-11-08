@@ -12,19 +12,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/cluster/client"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/codecs/clusterwire"
-	"github.com/warrenguy/heron/cluster/consensus"
-	"github.com/warrenguy/heron/cluster/service"
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
-	"github.com/warrenguy/heron/test/integration/harness"
+	"luas.fast/aeron"
+	"luas.fast/cluster/client"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
+	"luas.fast/cluster/consensus"
+	"luas.fast/cluster/service"
+	"luas.fast/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/harness"
 )
 
 var (
-	mixedServicePayload      = []byte("heron-mixed-service-payload")
-	mixedServiceClosePayload = []byte("heron-mixed-service-close")
+	mixedServicePayload      = []byte("luas-mixed-service-payload")
+	mixedServiceClosePayload = []byte("luas-mixed-service-close")
 )
 
 const mixedServicePollInterval = time.Millisecond

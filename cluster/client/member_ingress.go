@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
 )
 
 // MemberIngress holds one cluster member's ingress endpoint and async connect

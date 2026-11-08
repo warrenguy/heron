@@ -1,7 +1,7 @@
 package sim
 
 import (
-	"github.com/warrenguy/heron/cluster/election"
+	"luas.fast/cluster/election"
 )
 
 // StateObserver records election state transitions for the timeline.

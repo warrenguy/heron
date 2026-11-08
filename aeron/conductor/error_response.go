@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 const ErrorResponseMinBodyLength = ErrorResponseFixedBodyLength

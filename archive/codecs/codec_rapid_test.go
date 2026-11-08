@@ -8,9 +8,9 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/archive/codecs"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/archive/codecs"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/internal/testutil"
 )
 
 const (

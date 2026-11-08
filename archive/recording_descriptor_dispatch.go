@@ -1,6 +1,6 @@
 package archive
 
-import "github.com/warrenguy/heron/archive/codecs"
+import "luas.fast/archive/codecs"
 
 // handleRecordingDescriptorFragment decodes a RecordingDescriptor and captures it on the
 // descriptor poller for the awaited correlation id. A nil poller, malformed fragment,

@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/cluster/recordinglog"
 )
 
 type manifestEntry struct {

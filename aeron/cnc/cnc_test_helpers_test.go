@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/mmap"
+	"luas.fast/aeron/cnc"
+	"luas.fast/mmap"
 )
 
 func testReadyFileLength() int {

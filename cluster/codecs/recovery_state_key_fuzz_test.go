@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron/cnc"
+	"luas.fast/cluster/codecs"
 )
 
 func FuzzRecoveryStateKeyDecode(f *testing.F) {

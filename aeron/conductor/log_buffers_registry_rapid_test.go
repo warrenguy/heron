@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/conductor"
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/internal/testutil"
+	"luas.fast/aeron/conductor"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/internal/testutil"
 )
 
 const registryRapidBaseNowNs int64 = 1_000_000_000

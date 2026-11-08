@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/cluster/codecs"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/cluster/codecs"
 )
 
 func TestEncodeIngressHeaderScratch_EncodesAtOffsetZero(t *testing.T) {

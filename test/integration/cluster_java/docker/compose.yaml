@@ -1,6 +1,6 @@
 # tmpfs mounts at /dev/shm (parent) so cluster can delete/recreate AERON_DIR
 # subdirectory /dev/shm/aeron; mounting directly at that path blocks driver init.
-x-app-user: &app-user "${HERON_COMPOSE_UID:-1000}:${HERON_COMPOSE_GID:-1000}"
+x-app-user: &app-user "${LUAS_COMPOSE_UID:-1000}:${LUAS_COMPOSE_GID:-1000}"
 # AERON_* term env drives Go harness + entrypoint -Daeron.* on cluster service; not read natively by Java driver.
 x-aeron-env: &aeron-env
   AERON_DIR: /dev/shm/aeron
@@ -41,7 +41,7 @@ services:
         condition: service_healthy
     environment:
       <<: *aeron-env
-      HERON_CLUSTER_JAVA_COMPOSE: "1"
+      LUAS_CLUSTER_JAVA_COMPOSE: "1"
     volumes: *aeron-vols
 
 volumes:

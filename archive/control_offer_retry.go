@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/idlestrategy"
+	"luas.fast/aeron"
+	"luas.fast/idlestrategy"
 )
 
 var (

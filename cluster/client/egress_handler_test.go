@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/cluster/client"
+	"luas.fast/aeron"
+	"luas.fast/atomicbuffer"
+	"luas.fast/cluster/client"
 )
 
 var (

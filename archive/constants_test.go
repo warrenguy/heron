@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
+	"luas.fast/aeron/cnc"
 )
 
 func TestProtocolSemanticVersion(t *testing.T) {

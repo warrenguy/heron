@@ -5,8 +5,8 @@ package client
 import (
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/internal/testhook"
+	"luas.fast/aeron"
+	"luas.fast/internal/testhook"
 )
 
 type connectConstructionHooks struct {

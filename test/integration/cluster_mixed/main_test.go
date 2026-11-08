@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/warrenguy/heron/test/integration/cluster_java/clusterjava"
+	"luas.fast/test/integration/cluster_java/clusterjava"
 )
 
 // mixedSmokeCompleted is the name of the proof that ran to completion, or ""
@@ -21,9 +21,9 @@ var mixedSmokeCompleted string
 // run to completion.
 //
 // Behaviour: rejects a zero m.Run exit when the required proof never marked
-// completion. go test exits zero when -test.run selects nothing and when the
-// only selected test skips; the compose smoke reads only that exit code. A
-// run with no overlay gate set requires nothing. A developer may run the
+// completion. go test exits zero when -test.run does not select a test and when
+// the only selected test skips. The compose smoke reads only that exit code. A
+// run without an overlay gate does not require a proof. A developer may run the
 // package outside compose and see the usual skips.
 func TestMain(m *testing.M) {
 	code := m.Run()
@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 		if required && mixedSmokeCompleted != name {
 			fmt.Fprintf(
 				os.Stderr,
-				"heron: mixed smoke required %q; completed proof %q\n",
+				"luas: mixed smoke required %q; completed proof %q\n",
 				name,
 				mixedSmokeCompleted,
 			)

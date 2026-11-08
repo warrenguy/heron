@@ -1,14 +1,13 @@
-# Heron
+# Luas
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/warrenguy/heron.svg)](https://pkg.go.dev/github.com/warrenguy/heron)
+[![Go Reference](https://pkg.go.dev/badge/luas.fast.svg)](https://pkg.go.dev/luas.fast)
 
-Pure Go [Aeron](https://github.com/aeron-io/aeron) transport, archive, and
-cluster clients, plus an experimental cluster consensus module and service
-container.
+### Pure Go clients for Aeron transport, archive, and cluster
 
-Heron implements Aeron's shared memory and wire protocols directly against an
-external Aeron media driver (C or Java), targeting behavioural parity with the
-Java stack.
+Luas implements [Aeron](https://github.com/aeron-io/aeron)'s shared memory and
+wire protocols directly against an external Aeron media driver (C or Java),
+targeting behavioural parity with the Java stack. It also includes an
+experimental cluster consensus module and service container.
 
 ## Status
 
@@ -27,15 +26,15 @@ Detail per component: [STATUS.md](STATUS.md).
 
 ## Supported platforms
 
-Heron supports Linux with kernel 5.14 or later. Other Unix systems may work,
-but CI tests only Linux.
+Linux with kernel 5.14 or later, on amd64 or arm64.
 
-Heron builds only on amd64 and arm64.
+Other Unix systems may work, but CI tests only Linux. Other architectures do
+not build.
 
 ## Getting started
 
 ```bash
-go get github.com/warrenguy/heron
+go get luas.fast
 ```
 
 A media driver must be running. Build the pinned C driver and start it:
@@ -52,7 +51,7 @@ The Aeron release is pinned in [`specs/versions.yaml`](specs/versions.yaml).
 Publish and receive a message over IPC (error handling omitted):
 
 ```go
-import "github.com/warrenguy/heron/aeron"
+import "luas.fast/aeron"
 
 ctx := context.Background()
 client, err := aeron.Connect(ctx, aeron.Config{AeronDir: "/tmp/aeron"})
@@ -113,6 +112,11 @@ replay. Pass an existing transport client in `Config.Aeron` to share one duty
 cycle:
 
 ```go
+import (
+	"luas.fast/aeron"
+	"luas.fast/archive"
+)
+
 transport, err := aeron.Connect(context.Background(), aeron.Config{AeronDir: "/tmp/aeron"})
 // ...
 session, err := archive.Connect(context.Background(), archive.Config{Aeron: transport})
@@ -147,5 +151,5 @@ Licensed under either of
 
 at your option.
 
-Heron includes material derived from Aeron under the Apache License 2.0; see
+Luas includes material derived from Aeron under the Apache License 2.0; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

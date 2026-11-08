@@ -1,8 +1,8 @@
 package client
 
 import (
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/aeron/conductor"
+	"luas.fast/aeron"
+	"luas.fast/aeron/conductor"
 )
 
 // leaderIngressMemberID returns the member map key for leader ingress operations.

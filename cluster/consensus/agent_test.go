@@ -8,10 +8,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/cnc"
-	"github.com/warrenguy/heron/archive/codecs/archivewire"
-	"github.com/warrenguy/heron/cluster/codecs"
-	"github.com/warrenguy/heron/cluster/recordinglog"
+	"luas.fast/aeron/cnc"
+	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/recordinglog"
 )
 
 // fakeLogTruncateControl records TruncateLogRecording calls for agent tests.

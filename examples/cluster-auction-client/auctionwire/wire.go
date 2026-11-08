@@ -8,8 +8,8 @@
 package auctionwire
 
 import (
-	"github.com/warrenguy/heron/atomicbuffer"
-	"github.com/warrenguy/heron/wire"
+	"luas.fast/atomicbuffer"
+	"luas.fast/wire"
 )
 
 const (

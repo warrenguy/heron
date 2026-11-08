@@ -1,10 +1,10 @@
 package service
 
-import "github.com/warrenguy/heron/aeron"
+import "luas.fast/aeron"
 
 // defaultControlFragmentLimit is the max fragments drained per control poll.
 // Matches the tree control batch size of 10. Upstream ServiceAdapter uses
-// fragment limit 1; heron uses the tree batch under FIFO delivery.
+// fragment limit 1; Luas uses the tree batch under FIFO delivery.
 const defaultControlFragmentLimit = 10
 
 // ControlIngress polls one duty-cycle batch of whole control messages

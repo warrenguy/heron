@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 func TestFragmentAssembler_completedHeaderPosition(t *testing.T) {

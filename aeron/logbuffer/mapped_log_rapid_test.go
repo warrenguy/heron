@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"github.com/warrenguy/heron/aeron/logbuffer"
-	"github.com/warrenguy/heron/atomicbuffer"
+	"luas.fast/aeron/logbuffer"
+	"luas.fast/atomicbuffer"
 )
 
 func TestMapLogBuffer_layoutRoundtrip_rapid(t *testing.T) {

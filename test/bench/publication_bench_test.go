@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/warrenguy/heron/aeron"
-	"github.com/warrenguy/heron/test/bench/harness"
+	"luas.fast/aeron"
+	"luas.fast/test/bench/harness"
 )
 
 var publicationOfferSink int64

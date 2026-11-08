@@ -1,6 +1,6 @@
 package codecs
 
-import "github.com/warrenguy/heron/cluster/codecs/clusterwire"
+import "luas.fast/cluster/codecs/clusterwire"
 
 // CanvassPositionBlockLength returns the CanvassPosition root block length for actingVersion.
 func CanvassPositionBlockLength(actingVersion uint16) uint16 {
