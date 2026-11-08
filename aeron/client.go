@@ -27,19 +27,18 @@ const (
 // goroutine unmaps released log buffers. Close stops it.
 //
 // Concurrency: clientLock admits one call at a time. These calls take it:
-//   - DoWork, IsTerminating, Close and CancelPending
-//   - Add*, OfferAdd*, PollAdd* and the destination methods
-//   - AddCounter, Counter.Close, NextAvailableSessionID and PollCommand
-//   - the helpers that drive DoWork, such as WaitUntilConnected
+//   - DoWork, IsTerminating, Close, and CancelPending
+//   - Add*, OfferAdd*, PollAdd*, and the destination methods
+//   - AddCounter, Counter.Close, NextAvailableSessionID, and PollCommand
 //
-// A call from another goroutine waits until the holder returns. Close during
-// a blocking call is unsupported. See Close.
+// A call from another goroutine waits until the holder returns. DoWork returns
+// 0 instead of waiting. Close during a blocking call is unsupported. See Close.
 //
 // Another goroutine may call Publication Offer when the call does not overlap
 // a blocking call. Subscription and Image Poll stay on the invoker goroutine.
 // See Subscription and Image.
 //
-// ErrorHandler, AvailableImageHandler, UnavailableImageHandler and
+// ErrorHandler, AvailableImageHandler, UnavailableImageHandler, and
 // PublicationErrorFrameHandler run inside DoWork or a blocking call, on the
 // goroutine that holds clientLock. ErrorHandler also runs without clientLock:
 //   - on the Close goroutine, for a resource Close on another goroutine
@@ -53,9 +52,9 @@ const (
 //     [ErrReentrantCall] to ErrorHandler.
 //
 // An ErrorHandler on the Close or poll goroutine does not fail fast. Its
-// calls take clientLock and wait, like any other caller.
+// calls take clientLock like any other caller.
 //
-// A handler may call IsTerminating, the lookups, offers, polls and resource
+// A handler may call IsTerminating, the lookups, offers, polls, and resource
 // Close. These calls do not take clientLock. A handler must not wait for a
 // goroutine that waits on clientLock.
 //
@@ -338,9 +337,10 @@ func (client *Client) doWorkLocked() int {
 	return client.conductor.DoWork()
 }
 
-// DoWork runs one conductor service tick under clientLock. The call
-// returns the work count. The count is zero when:
+// DoWork runs one conductor service tick under clientLock. DoWork returns the
+// work count, or 0 when:
 //   - Close has published closed
+//   - another goroutine holds clientLock
 //   - the tick does not make progress
 //   - the caller is inside a handler
 //
@@ -363,8 +363,15 @@ func (client *Client) DoWork() int {
 	if client.closed.Load() {
 		return 0
 	}
-	client.clientLock.Lock()
+
+	// Skip the tick instead of waiting. A blocking call that holds clientLock
+	// drives the conductor.
+	if !client.clientLock.TryLock() {
+		return 0
+	}
+
 	defer client.unlockClient()
+
 	if client.closed.Load() {
 		return 0
 	}
@@ -512,12 +519,10 @@ func (client *Client) NextCorrelationID() int64 {
 // NextAvailableSessionID blocks until the driver returns the next session id or
 // DriverTimeout elapses.
 //
-// Correlation id is allocated before clientLock is acquired. Blocking await
-// serializes with other blocking client APIs.
+// NextAvailableSessionID holds clientLock for the whole wait. DoWork from
+// another goroutine returns 0 until this call returns.
 //
-// DoWork from another goroutine blocks until this call completes.
-//
-// Concurrent Close during this call is unsupported; see Client godoc.
+// Concurrent Close during this call is unsupported. See Client godoc.
 func (client *Client) NextAvailableSessionID(streamID int32) (int32, error) {
 	if err := client.requireReadyWithDriverProxy(); err != nil {
 		return 0, err

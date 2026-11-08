@@ -230,5 +230,6 @@ tool (
 	github.com/warrenguy/constnamemap/cmd/constnamemap-gen
 	golang.org/x/perf/cmd/benchstat
 	golang.org/x/tools/cmd/goimports
+	honnef.co/go/tools/cmd/structlayout
 	mvdan.cc/gofumpt
 )
