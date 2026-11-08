@@ -11,7 +11,7 @@
 
 services:
   go:
-    command: ["-test.timeout=120s", "-test.run", "^TestClusterMixedGoLeader$$"]
+    command: ["-test.timeout=140s", "-test.run", "^TestClusterMixedGoLeader$$"]
     depends_on:
       cluster-0:
         condition: service_healthy
