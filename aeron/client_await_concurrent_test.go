@@ -62,6 +62,33 @@ func TestClient_NextAvailableSessionID_concurrentDoWorkDuringBlockingAwait(t *te
 	requireActiveCorrelationCleared(t, fixture)
 }
 
+func TestClient_DoWork_returnsZeroWhileClientLockHeld(t *testing.T) {
+	client, _ := newClientAwaitFixture(
+		t,
+		func() int64 { return 0 },
+		time.Second,
+		time.Millisecond,
+	)
+
+	require.True(t, client.TryLockClientForTest())
+	unlock := sync.OnceFunc(client.UnlockClientForTest)
+	t.Cleanup(unlock)
+
+	workDone := make(chan int, 1)
+	go func() {
+		workDone <- client.DoWork()
+	}()
+
+	workCount := receiveAddResult(
+		t,
+		workDone,
+		clientConcurrentResultTimeout,
+		"DoWork waited on clientLock",
+	)
+	require.Zero(t, workCount)
+	unlock()
+}
+
 func TestClient_NextAvailableSessionID_concurrentCloseDuringPoll(t *testing.T) {
 	var nanoNs int64
 	client, fixture := newClientAwaitFixture(

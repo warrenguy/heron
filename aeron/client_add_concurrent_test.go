@@ -136,7 +136,7 @@ func (waiter *awaitPollSleepingWaiter) pinUnderClientLock(t *testing.T) {
 // to assert that a blocking await holds the client lock.
 //
 // Locked await, offer, and drain paths must call doWorkLocked, not DoWork.
-// DoWork under the client lock deadlocks.
+// DoWork under the client lock skips the tick.
 type doWorkHammer struct {
 	ticks                atomic.Int32
 	pauseTicksAtRegister int32

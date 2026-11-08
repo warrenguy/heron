@@ -14,6 +14,8 @@ const (
 	backoffStateParking
 )
 
+// backoffIdleStrategy fills one 64-byte cache line. Pad it to 128 bytes if
+// a field change alters that size.
 type backoffIdleStrategy struct {
 	maxSpins      int
 	maxYields     int
