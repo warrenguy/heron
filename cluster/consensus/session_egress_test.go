@@ -267,7 +267,7 @@ func requireElectionHoldPastDeadline(
 // termOffset. Asserts the template id. Returns the typed fields and the next
 // aligned term offset.
 func decodeClusterFieldsAtTermOffset[T any](
-	t *testing.T,
+	t testing.TB,
 	pub *aeron.Publication,
 	termOffset int,
 	templateID uint16,
@@ -283,7 +283,7 @@ func decodeClusterFieldsAtTermOffset[T any](
 }
 
 func decodeSessionEventAtTermOffset(
-	t *testing.T,
+	t testing.TB,
 	pub *aeron.Publication,
 	termOffset int,
 ) (codecs.SessionEventFields, int) {

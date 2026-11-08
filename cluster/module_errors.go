@@ -110,6 +110,7 @@ func moduleAgentConfig(
 		TerminationTimeoutNs:      cfg.TerminationTimeoutNs,
 		AppVersion:                electionCfg.AppVersion,
 		Authenticator:             cfg.Authenticator,
+		Authoriser:                cfg.Authoriser,
 		ServiceCount:              cfg.ServiceCount,
 		ErrorHandler:              errorHandler,
 	}

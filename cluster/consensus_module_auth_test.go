@@ -39,18 +39,13 @@ func (r *recordingConnectAuthenticator) HandleChallengedSession(consensus.Sessio
 
 var _ consensus.Authenticator = (*recordingConnectAuthenticator)(nil)
 
-// openWireStyleAgent builds an agent the way OpenConsensusModule maps
-// Config.Authenticator into AgentConfig. Sets RoleLeader so connect handoff
-// runs without an active election.
+// openWireStyleAgent maps cfg as OpenConsensusModule does. Sets RoleLeader so
+// the agent accepts a connect without an election.
 func openWireStyleAgent(cfg Config) *consensus.Agent {
-	return consensus.NewAgent(consensus.AgentConfig{
-		Commit:           new(atomic.Int64),
-		ThisMemberID:     cfg.MemberID,
-		LeaderMemberID:   election.NullMemberID,
-		Role:             consensus.RoleLeader,
-		Authenticator:    cfg.Authenticator,
-		SessionTimeoutNs: cfg.SessionTimeoutNs,
-	})
+	agentCfg := moduleAgentConfig(cfg, election.ElectionConfig{}, new(atomic.Int64), nil)
+	agentCfg.Role = consensus.RoleLeader
+
+	return consensus.NewAgent(agentCfg)
 }
 
 // TestConfigAuthenticator_openWireStyle asserts Config.Authenticator reaches
@@ -149,7 +144,7 @@ func minimalConnectFields() codecs.SessionConnectRequestFields {
 }
 
 func encodeSessionConnectForAuthTest(
-	t *testing.T,
+	t testing.TB,
 	fields codecs.SessionConnectRequestFields,
 ) []byte {
 	t.Helper()

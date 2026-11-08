@@ -47,6 +47,7 @@ var fastSlowDecodeParities = []func(tb require.TestingT, buf []byte, offset int)
 	requireServiceTerminationPositionFastSlowParity,
 	requireTerminationPositionFastSlowParity,
 	requireTerminationAckFastSlowParity,
+	requireAdminRequestFastSlowParity,
 }
 
 func requireSessionMessageHeaderFastSlowParity(tb require.TestingT, buf []byte, offset int) {
@@ -319,6 +320,82 @@ func TestTryDecodeSessionConnectRequestAt_varOverCap(t *testing.T) {
 	_, ok := codecs.TryDecodeSessionConnectRequestAt(buf, 0)
 	require.False(t, ok)
 	requireSessionConnectRequestFastSlowParity(t, buf, 0)
+}
+
+func requireAdminRequestFastSlowParity(tb require.TestingT, buf []byte, offset int) {
+	requireFastSlowDecodeParity(
+		tb,
+		buf,
+		offset,
+		codecs.ClusterDecodeMaxVarLen,
+		clusterwire.AdminRequestSbeTemplateID,
+		codecs.TryDecodeAdminRequestAt,
+	)
+}
+
+func TestAdminRequest_fastSlowDecodeParity_table(t *testing.T) {
+	t.Parallel()
+
+	actingVersion := uint16(clusterwire.AdminRequestSbeSchemaVersion)
+	fields := codecs.AdminRequestFields{
+		LeadershipTermID: 1,
+		ClusterSessionID: 2,
+		CorrelationID:    3,
+		RequestType:      clusterwire.AdminRequestType_SNAPSHOT,
+	}
+	validWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeAdminRequest(buf, 0, actingVersion, fields)
+	})
+
+	withPayload := fields
+	withPayload.Payload = []byte{1, 2, 3, 4}
+	payloadWire := encodeClusterWire(t, func(buf []byte) (int, bool) {
+		return codecs.EncodeAdminRequest(buf, 0, actingVersion, withPayload)
+	})
+	decoded, ok := codecs.TryDecodeAdminRequestAt(payloadWire, 0)
+	require.True(t, ok)
+	require.Nil(t, decoded.Payload)
+
+	headerAndBlock := messageHeaderLen + int(clusterwire.AdminRequestSbeBlockLength)
+	overLen := codecs.ClusterDecodeMaxVarLen + 1
+	overCap := make([]byte, headerAndBlock+codecs.VarLengthPrefixSize+overLen)
+	copy(overCap, validWire[:headerAndBlock])
+	binary.LittleEndian.PutUint32(overCap[headerAndBlock:], uint32(overLen))
+
+	_, ok = codecs.TryDecodeAdminRequestAt(overCap, 0)
+	require.False(t, ok)
+
+	cases := []struct {
+		name   string
+		buf    []byte
+		offset int
+	}{
+		{name: "valid", buf: validWire},
+		{name: "truncated_header", buf: validWire[:messageHeaderLen-1]},
+		{name: "one_byte_short", buf: payloadWire[:len(payloadWire)-1]},
+		{
+			name: "unknown_template_id",
+			buf: cloneMutatedWire(validWire, func(w []byte) {
+				w[2], w[3] = 0xFF, 0x7F
+			}),
+		},
+		{
+			name: "schema_mismatch",
+			buf: cloneMutatedWire(validWire, func(w []byte) {
+				w[4], w[5] = 0, 0
+			}),
+		},
+		{name: "var_over_cap", buf: overCap},
+		{name: "offset_out_of_bounds", buf: validWire, offset: 10_000},
+		{name: "offset_near_maxint", buf: validWire, offset: math.MaxInt},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireAdminRequestFastSlowParity(t, tc.buf, tc.offset)
+		})
+	}
 }
 
 func requireChallengeResponseFastSlowParity(tb require.TestingT, buf []byte, offset int) {
