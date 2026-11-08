@@ -11,7 +11,7 @@ import (
 	"pgregory.net/rapid"
 )
 
-var rapidFlagsMu sync.Mutex
+var rapidFlagsMu sync.RWMutex
 
 // visitedFlags caches the first flag.Visit. A later flag.Visit also reports a
 // flag that flag.Set changed.
@@ -57,6 +57,9 @@ func RapidCheckSteps(tb testing.TB, checks, steps int, prop func(*rapid.T)) {
 	}
 
 	if checks == 0 && steps == 0 {
+		rapidFlagsMu.RLock()
+		defer rapidFlagsMu.RUnlock()
+
 		rapid.Check(tb, prop)
 		return
 	}
