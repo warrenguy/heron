@@ -31,8 +31,8 @@ const (
 )
 
 // ErrReplayHoldExpired reports an election log replay held at a snapshot
-// wait after its image closed. A service still owed its ack one ImageAwaitNs
-// later.
+// wait after its image closed. A service still owed its ack one
+// Config.Election.LeaderHeartbeatTimeoutNs later.
 var ErrReplayHoldExpired = errors.New("cluster: replay hold expired after the image closed")
 
 // replayControl is the archive control surface a cluster log replay needs.

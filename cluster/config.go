@@ -170,11 +170,16 @@ type Config struct {
 	// Normalize overwrites MemberID, AppointedLeaderID, and
 	// GracefulClosedLeaderID on this struct from Config.MemberID,
 	// Config.AppointedLeaderID, and Config.GracefulClosedLeaderID. Setting those
-	// three here has no effect once Normalize runs, and Validate rejects a value
-	// that disagrees with the Config fields.
+	// three here does not take effect once Normalize runs. Validate rejects a
+	// value that disagrees with the Config fields.
 	//
 	// The indirection exists because an int32 cannot distinguish "member 0" from
-	// "unset", and election reads unset as election.NullMemberID, not zero.
+	// "unset". Election reads unset as election.NullMemberID, not zero.
+	//
+	// Election.LeaderHeartbeatTimeoutNs also caps each wait in an election log
+	// replay. A raised value slows leader failure detection. When a service still
+	// owes a snapshot ack this long after the replay image closes short of its
+	// end of stream, the member ends with [ErrReplayHoldExpired].
 	Election election.ElectionConfig
 
 	// AppointedLeaderID restricts nomination to one member. Nil means no
