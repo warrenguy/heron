@@ -98,6 +98,19 @@ func (c *DriverCounters) Value(typeID int32) (int64, bool) {
 	return value, err == nil
 }
 
+// Reader returns the CnC counters reader.
+//
+// Returns nil when the receiver is nil or closed.
+//
+// Lifetime: the reader is valid until Close.
+func (c *DriverCounters) Reader() *cnc.CountersReader {
+	if c == nil {
+		return nil
+	}
+
+	return c.reader
+}
+
 // counterIDOfType returns the counter id for typeID.
 // Prefers the cached id while that record stays allocated with typeID.
 // A reclaimed or retyped cached record forces one rescan.
