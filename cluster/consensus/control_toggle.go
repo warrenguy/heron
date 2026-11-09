@@ -28,14 +28,14 @@ const (
 )
 
 var controlToggleNames = [...]string{
-	"INACTIVE",
-	"NEUTRAL",
-	"SUSPEND",
-	"RESUME",
-	"SNAPSHOT",
-	"SHUTDOWN",
-	"ABORT",
-	"STANDBY_SNAPSHOT",
+	ControlToggleInactive:        "INACTIVE",
+	ControlToggleNeutral:         "NEUTRAL",
+	ControlToggleSuspend:         "SUSPEND",
+	ControlToggleResume:          "RESUME",
+	ControlToggleSnapshot:        "SNAPSHOT",
+	ControlToggleShutdown:        "SHUTDOWN",
+	ControlToggleAbort:           "ABORT",
+	ControlToggleStandbySnapshot: "STANDBY_SNAPSHOT",
 }
 
 func (s ControlToggleState) Code() int32 { return int32(s) }
@@ -83,10 +83,10 @@ const (
 )
 
 var nodeControlToggleNames = [...]string{
-	"INACTIVE",
-	"NEUTRAL",
-	"REPLICATE_STANDBY_SNAPSHOT",
-	"VALIDATE_RECORDING_LOG",
+	NodeControlToggleInactive:                 "INACTIVE",
+	NodeControlToggleNeutral:                  "NEUTRAL",
+	NodeControlToggleReplicateStandbySnapshot: "REPLICATE_STANDBY_SNAPSHOT",
+	NodeControlToggleValidateRecordingLog:     "VALIDATE_RECORDING_LOG",
 }
 
 func (s NodeControlToggleState) Code() int32 { return int32(s) }

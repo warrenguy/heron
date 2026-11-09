@@ -51,12 +51,12 @@ const (
 )
 
 var sessionStateNames = [...]string{
-	"pending",
-	"challenged",
-	"authenticated",
-	"rejected",
-	"open",
-	"closing",
+	sessionPending:       "pending",
+	sessionChallenged:    "challenged",
+	sessionAuthenticated: "authenticated",
+	sessionRejected:      "rejected",
+	sessionOpen:          "open",
+	sessionClosing:       "closing",
 }
 
 // String returns the diagnostic name for this session state. The method

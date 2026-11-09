@@ -66,14 +66,14 @@ const (
 )
 
 var electionTriggerNames = [...]string{
-	"NONE",
-	"BOOTSTRAP",
-	"LEADER_HEARTBEAT_TIMEOUT",
-	"INACTIVE_FOLLOWER_QUORUM",
-	"HIGHER_TERM",
-	"LOG_RECORDING_STOPPED",
-	"LOG_IMAGE_CLOSED",
-	"VOTE_REQUEST",
+	ElectionTriggerNone:                   "NONE",
+	ElectionTriggerBootstrap:              "BOOTSTRAP",
+	ElectionTriggerLeaderHeartbeatTimeout: "LEADER_HEARTBEAT_TIMEOUT",
+	ElectionTriggerInactiveFollowerQuorum: "INACTIVE_FOLLOWER_QUORUM",
+	ElectionTriggerHigherTerm:             "HIGHER_TERM",
+	ElectionTriggerLogRecordingStopped:    "LOG_RECORDING_STOPPED",
+	ElectionTriggerLogImageClosed:         "LOG_IMAGE_CLOSED",
+	ElectionTriggerVoteRequest:            "VOTE_REQUEST",
 }
 
 // String returns the trigger name, or Trigger(n) for an unknown value.

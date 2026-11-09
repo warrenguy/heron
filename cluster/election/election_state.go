@@ -28,11 +28,24 @@ const (
 )
 
 var electionStateNames = [...]string{
-	"INIT", "CANVASS", "NOMINATE", "CANDIDATE_BALLOT", "FOLLOWER_BALLOT",
-	"LEADER_LOG_REPLICATION", "LEADER_REPLAY", "LEADER_INIT", "LEADER_READY",
-	"FOLLOWER_LOG_REPLICATION", "FOLLOWER_REPLAY",
-	"FOLLOWER_CATCHUP_INIT", "FOLLOWER_CATCHUP_AWAIT", "FOLLOWER_CATCHUP",
-	"FOLLOWER_LOG_INIT", "FOLLOWER_LOG_AWAIT", "FOLLOWER_READY", "CLOSED",
+	ElectionStateInit:                   "INIT",
+	ElectionStateCanvass:                "CANVASS",
+	ElectionStateNominate:               "NOMINATE",
+	ElectionStateCandidateBallot:        "CANDIDATE_BALLOT",
+	ElectionStateFollowerBallot:         "FOLLOWER_BALLOT",
+	ElectionStateLeaderLogReplication:   "LEADER_LOG_REPLICATION",
+	ElectionStateLeaderReplay:           "LEADER_REPLAY",
+	ElectionStateLeaderInit:             "LEADER_INIT",
+	ElectionStateLeaderReady:            "LEADER_READY",
+	ElectionStateFollowerLogReplication: "FOLLOWER_LOG_REPLICATION",
+	ElectionStateFollowerReplay:         "FOLLOWER_REPLAY",
+	ElectionStateFollowerCatchupInit:    "FOLLOWER_CATCHUP_INIT",
+	ElectionStateFollowerCatchupAwait:   "FOLLOWER_CATCHUP_AWAIT",
+	ElectionStateFollowerCatchup:        "FOLLOWER_CATCHUP",
+	ElectionStateFollowerLogInit:        "FOLLOWER_LOG_INIT",
+	ElectionStateFollowerLogAwait:       "FOLLOWER_LOG_AWAIT",
+	ElectionStateFollowerReady:          "FOLLOWER_READY",
+	ElectionStateClosed:                 "CLOSED",
 }
 
 const electionStateCount = len(electionStateNames)

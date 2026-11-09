@@ -17,10 +17,10 @@ const (
 )
 
 var sessionStateNames = [...]string{
-	"CONNECTED",
-	"AWAIT_NEW_LEADER",
-	"AWAIT_NEW_LEADER_CONNECTION",
-	"PENDING_CLOSE",
+	SessionStateConnected:                "CONNECTED",
+	SessionStateAwaitNewLeader:           "AWAIT_NEW_LEADER",
+	SessionStateAwaitNewLeaderConnection: "AWAIT_NEW_LEADER_CONNECTION",
+	SessionStatePendingClose:             "PENDING_CLOSE",
 }
 
 // String returns the Java AeronCluster state name for diagnostics.

@@ -16,9 +16,9 @@ const (
 )
 
 var roleNames = [...]string{
-	"FOLLOWER",
-	"CANDIDATE",
-	"LEADER",
+	RoleFollower:  "FOLLOWER",
+	RoleCandidate: "CANDIDATE",
+	RoleLeader:    "LEADER",
 }
 
 func (r Role) Code() int32 { return int32(r) }

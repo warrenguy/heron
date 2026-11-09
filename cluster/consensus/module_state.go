@@ -19,13 +19,13 @@ const (
 )
 
 var moduleStateNames = [...]string{
-	"INIT",
-	"ACTIVE",
-	"SUSPENDED",
-	"SNAPSHOT",
-	"QUITTING",
-	"TERMINATING",
-	"CLOSED",
+	ModuleStateInit:        "INIT",
+	ModuleStateActive:      "ACTIVE",
+	ModuleStateSuspended:   "SUSPENDED",
+	ModuleStateSnapshot:    "SNAPSHOT",
+	ModuleStateQuitting:    "QUITTING",
+	ModuleStateTerminating: "TERMINATING",
+	ModuleStateClosed:      "CLOSED",
 }
 
 const (
