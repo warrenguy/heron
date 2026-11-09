@@ -13,6 +13,7 @@ import (
 
 	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 // connectTestHarnessDriver registers an await-loop step observer that completes pending
@@ -443,7 +444,7 @@ func TestConnect_successWinsOverConcurrentCancel(t *testing.T) {
 	require.Equal(t, asyncConnectFixtureControlSessionID, archive.ControlSessionID())
 }
 
-func transmitClientTimeout(t *testing.T, harness *aeron.AsyncConnectTestHarness) {
+func transmitClientTimeout(t testing.TB, harness *aeron.AsyncConnectTestHarness) {
 	t.Helper()
 
 	require.NoError(t, harness.TransmitClientTimeout())
@@ -492,7 +493,7 @@ func connectHarnessSession(
 }
 
 func requireTransportFaultClosed(
-	t *testing.T,
+	t testing.TB,
 	harness *aeron.AsyncConnectTestHarness,
 	session *Client,
 	cause error,
@@ -512,36 +513,61 @@ func requireSessionOpen(t *testing.T, session *Client) {
 	require.NoError(t, session.TransportFault())
 }
 
+func requireOwnedStoredCause(t testing.TB, fixture faultFixture, err error) {
+	t.Helper()
+
+	requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+	require.Equal(t, fixture.session.TransportFault(), err)
+}
+
 type faultFixture struct {
 	harness    *aeron.AsyncConnectTestHarness
 	session    *Client
 	callerErrs *[]error
 }
 
-// requireAwaitInFlightFault runs call with a client timeout broadcast inside
-// its await loop. call must time out and the session must close on the fault.
-func requireAwaitInFlightFault(t *testing.T, fixture faultFixture, call func() error) {
+// transmitClientTimeoutOnDoWork broadcasts a client timeout after DoWork call
+// broadcastCall. It returns the DoWork call count.
+func transmitClientTimeoutOnDoWork(
+	t testing.TB,
+	harness *aeron.AsyncConnectTestHarness,
+	broadcastCall int,
+) *int {
 	t.Helper()
 
-	// Phase: the offer retry runs the first DoWork. The await loop runs the
-	// second. The hook then broadcasts the timeout.
 	var doWorkCalls int
-	fixture.harness.SetDoWorkAfterHook(func() {
+	harness.SetDoWorkAfterHook(func() {
 		doWorkCalls++
-		if doWorkCalls == 2 {
-			transmitClientTimeout(t, fixture.harness)
+		if doWorkCalls == broadcastCall {
+			transmitClientTimeout(t, harness)
 		}
 	})
-	callErr := call()
-	var timeout *ControlResponseTimeoutError
-	require.ErrorAs(t, callErr, &timeout)
-	requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+
+	return &doWorkCalls
+}
+
+func runInFlightFault(t testing.TB, fixture faultFixture, call func() error) error {
+	t.Helper()
+
+	// Phase: the offer retry runs DoWork 1. The await loop runs DoWork 2. The
+	// hook then broadcasts the client timeout. DoWork 3 terminates the client.
+	doWorkCalls := transmitClientTimeoutOnDoWork(t, fixture.harness, 2)
+	err := call()
+	require.Equal(t, 3, *doWorkCalls)
+
+	return err
+}
+
+func requireOwnedInFlightFault(t testing.TB, fixture faultFixture, call func() error) {
+	t.Helper()
+
+	requireOwnedStoredCause(t, fixture, runInFlightFault(t, fixture, call))
 }
 
 // TestClient_ownedClientFaultClosesSession asserts that a fault that
 // terminates the connect-owned transport client closes the session on the
-// next poll. A per-resource fault and a caller-supplied client leave the
-// session open.
+// next poll or blocking call. A per-resource fault and a caller-supplied
+// client leave the session open.
 func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 	t.Parallel()
 
@@ -617,19 +643,19 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 			name: "blocking_call_after_fault",
 			run: func(t *testing.T, fixture faultFixture) {
 				transmitClientTimeout(t, fixture.harness)
-				stopErr := fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
-				var terminal *ControlTerminalError
-				require.ErrorAs(t, stopErr, &terminal)
-				require.False(t, fixture.session.IsClosed())
 
-				require.Zero(t, fixture.session.Poll())
-				requireTransportFaultClosed(t, fixture.harness, fixture.session, conductor.ErrClientTimeout)
+				// Phase: the offer loop's first DoWork terminates the client.
+				var doWorkCalls int
+				fixture.harness.SetDoWorkAfterHook(func() { doWorkCalls++ })
+				err := fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
+				requireOwnedStoredCause(t, fixture, err)
+				require.Equal(t, 1, doWorkCalls)
 			},
 		},
 		{
 			name: "await_in_flight_fault",
 			run: func(t *testing.T, fixture faultFixture) {
-				requireAwaitInFlightFault(t, fixture, func() error {
+				requireOwnedInFlightFault(t, fixture, func() error {
 					return fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
 				})
 			},
@@ -637,7 +663,7 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 		{
 			name: "list_recording_await_in_flight_fault",
 			run: func(t *testing.T, fixture faultFixture) {
-				requireAwaitInFlightFault(t, fixture, func() error {
+				requireOwnedInFlightFault(t, fixture, func() error {
 					_, err := fixture.session.ListRecording(t.Context(), 1)
 					return err
 				})
@@ -647,7 +673,7 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 			name: "signal_await_in_flight_fault",
 			run: func(t *testing.T, fixture faultFixture) {
 				tracker := NewStopSignalTracker(fixture.session.controlSessionID, -1)
-				requireAwaitInFlightFault(t, fixture, func() error {
+				requireOwnedInFlightFault(t, fixture, func() error {
 					return fixture.session.StopRecordingAwaitSignal(
 						t.Context(),
 						stopStreamID,
@@ -655,6 +681,43 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 						tracker,
 					)
 				})
+			},
+		},
+		{
+			name: "control_offer_retry_fault",
+			run: func(t *testing.T, fixture faultFixture) {
+				// Phase: the DoWork before the offer broadcasts the timeout. The
+				// DoWork after BackPressured terminates the client. The fault
+				// check after that DoWork returns the cause.
+				doWorkCalls := transmitClientTimeoutOnDoWork(t, fixture.harness, 1)
+				var offers int
+				pos, err := fixture.session.ControlOfferUntilPositive(
+					t.Context(),
+					ControlOfferConfig{IdleStrategy: idlestrategy.NoOp},
+					func() int64 {
+						offers++
+						return aeron.BackPressured
+					},
+				)
+				require.Zero(t, pos)
+				requireOwnedStoredCause(t, fixture, err)
+				require.Equal(t, 2, *doWorkCalls)
+				require.Equal(t, 1, offers)
+			},
+		},
+		{
+			name:           "caller_supplied_await_fault",
+			callerHandler:  true,
+			callerSupplied: true,
+			run: func(t *testing.T, fixture faultFixture) {
+				err := runInFlightFault(t, fixture, func() error {
+					return fixture.session.StopRecording(t.Context(), stopStreamID, stopChannel)
+				})
+				require.ErrorIs(t, err, ErrTransportTerminating)
+				require.NotErrorIs(t, err, conductor.ErrClientTimeout)
+				requireSessionOpen(t, fixture.session)
+				require.Len(t, *fixture.callerErrs, 1)
+				require.ErrorIs(t, (*fixture.callerErrs)[0], conductor.ErrClientTimeout)
 			},
 		},
 	}
@@ -678,7 +741,6 @@ func TestClient_ownedClientFaultClosesSession(t *testing.T) {
 				cfg.AeronConfig.ErrorHandler = callerHandler
 			}
 			cfg.ConnectTimeout = time.Minute
-			cfg.ControlResponseTimeout = 100 * time.Millisecond
 			session := connectHarnessSession(t, harness, cfg)
 			requireSessionOpen(t, session)
 

@@ -15,6 +15,7 @@ type archiveControlOps struct {
 	cfg              Config
 	proxy            *Proxy
 	poll             func() int
+	transportFault   func() error
 	responsePoller   *ControlResponsePoller
 	descriptorPoller *RecordingDescriptorPoller
 	controlSessionID int64
@@ -26,6 +27,7 @@ func (client *Client) sessionControlOps(pollFn func() int) archiveControlOps {
 		cfg:              client.cfg,
 		proxy:            client.proxy,
 		poll:             pollFn,
+		transportFault:   client.transportFaultError,
 		responsePoller:   client.controlPoller,
 		descriptorPoller: client.descriptorPoller,
 		controlSessionID: client.controlSessionID,
@@ -42,6 +44,7 @@ func (ops archiveControlOps) offerAndAwait(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
+		ops.transportFault,
 		ops.responsePoller,
 		func() (int64, bool) { return offer(correlationID) },
 		ops.controlSessionID,
@@ -174,9 +177,8 @@ func (ops archiveControlOps) truncateRecording(
 	return fields.RelevantID, nil
 }
 
-// ListRecording offers a ListRecordingRequest and blocks until the archive replies with
-// the matching RecordingDescriptor (or a non-OK ControlResponse), returning its fields
-// with var-ascii bytes cloned at latch time for retention.
+// listRecording offers a ListRecordingRequest and blocks until the archive
+// replies with the matching RecordingDescriptor or a non-OK ControlResponse.
 func (ops archiveControlOps) listRecording(
 	ctx context.Context,
 	recordingID int64,
@@ -191,6 +193,7 @@ func (ops archiveControlOps) listRecording(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
+		ops.transportFault,
 		ops.descriptorPoller,
 		func() (int64, bool) {
 			return ops.proxy.TryListRecording(
@@ -206,10 +209,7 @@ func (ops archiveControlOps) listRecording(
 // latched recording signal completes the correlated wait.
 //
 // Behaviour:
-//   - draws the correlation id and passes it to arm and every offer retry
-//   - arms the response poller await; re-arms the await to 0 on return
 //   - a matching OK ControlResponse alone does not complete the wait
-//   - a latched signal completes the wait
 //   - a matching ERROR fails the wait only before the signal latches
 //
 // arm may be nil when the tracker matches without correlation arming.
@@ -231,7 +231,7 @@ func (ops archiveControlOps) offerAwaitRecordingSignal(
 		defer targets.ResponsePoller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, ops.aeronClient, ops.cfg, ops.poll, func() (int64, bool) {
+		ctx, ops.aeronClient, ops.cfg, ops.poll, ops.transportFault, func() (int64, bool) {
 			return offer(correlationID)
 		},
 	); err != nil {
@@ -244,6 +244,7 @@ func (ops archiveControlOps) offerAwaitRecordingSignal(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
+		ops.transportFault,
 		ops.cfg.ControlResponseTimeout,
 		correlationID,
 		operation,

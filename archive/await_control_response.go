@@ -52,26 +52,50 @@ func tryMatchControlResponseDiscardStale(
 	return fields, err, ok
 }
 
-// AwaitControlResponse loops DoWork then pollFn until a ControlResponse matching
-// controlSessionID and correlationID is captured, or the response timeout elapses.
+// AwaitControlResponse loops DoWork, a termination check, and pollFn until
+// poller captures the ControlResponse matching controlSessionID and
+// correlationID.
 //
-// Drives DoWork on aeronClient only for the await duration. Idle strategy paces
-// empty polls and resets on every exit path. Nil cfg.IdleStrategy uses
-// NewDefaultIdleStrategy.
+// Drives DoWork on aeronClient only for the await duration. cfg.IdleStrategy
+// paces empty polls. The await resets cfg.IdleStrategy on every exit path. Nil
+// cfg.IdleStrategy uses NewDefaultIdleStrategy.
 //
-// Uses Config.ControlResponseTimeout. When ctx carries a deadline, the effective
-// bound is the earlier of ControlResponseTimeout and ctx.Deadline().
+// Waits up to Config.ControlResponseTimeout, or until ctx.Deadline() when that
+// is earlier.
 //
 // Returns:
 //   - matched fields with a nil error
 //   - mapped error for a non-OK response
 //   - ControlResponseTimeoutError on timeout
+//   - ErrTransportTerminating when aeronClient reports termination
 //   - ctx.Err() when the context is done
 func AwaitControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	poller *ControlResponsePoller,
+	controlSessionID int64,
+	correlationID int64,
+) (codecs.ControlResponseFields, error) {
+	return awaitControlResponse(
+		ctx,
+		aeronClient,
+		cfg,
+		pollFn,
+		nil,
+		poller,
+		controlSessionID,
+		correlationID,
+	)
+}
+
+func awaitControlResponse(
+	ctx context.Context,
+	aeronClient *aeron.Client,
+	cfg Config,
+	pollFn func() int,
+	transportFault func() error,
 	poller *ControlResponsePoller,
 	controlSessionID int64,
 	correlationID int64,
@@ -86,6 +110,7 @@ func AwaitControlResponse(
 		aeronClient,
 		cfg,
 		pollFn,
+		transportFault,
 		cfg.ControlResponseTimeout,
 		correlationID,
 		ControlResponseAwaitOperation,
@@ -95,14 +120,12 @@ func AwaitControlResponse(
 	)
 }
 
-// awaitMatchedControlResponse loops DoWork then pollFn until tryMatch reports a captured
-// response, or responseTimeout elapses, returning the matched fields with their mapped
-// error status.
 func awaitMatchedControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	transportFault func() error,
 	responseTimeout time.Duration,
 	correlationID int64,
 	operation string,
@@ -118,6 +141,7 @@ func awaitMatchedControlResponse(
 		aeronClient,
 		cfg,
 		pollFn,
+		transportFault,
 		responseTimeout,
 		correlationID,
 		operation,
@@ -137,13 +161,36 @@ func awaitMatchedControlResponse(
 	return matched, matchErr
 }
 
-// runControlAwaitLoop requires a normalized cfg: it reads IdleStrategy
-// without a nil fallback.
+// checkTransportFault returns the error from transportFault. A nil
+// transportFault tests aeronClient for termination. A done ctx wins over a
+// fault.
+func checkTransportFault(
+	ctx context.Context,
+	aeronClient *aeron.Client,
+	transportFault func() error,
+) error {
+	var err error
+
+	if transportFault != nil {
+		err = transportFault()
+	} else {
+		err = transportTerminationSentinel(aeronClient)
+	}
+
+	if err != nil {
+		return aeron.PreferContextError(ctx, err)
+	}
+	return nil
+}
+
+// runControlAwaitLoop requires a normalized cfg. It does not replace a nil
+// IdleStrategy.
 func runControlAwaitLoop(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	transportFault func() error,
 	responseTimeout time.Duration,
 	correlationID int64,
 	operation string,
@@ -165,11 +212,18 @@ func runControlAwaitLoop(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
 		aeronClient.DoWork()
+
+		if err := checkTransportFault(ctx, aeronClient, transportFault); err != nil {
+			return err
+		}
+
 		work := pollFn()
 		if done, err := matchFn(); done {
 			return err
 		}
+
 		idle.Idle(work)
 	}
 	return aeron.PreferContextError(ctx, &ControlResponseTimeoutError{
@@ -191,6 +245,7 @@ func offerAndAwaitControlRequest(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	transportFault func() error,
 	poller *ControlResponsePoller,
 	offerFn func() (int64, bool),
 	controlSessionID int64,
@@ -201,16 +256,17 @@ func offerAndAwaitControlRequest(
 		defer poller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, aeronClient, cfg, pollFn, offerFn,
+		ctx, aeronClient, cfg, pollFn, transportFault, offerFn,
 	); err != nil {
 		return codecs.ControlResponseFields{}, err
 	}
 
-	return AwaitControlResponse(
+	return awaitControlResponse(
 		ctx,
 		aeronClient,
 		cfg,
 		pollFn,
+		transportFault,
 		poller,
 		controlSessionID,
 		correlationID,
@@ -222,13 +278,17 @@ func offerControlRequest(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	transportFault func() error,
 	offerFn func() (int64, bool),
 ) error {
 	_, err := controlOfferUntilPositive(
 		ctx,
 		aeronClient,
 		cfg,
-		ControlOfferConfig{PollFn: pollFn},
+		ControlOfferConfig{
+			PollFn:         pollFn,
+			transportFault: transportFault,
+		},
 		func() int64 {
 			// Pass the raw position through: a retriable negative code (BackPressured,
 			// AdminAction) must reach controlOfferUntilPositive to trigger a retry.

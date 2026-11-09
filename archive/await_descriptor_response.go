@@ -12,21 +12,42 @@ var errNilDescriptorPoller = errors.New(
 	"archive: list recording: descriptor poller must be non-nil",
 )
 
-// AwaitListRecording loops DoWork then pollFn until descriptorPoller reports
-// completion, or responseTimeout elapses. Awaits the matching RecordingDescriptor or a
-// non-OK ControlResponse; Java list-by-id may send only the descriptor with no preceding
-// OK response.
+// AwaitListRecording loops DoWork, then the fault check, then pollFn, until
+// descriptorPoller reports completion or the response timeout elapses.
 //
-// descriptorPoller must be non-nil: it carries the awaited correlation id and captured
-// descriptor state.
+// The loop accepts a matching RecordingDescriptor or a non-OK
+// ControlResponse. A list-by-id reply may carry only the descriptor.
 //
-// Uses Config.ControlResponseTimeout. When ctx carries a deadline, the effective
-// bound is the earlier of ControlResponseTimeout and ctx.Deadline().
+// descriptorPoller must be non-nil. It holds the awaited correlation id and
+// the captured descriptor.
+//
+// The response timeout is Config.ControlResponseTimeout, or ctx.Deadline()
+// when that comes first.
+//
+// Returns ErrTransportTerminating when aeronClient reports termination.
 func AwaitListRecording(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	descriptorPoller *RecordingDescriptorPoller,
+) error {
+	return awaitListRecording(
+		ctx,
+		aeronClient,
+		cfg,
+		pollFn,
+		nil,
+		descriptorPoller,
+	)
+}
+
+func awaitListRecording(
+	ctx context.Context,
+	aeronClient *aeron.Client,
+	cfg Config,
+	pollFn func() int,
+	transportFault func() error,
 	descriptorPoller *RecordingDescriptorPoller,
 ) error {
 	if descriptorPoller == nil {
@@ -39,6 +60,7 @@ func AwaitListRecording(
 		aeronClient,
 		cfg,
 		pollFn,
+		transportFault,
 		cfg.ControlResponseTimeout,
 		correlationID,
 		ListRecordingDescriptorAwaitOperation,
@@ -51,30 +73,30 @@ func AwaitListRecording(
 // offerAndAwaitListRecording offers a list-recording request until the publication
 // accepts it, then awaits the matching RecordingDescriptor or a non-OK ControlResponse.
 //
-// Java Aeron Archive list-by-id typically sends only RecordingDescriptor; some flows may
-// precede it with an OK ControlResponse. The offer retry uses ControlOfferRetryTimeout.
-// The descriptor await starts a fresh ControlResponseTimeout window so a slow offer
-// cannot starve the response wait. Var-ascii fields are cloned at descriptor latch time
-// for retention past later polls.
+// The offer retry uses ControlOfferRetryTimeout. The descriptor await starts a
+// fresh ControlResponseTimeout window so a slow offer does not shorten the
+// response wait.
 func offerAndAwaitListRecording(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
+	transportFault func() error,
 	descriptorPoller *RecordingDescriptorPoller,
 	offerFn func() (int64, bool),
 ) (codecs.RecordingDescriptorFields, error) {
 	if err := offerControlRequest(
-		ctx, aeronClient, cfg, pollFn, offerFn,
+		ctx, aeronClient, cfg, pollFn, transportFault, offerFn,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err
 	}
 
-	if err := AwaitListRecording(
+	if err := awaitListRecording(
 		ctx,
 		aeronClient,
 		cfg,
 		pollFn,
+		transportFault,
 		descriptorPoller,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err

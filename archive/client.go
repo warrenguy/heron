@@ -17,43 +17,27 @@ import (
 //
 // Poll never polls the underlying pollers directly and never calls DoWork.
 //
-// Recording signals drop while Client has no session handler and no open
-// AsyncStartRecording or AsyncExtendRecording. Config.RecordingSignalHandler
-// or SetRecordingSignalHandler sets the session handler. The session handler
-// receives signals on Poll and on every blocking control await that polls
-// through it. *AwaitSignal methods install a per-call tracker for the proof
-// signal instead.
+// Recording signals drop while Client does not hold a session handler, an
+// open AsyncStartRecording, or an open AsyncExtendRecording.
+// Config.RecordingSignalHandler or SetRecordingSignalHandler sets the session
+// handler. The session handler receives signals on Poll and on every blocking
+// control await that polls through it. *AwaitSignal methods install a per-call
+// tracker for the proof signal instead.
 //
 // Client holds at most one pending signal tracker. NewAsyncStartRecording and
 // NewAsyncExtendRecording install the tracker of their handle. Poll and
 // ListRecording send each signal to the session handler, then to that
 // tracker. AsyncStartRecording lists the caller rules.
 //
-// ListRecording uses a descriptor-mode poll so its OK response routes to the
-// descriptor poller rather than the session control-response poller.
-// NewAsyncListRecording lists one recording without blocking. Poll feeds its
-// descriptor and control response. AsyncListRecording lists the caller rules.
+// Close releases the control publication and subscription. Close also releases
+// the Aeron client when Connect created it. Close is idempotent.
 //
-// StopRecordingByIdentity stops a recording by its recording id and blocks.
-// NewAsyncStopRecordingByIdentity sends the same request without blocking.
-// Poll feeds its control response. AsyncStopRecordingByIdentity lists the
-// caller rules.
+// Poll and the blocking calls close the session when they observe a fault on
+// the Connect-owned transport client. The blocking call that observes the
+// fault returns the cause. TransportFault then returns the cause.
 //
-// Replicate starts a replication from another archive and blocks until the
-// reply. NewAsyncReplicate sends the same request without blocking. Its
-// handle folds the recording signals that the session handler routes to it.
-// StopReplication and NewAsyncStopReplication stop a replication by id.
-// AsyncReplicate lists the caller rules.
-//
-// One FragmentAssembler is session-owned and reused across polls.
-//
-// Close releases the control publication and subscription, and the Aeron client when
-// Connect created it; it is idempotent.
-//
-// A fault that terminates the Connect-owned transport client closes the
-// session on the next poll. TransportFault then returns the cause. A blocking
-// call in flight returns its own offer or timeout error. A caller-supplied
-// client keeps the session open.
+// On a caller-supplied transport client, a blocking call returns
+// ErrTransportTerminating. The session stays open.
 //
 // Not safe for concurrent use.
 type Client struct {
@@ -245,6 +229,27 @@ func (client *Client) closeOnTransportFault() bool {
 	client.transportFaultCause = cause
 	_ = client.Close()
 	return true
+}
+
+// transportFaultError returns the error that ends a blocking call after a
+// transport fault. Returns nil when a transport fault is not pending. Closes
+// the session on an owned transport client fault.
+//
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe from
+// other goroutines. Must not run inside a transport client callback.
+func (client *Client) transportFaultError() error {
+	if client.ownsAeronClient {
+		client.closeOnTransportFault()
+		return client.transportFaultCause
+	}
+	return transportTerminationSentinel(client.aeronClient)
+}
+
+func transportTerminationSentinel(aeronClient *aeron.Client) error {
+	if aeronClient.IsTerminating() {
+		return ErrTransportTerminating
+	}
+	return nil
 }
 
 // IsClosed reports whether Close has been invoked.
@@ -443,25 +448,20 @@ func (client *Client) StartRecordingAwaitSignal(
 // ExtendRecordingAwaitSignal offers an ExtendRecordingRequest2 and blocks until
 // tracker latches the correlated EXTEND RecordingSignalEvent.
 //
-// Returns the recording id the caller asked to extend. No new recording id is
-// assigned.
+// The returned id is the recording id the caller asked to extend. The archive
+// does not assign a new recording id.
 //
 // Behaviour:
-//   - the proof check reads tracker before the control response
-//   - a latched EXTEND wins when both are present
+//   - a matching OK alone does not complete the wait. The archive sends OK
+//     before catalog image validation
+//   - a latched EXTEND completes the wait. The archive sends EXTEND only after
+//     that validation passes
 //   - ERROR fails the wait only when EXTEND is not yet latched
-//   - a matching OK alone does not complete the wait
-//   - the archive replies OK once the recording subscription is added
-//   - OK arrives before any image exists and before catalog image validation
-//   - the archive sends EXTEND only after that validation passes
-//   - latched EXTEND is the proof the extend took effect
 //
 // tracker must be non-nil and built with the same recordingID passed to this
 // method:
 //   - NewExtendSignalTracker filters EXTEND by that id
 //   - a mismatch ignores a real EXTEND and the wait times out
-//   - the tracker carries the EXTEND signal proof and is dereferenced on every
-//     proof check
 //
 // autoStop true:
 //   - releases the recording subscription when the recording session ends
@@ -480,16 +480,18 @@ func (client *Client) StartRecordingAwaitSignal(
 //   - the extend may still have taken effect
 //   - the caller owns the cleanup
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe
+// from other goroutines.
 //
-// Blocks the invoker. Drives the transport client while it waits.
+// Drives the transport client while it waits.
 //
 // Returns an error when:
-//   - the extend request cannot be offered within the offer bound
+//   - the client cannot offer the extend request within the offer bound
 //   - the archive refuses the extend, including ErrorUnknownRecording,
 //     ErrorActiveRecording, ErrorActiveSubscription, and ErrorInvalidExtension
-//   - no correlated EXTEND signal arrives within the response bound
-//   - ctx is done before proof is received
+//   - a correlated EXTEND signal does not arrive within the response bound
+//   - the transport client terminates
+//   - ctx is done before the proof arrives
 func (client *Client) ExtendRecordingAwaitSignal(
 	ctx context.Context,
 	recordingID int64,
@@ -641,22 +643,23 @@ func (client *Client) StopReplay(ctx context.Context, replaySessionID int64) err
 // recording start position removes every segment and leaves the catalog entry
 // in place. It does not invalidate the recording.
 //
-// Concurrency: invoker-only. Blocks the invoker until the reply arrives or the
-// bound expires.
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe
+// from other goroutines. Blocks until the reply arrives, the bound expires,
+// or the transport client terminates.
 //
 // Returns the deleted segment count from the reply RelevantID on OK. Returns
-// ctx.Err() when the context is done before a response is received. Returns an
+// ctx.Err() when the context is done before a response arrives. Returns an
 // *Exception when the archive refuses:
 //   - ErrorActiveRecording: recording still running
 //   - ErrorInvalidPosition: position below start, above stop, or not aligned
 //     to logbuffer.FrameAlignment
-//   - ErrorUnknownRecording: recordingID names no recording
+//   - ErrorUnknownRecording: recordingID does not name a recording
 //   - ErrorGeneric: another delete is in progress for recordingID, or position
 //     is frame-aligned but not a data-header boundary
 //
-// The recording is unchanged on every error except the data-header one:
-// the archive lowers the catalog stop position before that check, so the
-// extent is truncated while segment bytes above it remain.
+// The recording is unchanged on every refusal except the data-header one.
+// The archive lowers the catalog stop position before that check. The extent
+// shrinks while segment bytes above it remain.
 func (client *Client) TruncateRecording(
 	ctx context.Context,
 	recordingID int64,

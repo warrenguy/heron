@@ -6,11 +6,9 @@ import "github.com/warrenguy/luas/archive/codecs/archivewire"
 // recording. The control also resolves stop positions for prepare and
 // reports the STOP signal of the current recording.
 //
-// Concurrency: invoker-only. StartLogRecording, StopLogRecording,
-// PollStopLogRecording, StopPositionFor, and ConsumeStopSignal run on the
-// [Agent.DoWork] goroutine. StartLogRecording, StopLogRecording, and
-// StopPositionFor block until the archive replies or the deadline expires.
-// PollStopLogRecording, IsActive, and ConsumeStopSignal never block.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines. PollStopLogRecording, IsActive, and
+// ConsumeStopSignal never block.
 //
 // An implementation must:
 //   - cap every wait on StartLogRecording, StopLogRecording, and
@@ -18,14 +16,14 @@ import "github.com/warrenguy/luas/archive/codecs/archivewire"
 //   - drive the transport client while those methods wait
 //
 // Lifetime: the implementation outlives the [Agent] method calls that use
-// the control. The module wires the control after the agent is built and
-// clears the control before the archive client closes.
+// the control. The module wires the control after it builds the agent. The
+// module clears the control before the archive client closes.
 //
-// Ownership: implementation does not own the [Agent] or a transport handle.
+// Ownership: the implementation does not own the [Agent] or a transport handle.
 // The module owns the archive control client and closes it.
 type LogRecordingControl interface {
-	// StartLogRecording starts or extends recording this member's cluster log
-	// and returns the catalog recording id from the proof signal, not the
+	// StartLogRecording starts or extends recording this member's cluster log.
+	// Returns the catalog recording id from the proof signal, not the
 	// subscription registration id.
 	//
 	// sourceLocation must be:
@@ -44,19 +42,24 @@ type LogRecordingControl interface {
 	// Catchup joins pass the catchup destination channel. Extend then sees the
 	// catchup image join position, not a late-join live image.
 	//
-	// Concurrency: invoker-only. Blocks the invoker until the START or EXTEND
-	// signal arrives or the bound expires.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines. Blocks until the START or EXTEND signal arrives,
+	// the bound expires, or the transport client terminates.
 	//
 	// Returns an error when:
-	//   - a prior unstopped recording cannot be drained
-	//   - the start or extend request cannot be offered within the offer bound
+	//   - the control cannot drain a prior unstopped recording
+	//   - the control cannot offer the start or extend request within the offer
+	//     bound
 	//   - the archive refuses the start or extend
-	//   - no correlated START or EXTEND signal arrives within the response bound
+	//   - a correlated START or EXTEND signal does not arrive within the response
+	//     bound
+	//   - the transport client terminates. The error matches
+	//     archive.ErrTransportTerminating
 	//
 	// On error:
-	//   - the implementation has already attempted a bounded stop for the
-	//     channel and stream it offered
-	//   - a clean rollback leaves no archive recording subscription
+	//   - the implementation has attempted a bounded stop for the channel and
+	//     stream it offered
+	//   - a clean rollback does not leave an archive recording subscription
 	//   - a dirty rollback keeps the start channel so a later StopLogRecording
 	//     or module Close can still offer stop
 	//   - the returned id is meaningless
@@ -69,19 +72,23 @@ type LogRecordingControl interface {
 		err error,
 	)
 
-	// StopLogRecording stops the recording StartLogRecording started. A known
-	// catalog id stores the stop position for StopPositionFor.
+	// StopLogRecording stops the recording StartLogRecording started. With a
+	// known catalog id, the control stores the stop position for StopPositionFor.
 	//
 	// Abandons a pending PollStopLogRecording attempt before the blocking
 	// drain. Idempotent.
 	//
-	// Concurrency: invoker-only. Blocks the invoker until the stop proof arrives
-	// or the bound expires.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines. Blocks until the stop proof arrives, the bound
+	// expires, or the transport client terminates.
 	//
 	// Returns an error when:
-	//   - the stop request cannot be offered within the offer bound
-	//   - known catalog id and no STOP signal within the response bound
-	//   - known catalog id and catalog read cannot resolve a stop position
+	//   - the control cannot offer the stop request within the offer bound
+	//   - known catalog id and the STOP signal does not arrive within the
+	//     response bound
+	//   - known catalog id and the catalog read cannot resolve a stop position
+	//   - the transport client terminates. The error matches
+	//     archive.ErrTransportTerminating
 	//
 	// On error the recording may still be running.
 	StopLogRecording() error
@@ -90,20 +97,21 @@ type LogRecordingControl interface {
 	// recording StartLogRecording started, or a recovered term recording by
 	// identity. nowNs is the duty-cycle deadline clock.
 	//
-	// The identity stop runs only when no start channel needs a stop and the
-	// control stores no stop for the term recording. The poll then stores the
-	// catalog stop for that id.
+	// The identity stop runs only when the control does not need to stop a start
+	// channel and does not store a stop for the term recording. The poll then
+	// stores the catalog stop for that id.
 	//
 	// Never blocks. Never calls DoWork. Never calls archive Poll.
 	//
-	// [Agent.PrepareForNewLeadership] uses this poll. StopLogRecording stays
-	// the blocking drain for module Close and start-time rollback.
+	// [Agent.PrepareForNewLeadership] uses this poll. StopLogRecording is the
+	// blocking drain for module Close and start-time rollback.
 	//
-	// Concurrency: invoker-only.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines.
 	//
 	// Returns:
-	//   - true, nil: stop confirmed, identity catalog stop stored, or nothing
-	//     needed stop
+	//   - true, nil: stop confirmed, identity catalog stop stored, or the control
+	//     does not need a stop
 	//   - false, nil: poll again
 	//   - false, err: fail closed. A later poll starts a fresh attempt
 	//
@@ -124,7 +132,8 @@ type LogRecordingControl interface {
 	//   - true when stop failed after a live start or extend so a later stop
 	//     can retry
 	//
-	// Concurrency: invoker-only.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines.
 	IsActive() bool
 
 	// ConsumeStopSignal takes the STOP mark. The archive STOP signal for the
@@ -132,11 +141,12 @@ type LogRecordingControl interface {
 	//
 	// Never blocks. Never calls archive Poll.
 	//
-	// Concurrency: invoker-only.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines.
 	//
 	// Returns:
 	//   - stopPosition, true: a STOP arrived since the last call
-	//   - recordinglog.NullPosition, false: no STOP arrived
+	//   - recordinglog.NullPosition, false: a STOP did not arrive
 	ConsumeStopSignal() (
 		stopPosition int64,
 		stopped bool,
@@ -146,24 +156,20 @@ type LogRecordingControl interface {
 	// recordingID.
 	//
 	// Behaviour:
-	//   - same id as the stored catalog id and nothing pending: returns the
-	//     stored stop position. No catalog read. A clean stop, a successful
-	//     truncate, an identity catalog stop, or a plan seed stores the id. A
-	//     later clean stop overwrites a truncate store.
+	//   - same id as the stored catalog id and a stop is not pending: returns
+	//     the stored stop position. Does not read the catalog. A clean stop, a
+	//     successful truncate, an identity catalog stop, or a plan seed stores
+	//     the id. A later clean stop overwrites a truncate store.
 	//   - any other case: reads the archive catalog once. Does not store that
 	//     read.
-	//   - same id while stop still pending: takes the catalog path. Errors only
-	//     when the catalog read fails or reports no stop position.
 	//
-	// recordingID must be a non-negative catalog recording id.
-	//
-	// Concurrency: invoker-only. Blocks the invoker for at most one bounded
-	// catalog read.
+	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+	// from other goroutines. Blocks for at most one bounded catalog read.
 	//
 	// Returns an error when:
 	//   - recordingID is negative
 	//   - the catalog read fails
-	//   - the catalog reports no stop position for recordingID
+	//   - the catalog does not report a stop position for recordingID
 	//
 	// On error the caller must not substitute another position.
 	StopPositionFor(recordingID int64) (
