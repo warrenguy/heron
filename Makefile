@@ -179,7 +179,7 @@ $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
 $(eval $(call sbe-stale-check,-archive,archive/codecs,archivewire))
 $(eval $(call sbe-stale-check,-nodestate,cluster/election,nodewire))
 
-INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java,cluster_mixed,archive_live
+INTEGRATION_LINT_TAGS := integration,java_interop,cluster_sbe,cluster_java,archive_java,cluster_mixed,archive_live,cluster_soak
 
 .PHONY: lint lint-golangci lint-shell goimports gofumpt
 lint: ## golangci-lint and shellcheck
@@ -375,11 +375,23 @@ clean: ## Remove coverage bench artifacts and bin build outputs
 	rm -rf $(COVERAGE_DIR)
 	rm -f $(COVERAGE_PROFILE) coverage.html
 	rm -rf bin
+	rm -rf .artifacts
 	find . -type d -path '*/testdata/rapid' -prune -exec rm -rf {} +
 
 .PHONY: test-integration aeronmd
 test-integration: bin/aeronmd ## Live-driver integration tests
 	go test -timeout=$(TEST_TIMEOUT) -race -count=1 -tags=integration ./test/integration/...
+
+SOAK_ARTIFACT_DIR := $(ROOT)/.artifacts/soak
+SOAK_TEST_TIMEOUT ?= 55m
+
+.PHONY: test-soak
+test-soak: ## Live: fault-network checks
+	mkdir -p $(SOAK_ARTIFACT_DIR)
+	go test -exec $(ROOT)/scripts/soak-namespace.sh -timeout=$(SOAK_TEST_TIMEOUT) \
+		-v -race -count=1 -tags=integration,cluster_soak \
+		-artifacts -outputdir=$(SOAK_ARTIFACT_DIR) \
+		-run '^TestFaultNetwork_' ./test/integration/cluster_soak/
 
 JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml

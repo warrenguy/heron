@@ -25,6 +25,7 @@ worktrees/
 .bench/
 
 # Test artifacts
+.artifacts/
 **/testdata/rapid/
 **/testdata/sim/failures/
 **/*.fail

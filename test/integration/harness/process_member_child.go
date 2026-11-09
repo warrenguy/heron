@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -28,13 +29,18 @@ const ProcessMemberEnv = "LUAS_PROCESS_MEMBER"
 // ProcessMemberSpec is the JSON value of ProcessMemberEnv.
 //
 // StatusIntervalMs is the wall-time gap between status records. Zero writes a
-// status record on every sample.
+// status record on every sample. An empty Workload selects the sequence
+// service. LogChannel and ReplicationChannel replace the loopback channels
+// when set.
 type ProcessMemberSpec struct {
-	MemberID         int32
-	MembersString    string
-	ClusterDir       string
-	AeronDir         string
-	StatusIntervalMs int
+	MemberID           int32
+	MembersString      string
+	ClusterDir         string
+	AeronDir           string
+	StatusIntervalMs   int
+	Workload           string
+	LogChannel         string
+	ReplicationChannel string
 }
 
 // RunProcessMemberIfChild returns at once when ProcessMemberEnv is empty. A
@@ -84,28 +90,41 @@ type childMember struct {
 	module     *cluster.ConsensusModule
 	container  *service.Container
 	runner     *cluster.Runner
-	seq        *sequenceService
+	svc        childService
 	sink       *statusSink
 	interval   time.Duration
 	nextStatus time.Time
 }
 
-// openChildMember closes what it already opened when a step fails.
+type childService interface {
+	service.ClusteredService
+	DecodeError() error
+	appliedCount() int64
+	applyDigest() uint64
+	echoFailures() int64
+}
+
 func openChildMember(
 	ctx context.Context,
 	spec ProcessMemberSpec,
 	sink *statusSink,
 ) (*childMember, error) {
+	svc, err := newChildService(spec.Workload, sink)
+	if err != nil {
+		return nil, err
+	}
+
 	m := &childMember{
-		seq:      &sequenceService{sink: sink},
+		svc:      svc,
 		sink:     sink,
 		interval: time.Duration(spec.StatusIntervalMs) * time.Millisecond,
 	}
 
 	cfg := MemberClusterConfig(spec.MemberID, spec.MembersString, spec.ClusterDir, spec.AeronDir)
 	cfg.ServiceCount = 1
+	cfg.LogChannel = cmp.Or(spec.LogChannel, cfg.LogChannel)
+	cfg.ReplicationChannel = cmp.Or(spec.ReplicationChannel, cfg.ReplicationChannel)
 
-	var err error
 	m.module, err = cluster.OpenConsensusModule(ctx, cluster.ConsensusModuleDeps{Config: cfg})
 	if err != nil {
 		return nil, fmt.Errorf("open consensus module: %w", err)
@@ -113,7 +132,7 @@ func openChildMember(
 
 	m.container, err = service.Open(service.Config{
 		Aeron:             m.module.Client(),
-		Service:           m.seq,
+		Service:           m.svc,
 		CommittedPosition: m.module.CommitPosition,
 		Archive:           &archive.Config{},
 		Recovery:          &service.RecoveryConfig{},
@@ -184,22 +203,70 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 		}
 		work := m.runner.DoWork() + serviceAgent.DoWork(clock())
 
-		failure := serviceAgent.ServiceFailure()
-		if client.IsTerminating() {
-			failure = errors.Join(cluster.ErrTransportTerminating, failure)
-		}
+		exit := chooseDutyLoopExit(
+			client.IsTerminating(),
+			agent.TerminationError(),
+			serviceAgent.ServiceFailure(),
+			m.svc.DecodeError(),
+		)
+		if exit != nil {
+			code := 3
 
-		if failure != nil {
-			m.sink.write(memberRecord{Exit: &MemberExit{Error: failure.Error()}})
-			return 3
-		}
+			if exit.Terminated {
+				code = 4
 
-		if err := agent.TerminationError(); err != nil {
-			return m.sink.writeExit(errors.Join(err, m.close()))
+				if err := m.closeWithin(10 * time.Second); err != nil {
+					fmt.Fprintf(os.Stderr, "close: %v\n", err)
+				}
+			}
+
+			m.sink.write(memberRecord{Exit: exit})
+			return code
 		}
 
 		m.sampleStatus(true)
 		idle.Idle(work)
+	}
+}
+
+// chooseDutyLoopExit returns the exit record for one cycle's conditions. It
+// returns nil when the loop continues.
+func chooseDutyLoopExit(
+	transportTerminating bool,
+	terminationError, serviceFailure, decodeError error,
+) *MemberExit {
+	switch {
+	case transportTerminating:
+		return &MemberExit{Error: cluster.ErrTransportTerminating.Error()}
+
+	case terminationError != nil:
+		return &MemberExit{Error: terminationError.Error(), Terminated: true}
+
+	case serviceFailure != nil:
+		return &MemberExit{Error: serviceFailure.Error()}
+
+	case decodeError != nil:
+		return &MemberExit{Error: ExitTextDecodeRequest + ": " + decodeError.Error()}
+
+	default:
+		return nil
+	}
+}
+
+func (m *childMember) closeWithin(bound time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- m.close()
+	}()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("process member: close bound %s elapsed", bound)
 	}
 }
 
@@ -237,6 +304,8 @@ func (m *childMember) readyRecord() memberRecord {
 func (m *childMember) statusRecord(started bool) memberRecord {
 	module := m.module
 	agent := module.Agent()
+	logSession, logBound := logSessionID(module.LogStreams())
+
 	return memberRecord{
 		Status: &MemberStatus{
 			Started:             started,
@@ -251,23 +320,25 @@ func (m *childMember) statusRecord(started bool) memberRecord {
 			LastElectionTrigger: agent.LastElectionTrigger(),
 			LocalLogRecordingID: agent.LocalLogRecordingID(),
 			RecordingActive:     agent.IsRecordingActive(),
-			LogSessionID:        logSessionID(module.LogStreams()),
+			LogPublicationBound: logBound,
+			LogSessionID:        logSession,
 			LogImageSessions:    logImageSessions(module.LogStreams()),
 			ServiceLogPosition:  m.container.Agent().LogPosition(),
-			AppliedCount:        m.seq.applied,
-			EchoFailures:        m.seq.echoFailures,
+			AppliedCount:        m.svc.appliedCount(),
+			EchoFailures:        m.svc.echoFailures(),
+			ApplyDigest:         m.svc.applyDigest(),
 		},
 	}
 }
 
-// logSessionID returns the log publication session id, or 0 when the
-// publication is unbound.
-func logSessionID(streams *cluster.LogStreams) int32 {
+// logSessionID returns the log publication session id and whether that
+// publication is bound.
+func logSessionID(streams *cluster.LogStreams) (int32, bool) {
 	pub := streams.Publication()
 	if pub == nil {
-		return 0
+		return 0, false
 	}
-	return pub.SessionID()
+	return pub.SessionID(), true
 }
 
 func logImageSessions(streams *cluster.LogStreams) []int32 {
@@ -306,12 +377,10 @@ func (s *statusSink) writeExit(err error) int {
 	return 1
 }
 
-// sequenceService reports the leading sequence of each session message on the
-// status pipe. It then echoes the message back to its session.
 type sequenceService struct {
 	sink         *statusSink
 	applied      int64
-	echoFailures int64
+	failedEchoes int64
 }
 
 var _ service.ClusteredService = (*sequenceService)(nil)
@@ -323,6 +392,14 @@ func (s *sequenceService) SessionOpen(service.ClientSession, int64) {}
 func (s *sequenceService) SessionClose(service.ClientSession, int64, clusterwire.CloseReason) {}
 
 func (s *sequenceService) TimerEvent(int64, int64) {}
+
+func (s *sequenceService) DecodeError() error { return nil }
+
+func (s *sequenceService) appliedCount() int64 { return s.applied }
+
+func (s *sequenceService) applyDigest() uint64 { return 0 }
+
+func (s *sequenceService) echoFailures() int64 { return s.failedEchoes }
 
 func (s *sequenceService) SessionMessage(session service.ClientSession, _ int64, payload []byte) {
 	if len(payload) < 8 {
@@ -346,6 +423,6 @@ func (s *sequenceService) SessionMessage(session service.ClientSession, _ int64,
 	}
 
 	if result < 0 {
-		s.echoFailures++
+		s.failedEchoes++
 	}
 }

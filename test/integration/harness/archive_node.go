@@ -141,7 +141,7 @@ func resolveArchiveRuntimeOrSkip(t testing.TB) (javaPath, jarPath string) {
 	return javaPath, jarPath
 }
 
-// startArchiveNodeProcess launches one Archive server and waits for the ready
+// startArchiveNodeProcess launches one Archive server. Waits for the ready
 // marker.
 //
 // Concurrency: safe from a worker goroutine. Does not use testing.TB.
@@ -154,13 +154,59 @@ func startArchiveNodeProcess(
 	javaPath string,
 	jarPath string,
 ) (*ArchiveNode, error) {
+	return startArchiveNodeLogged(
+		aeronDir,
+		archiveDir,
+		controlChannel,
+		javaPath,
+		jarPath,
+		"",
+		archiveReadyTimeout,
+	)
+}
+
+// startArchiveNodeLogged launches one Archive server.
+//
+// An empty logPath discards the server's output. Otherwise the server appends
+// standard output and standard error to logPath.
+//
+// Ownership: caller owns Stop.
+func startArchiveNodeLogged(
+	aeronDir string,
+	archiveDir string,
+	controlChannel string,
+	javaPath string,
+	jarPath string,
+	logPath string,
+	readyTimeout time.Duration,
+) (*ArchiveNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := javaMainCommand(ctx, javaPath, jarPath, archiveNodeMainClass)
 	cmd.Env = buildArchiveCmdEnv(aeronDir, archiveDir, controlChannel)
 
-	if err := cmd.Start(); err != nil {
+	var logFile *os.File
+
+	if logPath != "" {
+		var openErr error
+		logFile, openErr = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+
+		if openErr != nil {
+			cancel()
+			return nil, fmt.Errorf("archive log: %w", openErr)
+		}
+
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+
+	startErr := cmd.Start()
+
+	// The child holds its own descriptor. Close rejects a nil file.
+	closeFiles(logFile)
+
+	if startErr != nil {
 		cancel()
-		return nil, fmt.Errorf("start archive node: %w", err)
+		return nil, fmt.Errorf("start archive node: %w", startErr)
 	}
 
 	node := &ArchiveNode{
@@ -174,11 +220,12 @@ func startArchiveNodeProcess(
 	}()
 
 	readyPath := filepath.Join(archiveDir, ArchiveReadyMarker)
-	data, err := waitArchiveReady(node, readyPath, archiveReadyTimeout)
+	data, err := waitArchiveReady(node, readyPath, readyTimeout)
 	if err != nil {
 		node.Stop()
 		return nil, fmt.Errorf("archive ready marker: %w", err)
 	}
+
 	node.ArchiveID = string(data)
 	return node, nil
 }
