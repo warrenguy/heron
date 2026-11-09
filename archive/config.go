@@ -12,7 +12,7 @@ import (
 	"luas.fast/internal/transportfault"
 )
 
-// Config holds invoker-only Aeron Archive control client configuration.
+// Config holds Aeron Archive control client configuration.
 //
 // Normalize before ValidateForConnect and before connect.
 //
@@ -81,7 +81,7 @@ type Config struct {
 	//     each error, then calls ErrorHandler.
 	//   - A nil ErrorHandler drops errors that leave the owned client running.
 	//   - A fault that terminates the owned client closes the session on the
-	//     next poll. Client.TransportFault returns the cause.
+	//     next poll or blocking call. Client.TransportFault returns the cause.
 	AeronConfig aeron.Config
 
 	CredentialsSupplier CredentialsSupplier

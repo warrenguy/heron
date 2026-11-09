@@ -2,34 +2,36 @@ package archive
 
 import "context"
 
-// Replicate offers a ReplicateRequest2 and blocks until the archive replies.
-// The archive this client connects to replicates sourceRecordingID from the
-// archive at sourceControlChannel and sourceControlStreamID. Build params
-// with NewReplicationParams.
+// Replicate offers a ReplicateRequest2. The call blocks until the archive
+// replies. The archive this client connects to replicates sourceRecordingID
+// from the archive at sourceControlChannel and sourceControlStreamID. Build
+// params with NewReplicationParams.
 //
 // Returns the replication id from the OK RelevantID. Stop the replication
 // with StopReplication or NewAsyncStopReplication.
 //
 // Signals: the wait polls through Client.Poll. The session handler sees
 // signals during the wait, including those behind the OK in the same poll.
-// Record them in the handler and match on the returned id afterwards.
+// Record them in the handler. Match on the returned id afterwards.
 //
 // Replication failure: the archive reports a failed replication as an ERROR
 // keyed on the replication id. Replicate does not return that ERROR. The
 // session handler sees REPLICATE_END.
 //
-// Concurrency: invoker-only. Blocks the invoker. Drives the transport client
-// while it waits. Use NewAsyncReplicate on the duty cycle.
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe
+// from other goroutines. Drives the transport client while it waits. Use
+// NewAsyncReplicate on the duty cycle.
 //
 // Returns an error when:
 //   - params fail validation. The error wraps ErrInvalidReplicationParams.
-//     Replicate does not offer
-//   - the request cannot be offered within the offer bound
+//     Replicate does not offer the request
+//   - the client cannot offer the request within the offer bound
 //   - the archive refuses the request: ErrorUnknownRecording for an unknown
 //     DestinationRecordingID, ErrorActiveRecording for an active destination
 //     recording, ErrorGeneric for a response-mode ReplicationChannel with a
 //     LiveDestination or tags
 //   - the response does not arrive within ControlResponseTimeout
+//   - the transport client terminates
 //   - ctx is done before the response
 func (client *Client) Replicate(
 	ctx context.Context,

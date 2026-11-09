@@ -159,21 +159,13 @@ var (
 // until a later stop drains the channel. A re-start drains any prior
 // unstopped channel first.
 //
-// PollStopLogRecording also stops a recovered term recording by identity. The
-// identity stop runs only when no start channel needs a stop and the control
-// stores no stop for that id.
-//
-// Start, stop, and truncate block the invoker until the archive replies or
-// ControlResponseTimeout expires. PollStopLogRecording never blocks.
-// handleRecordingSignal does not block.
-//
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork].
+// Not safe from other goroutines.
 //
 // Lifetime:
-//   - outlives the agent method calls that use the control
-//   - module clears the control before closing the archive client and before
-//     closing the recovery that owns the recording log
-//   - no TermRecordingID read happens after the recording-log close
+//   - module clears the control before closing the recovery that owns the
+//     recording log
+//   - the control does not read TermRecordingID after the recording-log close
 //   - retained context is Open's context with cancel detached
 //     (context.WithoutCancel)
 //   - Open cancel does not fail later start, stop, or truncate
@@ -341,24 +333,15 @@ func (r *logRecording) establishedTermRecordingID() int64 {
 	return r.terms.TermRecordingID()
 }
 
-// StartLogRecording starts or extends recording this member's cluster log and
-// returns the catalog recording id.
-//
-// Abandons a pending async stop first, then drains any prior unstopped
-// channel. No TERM recording id starts a fresh recording. An established
-// TERM id extends that recording.
+// StartLogRecording abandons a pending async stop first, then drains any prior
+// unstopped channel. A missing TERM recording id starts a fresh recording. An
+// established TERM id extends that recording.
 //
 // Does not refuse session ids, including -1. Structural refusal is
 // [consensus.Agent.JoinLogAsLeader] only.
 //
-// Returns an error when:
-//   - a prior unstopped recording cannot be drained
-//   - the start or extend request cannot be offered within the offer bound
-//   - the archive refuses the start or extend
-//   - no correlated START or EXTEND signal arrives within the response bound
-//
-// On error after the offer, StopLogRecording drains. ErrorUnknownSubscription
-// is a clean rollback and clears startChannel. A dirty rollback keeps
+// On error after the offer, StopLogRecording drains. A clean rollback on
+// ErrorUnknownSubscription clears startChannel. A dirty rollback keeps
 // startChannel.
 func (r *logRecording) StartLogRecording(
 	sourceLocation archivewire.SourceLocation,
