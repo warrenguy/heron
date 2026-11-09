@@ -369,6 +369,8 @@ type recordingElectionHost struct {
 	// newLogReplay overrides the done stub for Close and routing tests.
 	newLogReplay func(logPosition, appendPosition int64) election.LogReplay
 
+	terminating bool
+
 	catchupPollResult int
 	catchupPollErr    error
 
@@ -588,6 +590,8 @@ func (r *spyLogReplay) Position() int64 { return r.position }
 func (r *spyLogReplay) IsDone() bool { return r.done }
 
 func (r *spyLogReplay) Close() { r.closeCalls++ }
+
+func (h *recordingElectionHost) IsTerminating() bool { return h.terminating }
 
 func (h *recordingElectionHost) UpdateMemberLogPosition(
 	member *election.Member,

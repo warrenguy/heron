@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/aeron/cnc"
 	"github.com/warrenguy/luas/aeron/logbuffer"
+	"github.com/warrenguy/luas/atomicbuffer"
 	"github.com/warrenguy/luas/cluster/codecs"
 	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 	"github.com/warrenguy/luas/cluster/consensus"
@@ -1115,7 +1116,7 @@ func startSnapshotTakeInFlight(
 // requireReplayHeld drives r at each of nows. The replay stays held at
 // position by a pending snapshot action.
 func requireReplayHeld(
-	t *testing.T,
+	t testing.TB,
 	r *logReplay,
 	agent *consensus.Agent,
 	position int64,
@@ -1128,6 +1129,25 @@ func requireReplayHeld(
 		require.Equal(t, position, r.Position())
 		require.True(t, agent.HasPendingSnapshotAction())
 	}
+}
+
+// requireHoldExpiresAfterClose closes image and drives r. The call at closeNs
+// starts the deadline. The hold ends the member one ImageAwaitNs later.
+func requireHoldExpiresAfterClose(
+	t testing.TB,
+	r *logReplay,
+	agent *consensus.Agent,
+	watch *replayHoldWatch,
+	image *aeron.Image,
+	position, closeNs int64,
+) {
+	t.Helper()
+	aeron.ImageInternalCloseForHooks(image)
+	requireReplayHeld(t, r, agent, position, closeNs, closeNs+testImageAwaitNs-1)
+	requireReplayHoldNotExpired(t, r, watch)
+
+	r.DoWork(closeNs + testImageAwaitNs)
+	requireReplayHoldExpired(t, r, watch, position)
 }
 
 func requireBoundReplayStalls(t *testing.T, r *logReplay) {
@@ -1366,6 +1386,69 @@ func TestLogReplay_modes(t *testing.T) {
 	}
 }
 
+// replayHoldWatch stores what an expired replay hold reports.
+type replayHoldWatch struct {
+	recorder     errorRecorder
+	buffer       atomicbuffer.AtomicBuffer
+	stateCounter recordingModuleStateCounter
+}
+
+// watchReplayHold installs a real module error handler on r. The watch also
+// records the module states of r.deps.Agent.
+func watchReplayHold(t testing.TB, r *logReplay) *replayHoldWatch {
+	t.Helper()
+
+	watch := &replayHoldWatch{}
+	handler, buffer := newTestModuleErrorHandler(t, watch.recorder.record)
+	watch.buffer = buffer
+	r.deps.ErrorHandler = handler.handleError
+	r.deps.Agent.SetModuleStateCounter(&watch.stateCounter)
+	return watch
+}
+
+// requireReplayHoldNotExpired asserts that r did not report an error or end
+// the member.
+func requireReplayHoldNotExpired(t testing.TB, r *logReplay, watch *replayHoldWatch) {
+	t.Helper()
+	require.Empty(t, watch.recorder.reported)
+	require.Equal(t, int64(0), moduleErrorCount(watch.buffer))
+	require.NoError(t, r.deps.Agent.TerminationError())
+}
+
+// requireReplayHoldExpired asserts that r reported one expired hold at
+// position and ended the member.
+func requireReplayHoldExpired(t testing.TB, r *logReplay, watch *replayHoldWatch, position int64) {
+	t.Helper()
+
+	reported := watch.recorder.reported
+	require.Len(t, reported, 1)
+	require.ErrorIs(t, reported[0], ErrReplayHoldExpired)
+	require.ErrorContains(
+		t,
+		reported[0],
+		"snapshot wait at position "+strconv.FormatInt(position, 10),
+	)
+	require.Equal(t, int64(1), moduleErrorCount(watch.buffer))
+
+	agent := r.deps.Agent
+	term := agent.TerminationError()
+	require.ErrorIs(t, term, ErrReplayHoldExpired)
+	require.ErrorIs(t, term, consensus.ErrTerminated)
+
+	var wrapped *consensus.TerminationError
+	require.ErrorAs(t, term, &wrapped)
+	require.False(t, wrapped.Expected)
+
+	states := watch.stateCounter.states
+	require.Equal(t, consensus.ModuleStateClosed, agent.ModuleState())
+	require.Equal(t, consensus.ModuleStateClosed, states[len(states)-1])
+
+	require.False(t, r.IsDone())
+	require.Equal(t, position, r.Position())
+	require.Equal(t, replayHoldExpiredReason, r.reason())
+	require.True(t, agent.HasPendingSnapshotWait())
+}
+
 func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 	t.Parallel()
 
@@ -1433,7 +1516,7 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 			},
 		},
 		{
-			name: "image closed while held keeps the hold",
+			name: "image closed while held survives an ack before the deadline",
 			run: func(t *testing.T) {
 				agent := testServiceReplayAgent(0, 1)
 				var actionEnd int64
@@ -1441,6 +1524,7 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 					actionEnd = writeReplaySnapshotAction(t, image, 0)
 					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
 				})
+				watch := watchReplayHold(t, r)
 				require.Equal(t, 1, r.DoWork(0))
 
 				// Phase 1: the drain holds at the action end.
@@ -1450,18 +1534,21 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 				require.True(t, agent.HasPendingSnapshotAction())
 				require.False(t, r.IsDone())
 
-				// Phase 2: the closed image keeps the hold.
+				// Phase 2: the closed image keeps the hold until the deadline.
 				aeron.ImageInternalCloseForHooks(image)
-				requireReplayHeld(t, r, agent, actionEnd, 2, 3, 4)
+				requireReplayHeld(t, r, agent, actionEnd, 2, 2+testImageAwaitNs-1)
+				requireReplayHoldNotExpired(t, r, watch)
 
-				// Phase 3: the ack resolves the take.
+				// Phase 3: the ack before the deadline resolves the take.
 				requireAckResolvesFailedTake(t, r, agent, actionEnd)
+				requireReplayHoldNotExpired(t, r, watch)
 
 				// Phase 4: the closed image ends the replay short.
-				r.DoWork(5)
+				r.DoWork(2 + testImageAwaitNs)
 				require.True(t, r.IsDone())
 				require.Equal(t, replayEndedShortReason, r.reason())
 				require.Equal(t, actionEnd, r.Position())
+				requireReplayHoldNotExpired(t, r, watch)
 
 				// Phase 5: Close stops the replay session.
 				r.Close()
@@ -1473,10 +1560,12 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 			run: func(t *testing.T) {
 				agent := testServiceReplayAgent(0, 1)
 				r, _, image, snapshotAdder, actionEnd := startSnapshotTakeInFlight(t, agent)
+				watch := watchReplayHold(t, r)
 
 				aeron.ImageInternalCloseForHooks(image)
-				requireReplayHeld(t, r, agent, actionEnd, 3, 4, 5)
+				requireReplayHeld(t, r, agent, actionEnd, 3, 3+3*testImageAwaitNs)
 				require.Empty(t, snapshotAdder.cancelled)
+				requireReplayHoldNotExpired(t, r, watch)
 			},
 		},
 		{
@@ -1487,6 +1576,7 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 				actionEnd := writeReplaySnapshotAction(t, image, 0)
 				aeron.ImageSetEndOfStreamPositionForHooks(image, actionEnd)
 				r, _ := startBoundReplay(t, agent, image, actionEnd+64)
+				watch := watchReplayHold(t, r)
 
 				// Phase 1: the drain holds at the action end, at end of stream.
 				require.Equal(t, 1, r.DoWork(0))
@@ -1494,14 +1584,219 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 				require.True(t, agent.HasPendingSnapshotAction())
 				require.False(t, r.IsDone())
 
-				// Phase 2: the ack resolves the take.
+				// Phase 2: an open image at end of stream holds without a deadline.
+				requireReplayHeld(
+					t,
+					r,
+					agent,
+					actionEnd,
+					testImageAwaitNs,
+					2*testImageAwaitNs,
+					3*testImageAwaitNs,
+				)
+				requireReplayHoldNotExpired(t, r, watch)
+
+				// Phase 3: the ack resolves the take.
 				requireAckResolvesFailedTake(t, r, agent, actionEnd)
 
-				// Phase 3: end of stream ends the replay short.
-				r.DoWork(1)
+				// Phase 4: end of stream ends the replay short.
+				r.DoWork(3*testImageAwaitNs + 1)
 				require.True(t, r.IsDone())
 				require.Equal(t, replayEndOfStreamReason, r.reason())
 				require.Equal(t, actionEnd, r.Position())
+				requireReplayHoldNotExpired(t, r, watch)
+			},
+		},
+		{
+			name: "closed image with an unacked service ends the member",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var actionEnd int64
+				r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					actionEnd = writeReplaySnapshotAction(t, image, 0)
+					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				})
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: bind, then hold at the action end.
+				require.Equal(t, 1, r.DoWork(0))
+				requireReplayHeld(t, r, agent, actionEnd, 1)
+				require.Equal(t, actionEnd, agent.CommitPosition())
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 2: the deadline after the close ends the member.
+				requireHoldExpiresAfterClose(t, r, agent, watch, image, actionEnd, 2)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 3: a later DoWork call does not report again. The ended
+				// member does not pop a late ack.
+				require.Equal(t, 0, r.DoWork(2+testImageAwaitNs+1))
+				require.Len(t, watch.recorder.reported, 1)
+				require.Equal(t, int64(1), moduleErrorCount(watch.buffer))
+				ackReplayService(t, agent, actionEnd, 0)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 4: Close stops the replay session.
+				r.Close()
+				require.Equal(t, []int64{testReplaySessionID}, control.stopCalls)
+			},
+		},
+		{
+			name: "closed image at the stop ends the member",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var stop int64
+				r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					openEnd := writeReplayFrame(t, image, 0, encodeReplaySessionOpen(t, 3))
+					stop = writeReplaySnapshotAction(t, image, openEnd)
+					return stop
+				})
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: bind, then hold at the stop.
+				require.Equal(t, 1, r.DoWork(0))
+				requireReplayHeld(t, r, agent, stop, 1)
+				require.True(t, agent.HasPendingSnapshotWait())
+
+				// Phase 2: the deadline after the close ends the member.
+				requireHoldExpiresAfterClose(t, r, agent, watch, image, stop, 2)
+
+				// Phase 3: Close does not stop a session that reached its bound.
+				r.Close()
+				require.Empty(t, control.stopCalls)
+			},
+		},
+		{
+			name: "bound image closed with an unacked service ends the member",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				image := newBoundReplayImage(t, 0)
+				actionEnd := writeReplaySnapshotAction(t, image, 0)
+				stop := writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				r, control := startBoundReplay(t, agent, image, stop)
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: the drain holds at the action end.
+				require.Equal(t, 1, r.DoWork(0))
+				requireReplayHeld(t, r, agent, actionEnd, 1)
+				require.True(t, agent.HasPendingSnapshotWait())
+
+				// Phase 2: the deadline after the close ends the member.
+				requireHoldExpiresAfterClose(t, r, agent, watch, image, actionEnd, 2)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 3: a later DoWork call does not report again.
+				require.Equal(t, 0, r.DoWork(2+testImageAwaitNs+1))
+				require.Len(t, watch.recorder.reported, 1)
+				require.Equal(t, int64(1), moduleErrorCount(watch.buffer))
+
+				// Phase 4: Close keeps the closed bound image.
+				r.Close()
+				require.Same(t, image, agent.LogAdapter().Image())
+				require.Empty(t, control.stopCalls)
+			},
+		},
+		{
+			name: "one of two services acks before the deadline",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 2)
+				var actionEnd int64
+				r, _, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					actionEnd = writeReplaySnapshotAction(t, image, 0)
+					return writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
+				})
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: bind, then hold at the action end.
+				require.Equal(t, 1, r.DoWork(0))
+				requireReplayHeld(t, r, agent, actionEnd, 1)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+
+				// Phase 2: one service acks after the deadline starts. The
+				// partial ack does not move the deadline.
+				aeron.ImageInternalCloseForHooks(image)
+				r.DoWork(2)
+				ackReplayService(t, agent, actionEnd, 0)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+				require.True(t, agent.HasPendingSnapshotWait())
+				requireReplayHeld(t, r, agent, actionEnd, 2+testImageAwaitNs/2, 2+testImageAwaitNs-1)
+				requireReplayHoldNotExpired(t, r, watch)
+
+				// Phase 3: the original deadline still ends the member.
+				r.DoWork(2 + testImageAwaitNs)
+				requireReplayHoldExpired(t, r, watch, actionEnd)
+				require.Equal(t, 1, agent.PendingServiceAckWaits())
+			},
+		},
+		{
+			name: "image closed at end of stream keeps the hold",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				image := newBoundReplayImage(t, 0)
+				actionEnd := writeReplaySnapshotAction(t, image, 0)
+				aeron.ImageSetEndOfStreamPositionForHooks(image, actionEnd)
+				r, _ := startBoundReplay(t, agent, image, actionEnd+64)
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: the open image at end of stream holds.
+				require.Equal(t, 1, r.DoWork(0))
+				require.Equal(t, actionEnd, r.Position())
+				require.True(t, agent.HasPendingSnapshotWait())
+				require.False(t, r.IsDone())
+				require.NoError(t, agent.TerminationError())
+
+				// Phase 2: a close at end of stream holds without a deadline.
+				aeron.ImageInternalCloseForHooks(image)
+				requireReplayHeld(t, r, agent, actionEnd, 1, 1+testImageAwaitNs, 1+3*testImageAwaitNs)
+				requireReplayHoldNotExpired(t, r, watch)
+
+				// Phase 3: the ack resolves the take.
+				requireAckResolvesFailedTake(t, r, agent, actionEnd)
+
+				// Phase 4: end of stream ends the replay short.
+				r.DoWork(2 + 3*testImageAwaitNs)
+				require.True(t, r.IsDone())
+				require.Equal(t, replayEndOfStreamReason, r.reason())
+				require.Equal(t, actionEnd, r.Position())
+				requireReplayHoldNotExpired(t, r, watch)
+			},
+		},
+		{
+			name: "take outlasts the deadline after a drained close at the stop",
+			run: func(t *testing.T) {
+				agent := testServiceReplayAgent(0, 1)
+				var stop int64
+				r, control, image := startArchiveReplay(t, agent, func(image *aeron.Image) int64 {
+					openEnd := writeReplayFrame(t, image, 0, encodeReplaySessionOpen(t, 3))
+					stop = writeReplaySnapshotAction(t, image, openEnd)
+					return stop
+				})
+				aeron.ImageSetEndOfStreamPositionForHooks(image, stop)
+				watch := watchReplayHold(t, r)
+
+				// Phase 1: bind, then hold at the stop.
+				require.Equal(t, 1, r.DoWork(0))
+				requireReplayHeld(t, r, agent, stop, 1)
+				require.True(t, agent.HasPendingSnapshotWait())
+
+				// Phase 2: the drained close holds past the deadline.
+				aeron.ImageInternalCloseForHooks(image)
+				requireReplayHeld(t, r, agent, stop, 2, 2+testImageAwaitNs, 2+3*testImageAwaitNs)
+				requireReplayHoldNotExpired(t, r, watch)
+
+				// Phase 3: the late ack resolves the take.
+				requireAckResolvesFailedTake(t, r, agent, stop)
+
+				// Phase 4: the replay finishes at the stop.
+				r.DoWork(3 + 3*testImageAwaitNs)
+				require.True(t, r.IsDone())
+				require.Empty(t, r.reason())
+				require.Equal(t, stop, r.Position())
+				requireReplayHoldNotExpired(t, r, watch)
+
+				// Phase 5: Close does not stop a session that reached its bound.
+				r.Close()
+				require.Empty(t, control.stopCalls)
 			},
 		},
 		{
@@ -1512,13 +1807,15 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 				actionEnd := writeReplaySnapshotAction(t, image, 0)
 				stop := writeReplayFrame(t, image, actionEnd, encodeReplaySessionOpen(t, 3))
 				r, _ := startBoundReplay(t, agent, image, stop)
+				watch := watchReplayHold(t, r)
 
 				// Phase 1: the drain holds at the action end.
 				require.Equal(t, 1, r.DoWork(0))
 				require.Equal(t, actionEnd, r.Position())
 				require.True(t, agent.HasPendingSnapshotAction())
 
-				// Phase 2: the hold outlasts three stall timeouts.
+				// Phase 2: the hold outlasts three stall timeouts. An open
+				// image does not end the member.
 				requireReplayHeld(
 					t,
 					r,
@@ -1528,6 +1825,7 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 					2*testImageAwaitNs,
 					3*testImageAwaitNs,
 				)
+				requireReplayHoldNotExpired(t, r, watch)
 
 				// Phase 3: the ack clears the hold. The drain reaches the stop.
 				ackReplayService(t, agent, actionEnd, 0)
@@ -1536,6 +1834,7 @@ func TestLogReplay_holdsAtSnapshotWait(t *testing.T) {
 				require.True(t, r.IsDone())
 				require.Empty(t, r.reason())
 				require.Equal(t, stop, r.Position())
+				requireReplayHoldNotExpired(t, r, watch)
 			},
 		},
 	}

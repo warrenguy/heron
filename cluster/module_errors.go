@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 
@@ -91,6 +92,24 @@ func wireArchiveFailure(
 	errorHandler.terminate = agent.TerminateOnError
 	agent.SetArchiveConnection(source)
 	source.SetErrorResponseHandler(errorHandler.handleError)
+}
+
+func moduleLogReplayDeps(
+	ctx context.Context,
+	module *ConsensusModule,
+	imageAwaitNs int64,
+	errorHandler func(error),
+) logReplayDeps {
+	return logReplayDeps{
+		Ctx:            ctx,
+		Control:        module.archiveClient,
+		Adder:          module.client,
+		Agent:          module.agent,
+		ReplayChannel:  module.topology.ReplayChannel(),
+		ReplayStreamID: module.topology.ReplayStreamID(),
+		ImageAwaitNs:   imageAwaitNs,
+		ErrorHandler:   errorHandler,
+	}
 }
 
 // moduleAgentConfig builds the consensus agent config for one opened member.

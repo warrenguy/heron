@@ -170,11 +170,16 @@ type Config struct {
 	// Normalize overwrites MemberID, AppointedLeaderID, and
 	// GracefulClosedLeaderID on this struct from Config.MemberID,
 	// Config.AppointedLeaderID, and Config.GracefulClosedLeaderID. Setting those
-	// three here has no effect once Normalize runs, and Validate rejects a value
-	// that disagrees with the Config fields.
+	// three here does not take effect once Normalize runs. Validate rejects a
+	// value that disagrees with the Config fields.
 	//
 	// The indirection exists because an int32 cannot distinguish "member 0" from
-	// "unset", and election reads unset as election.NullMemberID, not zero.
+	// "unset". Election reads unset as election.NullMemberID, not zero.
+	//
+	// Election.LeaderHeartbeatTimeoutNs also caps each wait in an election log
+	// replay. A raised value slows leader failure detection. When a service still
+	// owes a snapshot ack this long after the replay image closes short of its
+	// end of stream, the member ends with [ErrReplayHoldExpired].
 	Election election.ElectionConfig
 
 	// AppointedLeaderID restricts nomination to one member. Nil means no
@@ -235,8 +240,8 @@ type Config struct {
 	//   - The Cluster Errors counter (type 212) counts each report, even a
 	//     dropped one.
 	//   - After ConsensusModule.Close the module does not count or report.
-	//   - A fatal cause or an archive STORAGE_SPACE code ends the member after
-	//     its report.
+	//   - A fatal cause, an archive STORAGE_SPACE code, or
+	//     [ErrReplayHoldExpired] ends the member after its report.
 	//
 	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
 	// other error is a fault.
@@ -244,8 +249,8 @@ type Config struct {
 	// Concurrency: ErrorHandler runs inside a duty cycle tick or a blocking
 	// archive.Client method. ErrorHandler must not:
 	//   - panic or block the duty cycle
-	//   - call a Runner, ConsensusModule or consensus.Agent method that ticks,
-	//     sends or changes state, except [consensus.Agent.TerminateOnError]
+	//   - call a Runner, ConsensusModule, or consensus.Agent method that ticks,
+	//     sends, or changes state, except [consensus.Agent.TerminateOnError]
 	//   - call archive.Client.Poll, a blocking archive.Client method, or a New*
 	//     request builder
 	//

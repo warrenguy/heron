@@ -220,6 +220,11 @@ func (e *Election) handleLeaderReplay(nowNs int64) int {
 		}
 	}
 
+	// A member that terminated during replay must not publish leadership.
+	if e.deps.Host.IsTerminating() {
+		return workCount
+	}
+
 	quorum := e.deps.Host.QuorumPositionBoundedByLeaderLog(e.appendPosition, nowNs)
 	workCount += e.publishNewLeadershipTermOnInterval(quorum, nowNs)
 	workCount += e.publishCommitPositionOnInterval(quorum, nowNs)

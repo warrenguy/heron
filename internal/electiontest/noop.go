@@ -47,6 +47,8 @@ func (NoopElectionHost) TrackCatchupCompletion(*election.Member, int64, uint8) {
 
 func (NoopElectionHost) NewLogReplay(int64, int64) election.LogReplay { return nil }
 
+func (NoopElectionHost) IsTerminating() bool { return false }
+
 func (NoopElectionHost) NewLogReplication(
 	string,
 	string,

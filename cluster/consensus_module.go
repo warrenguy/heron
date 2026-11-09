@@ -449,15 +449,12 @@ func OpenConsensusModule(
 	// Install after the election factory. Every election builds a replay helper
 	// from the same deps, whether open-time or re-entered. The factory is a
 	// closure only. No replay starts at Open.
-	replayDeps := logReplayDeps{
-		Ctx:            ctx,
-		Control:        module.archiveClient,
-		Adder:          module.client,
-		Agent:          module.agent,
-		ReplayChannel:  topology.ReplayChannel(),
-		ReplayStreamID: topology.ReplayStreamID(),
-		ImageAwaitNs:   electionCfg.LeaderHeartbeatTimeoutNs,
-	}
+	replayDeps := moduleLogReplayDeps(
+		ctx,
+		module,
+		electionCfg.LeaderHeartbeatTimeoutNs,
+		handleError,
+	)
 	module.agent.SetLogReplayFactory(func(logPosition, appendPosition int64) consensus.LogReplay {
 		r := newLogReplay(replayDeps, logPosition, appendPosition)
 		module.logReplay = r
@@ -1055,9 +1052,10 @@ func (m *ConsensusModule) IsColdStart() bool { return m.coldStart }
 // LogReplayReason returns why the most recent cluster log replay stopped.
 //
 // Behaviour:
-//   - empty string when no replay was built, a replay is still running, or a
-//     replay reached its bound
-//   - non-empty reason when a replay ended before its bound or could not start
+//   - non-empty reason when a hold expired, a replay ended before its bound,
+//     or a replay could not start
+//   - otherwise the empty string: no replay was built, a replay still runs,
+//     or a replay reached its bound
 //
 // Lifetime: keeps its value after Close. A failure dump may still read the
 // reason.
