@@ -22,7 +22,7 @@ var errStorageSpace = &archive.Exception{ErrorCode: archive.ErrorStorageSpace}
 
 // newTestCounters returns a reader over four fresh counters and its values
 // buffer.
-func newTestCounters(t *testing.T) (*cnc.CountersReader, atomicbuffer.AtomicBuffer) {
+func newTestCounters(t testing.TB) (*cnc.CountersReader, atomicbuffer.AtomicBuffer) {
 	t.Helper()
 	values := make([]byte, 4*cnc.CounterValueLength)
 	meta := make([]byte, 4*cnc.CounterMetadataLength)
@@ -35,7 +35,7 @@ func newTestCounters(t *testing.T) (*cnc.CountersReader, atomicbuffer.AtomicBuff
 // testModuleErrorCounterID of fresh counters. It also returns the values
 // buffer.
 func newTestModuleErrorHandler(
-	t *testing.T,
+	t testing.TB,
 	handler func(error),
 ) (*moduleErrorHandler, atomicbuffer.AtomicBuffer) {
 	t.Helper()
@@ -369,6 +369,30 @@ func TestModuleAgentConfig_carriesErrorHandler(t *testing.T) {
 		ServiceCount:              2,
 	}, got)
 	require.Same(t, commit, got.Commit)
+}
+
+func TestModuleLogReplayDeps_carriesErrorHandler(t *testing.T) {
+	t.Parallel()
+
+	topology := &Topology{
+		replayChannel:  "aeron:ipc?alias=replay-hold",
+		replayStreamID: 203,
+	}
+	agent := consensus.NewAgent(consensus.AgentConfig{})
+	module := &ConsensusModule{agent: agent, topology: topology}
+	const imageAwaitNs int64 = 13_000
+	var recorder errorRecorder
+
+	got := moduleLogReplayDeps(t.Context(), module, imageAwaitNs, recorder.record)
+	require.NotNil(t, got.ErrorHandler)
+	errBoom := errors.New("boom")
+	got.ErrorHandler(errBoom)
+	require.Equal(t, []error{errBoom}, recorder.reported)
+
+	require.Same(t, agent, got.Agent)
+	require.Equal(t, imageAwaitNs, got.ImageAwaitNs)
+	require.Equal(t, topology.ReplayChannel(), got.ReplayChannel)
+	require.Equal(t, topology.ReplayStreamID(), got.ReplayStreamID)
 }
 
 func TestConsensusModule_Close_stopsErrorReports(t *testing.T) {

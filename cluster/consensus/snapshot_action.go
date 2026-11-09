@@ -67,24 +67,25 @@ func (a *Agent) RequestSnapshot(nowNs int64) error {
 	return nil
 }
 
-// HasPendingSnapshotAction reports whether a snapshot action wait is queued,
-// or whether the module snapshot take of a popped wait is unresolved.
+// HasPendingSnapshotAction reports whether a snapshot action wait is queued
+// or its module snapshot take is unresolved. [Agent.HasPendingSnapshotWait]
+// reports the queued wait alone.
 //
-// Behaviour:
-//   - The leader queues the wait at append.
-//   - Any role queues the wait when its log adapter consumes the action. A
-//     leader consumes only in its election replay. The action may come from
-//     an earlier leadership term.
-//   - The pop of the wait builds the module snapshot take. The report stays
-//     true until the take resolves.
-//
-// Concurrency: invoker-only.
-//
-// Returns false once the take resolves. PrepareForNewLeadership retires the
-// wait, cancels the take and clears the pending report. An election join
-// and [Agent.CloseSnapshotTake] cancel the take too.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) HasPendingSnapshotAction() bool {
 	return a.snapshotHoldPosition() != 0
+}
+
+// HasPendingSnapshotWait reports whether a snapshot action wait is queued.
+//
+// Behaviour: the method reports false after the pop, while the module snapshot
+// take runs. [Agent.HasPendingSnapshotAction] also reports that take.
+//
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
+func (a *Agent) HasPendingSnapshotWait() bool {
+	return a.snapshotWaitPosition != 0
 }
 
 // handleClusterAction applies a committed ClusterActionRequest. logPosition

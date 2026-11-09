@@ -372,6 +372,10 @@ func (h *HostAdapter) NewLogReplay(logPosition, appendPosition int64) LogReplay 
 	return h.agent.NewLogReplay(logPosition, appendPosition)
 }
 
+func (h *HostAdapter) IsTerminating() bool {
+	return h.agent.TerminationError() != nil
+}
+
 func (h *HostAdapter) NewLogReplication(
 	leaderArchiveEndpoint, responseArchiveEndpoint string,
 	leaderRecordingID, stopPosition, nowNs int64,

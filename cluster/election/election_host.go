@@ -41,6 +41,10 @@ type ElectionHost interface {
 	)
 
 	NewLogReplay(logPosition, appendPosition int64) LogReplay
+
+	// IsTerminating reports whether the agent has recorded a termination.
+	IsTerminating() bool
+
 	NewLogReplication(
 		leaderArchiveEndpoint, responseArchiveEndpoint string,
 		leaderRecordingID, stopPosition, nowNs int64,
