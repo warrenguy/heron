@@ -27,17 +27,17 @@ const (
 	OpAppend
 )
 
+var opKindNames = [...]string{
+	OpGet:    "get",
+	OpPut:    "put",
+	OpAppend: "append",
+}
+
 func (k OpKind) String() string {
-	switch k {
-	case OpGet:
-		return "get"
-	case OpPut:
-		return "put"
-	case OpAppend:
-		return "append"
-	default:
-		return fmt.Sprintf("kind%d", uint8(k))
+	if int(k) >= len(opKindNames) || opKindNames[k] == "" {
+		return fmt.Sprintf("OpKind(%d)", uint8(k))
 	}
+	return opKindNames[k]
 }
 
 // Input is one key-value request.
