@@ -3,24 +3,20 @@
 package cluster_mixed_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"luas.fast/cluster"
-	"luas.fast/cluster/consensus"
 	"luas.fast/test/integration/cluster_java/clusterjava"
 )
 
-// TestClusterMixedJavaLeader elects a Java appointed leader and advances
-// commit across the language boundary. Runs only under
+// TestClusterMixedJavaLeader elects a Java appointed leader, then shuts down
+// the cluster from that leader. Runs only under
 // LUAS_CLUSTER_MIXED_JAVA_LEADER_COMPOSE.
 //
-// Asserts durable log recording after elect. The Go follower records the
-// received leader log into its own Archive. The recorded position reaches a
-// commit position the member observed. Each Java member's recording-position
-// counter for that log session reaches the same commit.
+// Asserts each Go and Java log recording reaches a commit position the Go
+// member observed.
 //
 // Do not add t.Parallel. This test is the single owner of compose-fixed
 // MixedAeronDir*, MixedClusterDirGo, and the PortBase 9000 unicast block.
@@ -91,6 +87,14 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 	sub := streams.Subscription()
 	require.NotNil(t, pub)
 	require.NotNil(t, sub)
+
+	// Shutdown: write SHUTDOWN on the Java leader toggle.
+	toggle, found := cluster.FindControlToggle(java[0].Reader(), 0)
+	require.True(t, found, "Java leader control toggle:\n%s", dumpMixedState(f.module, java))
+
+	position := requirePlannedShutdown(t, f, java, toggle)
+	require.Positive(t, position)
+	require.Equal(t, position, f.module.LogAdapter().Position())
 
 	require.NoError(t, f.module.Close())
 	require.True(t, pub.IsClosed(), "log publication must report closed after Close")
@@ -196,31 +200,8 @@ func TestClusterMixedGoLeader(t *testing.T) {
 	require.NoError(t, err)
 	control, found := cluster.FindControlToggle(reader, 0)
 	require.True(t, found, "Go leader control toggle")
-	require.True(t, consensus.ControlToggleShutdown.Toggle(control))
 
-	ctx, cancel := context.WithTimeout(context.Background(), clusterjava.MixedCommitBudget)
-	defer cancel()
-	runErr := f.runner.Run(ctx)
-
-	require.ErrorIs(
-		t,
-		runErr,
-		consensus.ErrClusterTerminated,
-		"shutdown did not end Run:\n%s",
-		dumpMixedState(f.module, java),
-	)
-
-	var planned *consensus.TerminationError
-	require.ErrorAs(t, runErr, &planned)
-	require.True(t, planned.Expected, planned)
-	require.Equal(t, consensus.ModuleStateClosed, f.module.ModuleState())
-
-	position := f.module.Agent().TerminationPosition()
-
-	take, takeOK := f.module.Agent().LastSnapshotTake()
-	require.True(t, takeOK)
-	require.NoError(t, take.Err)
-	require.Equal(t, position, take.LogPosition)
+	position := requirePlannedShutdown(t, f, java, control)
 	require.Equal(t, position, f.module.CommitPosition())
 
 	require.NoError(t, f.module.Close())

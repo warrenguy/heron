@@ -106,6 +106,18 @@ func TestDriverCounters_Open_andValue(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestDriverCounters_Reader(t *testing.T) {
+	t.Parallel()
+
+	counters, err := OpenDriverCounters(cnctest.WriteCncDir(t, nil))
+	require.NoError(t, err)
+	require.NotNil(t, counters.Reader())
+
+	require.NoError(t, counters.Close())
+	require.Nil(t, counters.Reader())
+	require.Nil(t, (*DriverCounters)(nil).Reader())
+}
+
 // TestDriverCounters_Value_rescansWhenCachedIDReclaimed asserts a reclaimed
 // cached id forces rescan. A reclaimed record must not keep serving its old value.
 func TestDriverCounters_Value_rescansWhenCachedIDReclaimed(t *testing.T) {

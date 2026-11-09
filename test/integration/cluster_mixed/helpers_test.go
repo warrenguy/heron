@@ -1142,6 +1142,46 @@ func awaitJavaCommitAdvance(
 	)
 }
 
+// requirePlannedShutdown writes SHUTDOWN on toggle. Asserts Run ends in a
+// planned termination with a snapshot at the termination position. Returns
+// that position.
+func requirePlannedShutdown(
+	t testing.TB,
+	f *mixedMemberFixture,
+	java []*harness.DriverCounters,
+	toggle consensus.ToggleCounter,
+) int64 {
+	t.Helper()
+
+	require.True(t, consensus.ControlToggleShutdown.Toggle(toggle), dumpMixedState(f.module, java))
+
+	ctx, cancel := context.WithTimeout(context.Background(), clusterjava.MixedCommitBudget)
+	defer cancel()
+	runErr := f.runner.Run(ctx)
+
+	require.ErrorIs(
+		t,
+		runErr,
+		consensus.ErrClusterTerminated,
+		"shutdown did not end Run:\n%s",
+		dumpMixedState(f.module, java),
+	)
+
+	var planned *consensus.TerminationError
+	require.ErrorAs(t, runErr, &planned)
+	require.True(t, planned.Expected, planned)
+	require.Equal(t, consensus.ModuleStateClosed, f.module.ModuleState())
+
+	position := f.module.Agent().TerminationPosition()
+
+	take, takeOK := f.module.Agent().LastSnapshotTake()
+	require.True(t, takeOK)
+	require.NoError(t, take.Err)
+	require.Equal(t, position, take.LogPosition)
+
+	return position
+}
+
 // appendJavaMemberCounters writes one line of Java member counters to b.
 func appendJavaMemberCounters(b *strings.Builder, memberID int, c *harness.DriverCounters) {
 	if c == nil {
