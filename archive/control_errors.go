@@ -9,9 +9,10 @@ import (
 	"luas.fast/internal/transportfault"
 )
 
-// ErrTransportTerminating reports that the connect-owned transport client has
-// terminated. Client.TransportFault and AsyncConnect.Poll wrap it with the
-// conductor cause.
+// ErrTransportTerminating reports transport-client termination. Errors from a
+// connect-owned transport client wrap the sentinel with the conductor cause.
+// Blocking calls on a caller-supplied transport client return the sentinel
+// unwrapped.
 var ErrTransportTerminating = errors.New("archive: transport client is terminating")
 
 // transportTerminatingError wraps the monitor termination cause for client

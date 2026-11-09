@@ -4,6 +4,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,10 +13,11 @@ import (
 	"luas.fast/aeron"
 	"luas.fast/archive/codecs"
 	"luas.fast/archive/codecs/archivewire"
+	"luas.fast/idlestrategy"
 )
 
 func requireControlResponseTimeout(
-	tb testing.TB,
+	tb requireTB,
 	err error,
 	wantOperation string,
 	wantCorrelationID int64,
@@ -30,8 +32,6 @@ func requireControlResponseTimeout(
 	require.Equal(tb, wantTimeout, timeoutErr.Timeout)
 }
 
-// runAwaitLoopNeverMatching drives runControlAwaitLoop with a matchFn that never
-// completes, for tests exercising the timeout and context exit paths.
 func runAwaitLoopNeverMatching(
 	ctx context.Context,
 	aeronClient *aeron.Client,
@@ -45,6 +45,7 @@ func runAwaitLoopNeverMatching(
 		aeronClient,
 		cfg,
 		pollFn,
+		nil,
 		timeout,
 		correlationID,
 		ControlResponseAwaitOperation,
@@ -52,9 +53,9 @@ func runAwaitLoopNeverMatching(
 	)
 }
 
-// TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait proves the response await
-// starts a fresh ControlResponseTimeout window after the offer succeeds: the offer consumes the
-// entire offer-phase budget, yet the already-buffered response is still matched.
+// TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait asserts that the
+// response await starts a fresh ControlResponseTimeout window after the offer
+// succeeds.
 func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 	const messageTimeout = 100 * time.Millisecond
 
@@ -87,6 +88,7 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 		harness.Client,
 		cfg,
 		poller.Poll,
+		nil,
 		poller,
 		func() (int64, bool) {
 			offerCalls++
@@ -230,6 +232,89 @@ func TestRunControlAwaitLoop_contextCanceled(t *testing.T) {
 	})
 }
 
+func TestRunControlAwaitLoop_transportFault(t *testing.T) {
+	faultErr := errors.New("transport fault")
+
+	t.Run("fault_ends_loop_before_poll", func(t *testing.T) {
+		harness := aeron.NewAsyncConnectTestHarness(t)
+		var checks, polls int
+		err := runControlAwaitLoop(
+			t.Context(),
+			harness.Client,
+			Config{IdleStrategy: idlestrategy.NoOp},
+			func() int {
+				polls++
+				return 0
+			},
+			func() error {
+				checks++
+				if checks >= 2 {
+					return faultErr
+				}
+				return nil
+			},
+			time.Minute,
+			1,
+			ControlResponseAwaitOperation,
+			func() (bool, error) { return false, nil },
+		)
+		require.ErrorIs(t, err, faultErr)
+		require.Equal(t, 1, polls)
+		require.Equal(t, 2, checks)
+	})
+
+	t.Run("latched_match_wins", func(t *testing.T) {
+		harness := aeron.NewAsyncConnectTestHarness(t)
+		matchErr := errors.New("latched match")
+		var checks, polls int
+		err := runControlAwaitLoop(
+			t.Context(),
+			harness.Client,
+			Config{IdleStrategy: idlestrategy.NoOp},
+			func() int {
+				polls++
+				return 0
+			},
+			func() error {
+				checks++
+				return faultErr
+			},
+			time.Minute,
+			1,
+			ControlResponseAwaitOperation,
+			func() (bool, error) { return true, matchErr },
+		)
+		require.ErrorIs(t, err, matchErr)
+		require.Zero(t, checks)
+		require.Zero(t, polls)
+	})
+
+	t.Run("context_error_wins", func(t *testing.T) {
+		harness := aeron.NewAsyncConnectTestHarness(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		var polls int
+		err := runControlAwaitLoop(
+			ctx,
+			harness.Client,
+			Config{IdleStrategy: idlestrategy.NoOp},
+			func() int {
+				polls++
+				return 0
+			},
+			func() error {
+				cancel()
+				return faultErr
+			},
+			time.Minute,
+			1,
+			ControlResponseAwaitOperation,
+			func() (bool, error) { return false, nil },
+		)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, polls)
+	})
+}
+
 func TestRunControlAwaitLoop_contextDeadline(t *testing.T) {
 	t.Run("preExpired", func(t *testing.T) {
 		harness := aeron.NewAsyncConnectTestHarness(t)
@@ -333,6 +418,7 @@ func TestOfferAndAwait_offerTimeout(t *testing.T) {
 			h.advanceClock()
 			return 0
 		},
+		nil,
 		h.poller,
 		func() (int64, bool) {
 			return h.proxy.TryKeepAlive(controlResponseTestControlSessionID, 1)
@@ -355,6 +441,7 @@ func TestOfferAndAwait_offerAttemptsExhausted(t *testing.T) {
 		h.client,
 		h.cfg,
 		func() int { return 0 },
+		nil,
 		h.poller,
 		func() (int64, bool) {
 			return h.proxy.TryKeepAlive(controlResponseTestControlSessionID, 1)
@@ -418,4 +505,57 @@ func TestAwaitListRecording_timeout(t *testing.T) {
 		8888,
 		time.Millisecond,
 	)
+}
+
+func newTerminatingClientAwait(t testing.TB) (
+	*aeron.AsyncConnectTestHarness,
+	Config,
+	func() int,
+) {
+	t.Helper()
+
+	harness := aeron.NewAsyncConnectTestHarness(t)
+	transmitClientTimeout(t, harness)
+
+	cfg := Config{
+		ControlResponseTimeout: time.Millisecond,
+		IdleStrategy:           idlestrategy.NoOp,
+		AeronConfig: aeron.Config{
+			NanoClock: func() int64 { return 5_000_000_000 },
+		},
+	}
+	pollFn := func() int {
+		require.Fail(t, "polled after client termination")
+		return 0
+	}
+	return harness, cfg, pollFn
+}
+
+func TestAwaitControlResponse_terminatingClient(t *testing.T) {
+	harness, cfg, pollFn := newTerminatingClientAwait(t)
+	_, err := AwaitControlResponse(
+		t.Context(),
+		harness.Client,
+		cfg,
+		pollFn,
+		nil,
+		1,
+		2,
+	)
+	require.Equal(t, ErrTransportTerminating, err)
+}
+
+func TestAwaitListRecording_terminatingClient(t *testing.T) {
+	harness, cfg, pollFn := newTerminatingClientAwait(t)
+	descriptorPoller := NewRecordingDescriptorPoller()
+	descriptorPoller.ResetAwait(8)
+
+	err := AwaitListRecording(
+		t.Context(),
+		harness.Client,
+		cfg,
+		pollFn,
+		descriptorPoller,
+	)
+	require.Equal(t, ErrTransportTerminating, err)
 }

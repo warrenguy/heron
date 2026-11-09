@@ -30,12 +30,14 @@ type ControlOfferConfig struct {
 	// PollFn optionally polls the control response subscription during retriable
 	// offer failure (for example poller.Poll). Nil skips response polling.
 	PollFn func() int
+
+	// transportFault is the session fault check. Nil tests the transport client
+	// for termination.
+	transportFault func() error
 }
 
-// controlOfferUntilPositive retries offerFn on aeron.IsIngressRetriable until success,
-// timeout, the attempt cap, or a terminal publication code. It serves in-package
-// callers without a session wrapper. Post-connect callers use
-// [Client.ControlOfferUntilPositive].
+// controlOfferUntilPositive implements [Client.ControlOfferUntilPositive] for
+// in-package callers without a session wrapper.
 //
 // Config.MessageRetryAttempts caps the offers. Zero uses
 // DefaultMessageRetryAttempts. A negative value allows one offer.
@@ -75,9 +77,11 @@ func controlOfferUntilPositive(
 	startNs := clock()
 	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, timeout)
 	defer idle.Reset()
-	doTransportWork := func() {
+	doTransportWork := func() error {
 		aeronClient.DoWork()
 		recordControlOfferRetryDoWork(aeronClient)
+
+		return checkTransportFault(ctx, aeronClient, offerCfg.transportFault)
 	}
 	var pos int64
 	attempts := 0
@@ -85,7 +89,11 @@ func controlOfferUntilPositive(
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		doTransportWork()
+
+		if err := doTransportWork(); err != nil {
+			return 0, err
+		}
+
 		pos = offerFn()
 		if pos > 0 {
 			return pos, nil
@@ -106,8 +114,11 @@ func controlOfferUntilPositive(
 			offerCfg.PollFn()
 		}
 		if pos == aeron.BackPressured {
-			doTransportWork()
+			if err := doTransportWork(); err != nil {
+				return 0, err
+			}
 		}
+
 		idle.Idle(0)
 		if clock() >= deadlineNs {
 			return 0, aeron.PreferContextError(ctx, &ControlOfferTimeoutError{Status: pos, Timeout: bound})
@@ -115,24 +126,12 @@ func controlOfferUntilPositive(
 	}
 }
 
-// ControlOfferUntilPositive retries offerFn on aeron.IsIngressRetriable until success,
-// timeout, the attempt cap, or a terminal publication code.
+// ControlOfferUntilPositive retries offerFn on aeron.IsIngressRetriable until
+// success, timeout, the attempt cap, a terminal publication code, or a
+// transport fault.
 //
-// Contract:
-//
-//   - Calls the session's Aeron client DoWork() before each offerFn invocation.
-//
-//   - On a retriable code below the attempt cap, calls cfg.PollFn when set, then
-//     paces by code. The attempt that reaches Config.MessageRetryAttempts skips
-//     PollFn and pacing.
-//
-//   - BackPressured: calls DoWork() again, then the idle strategy's Idle(0).
-//
-//   - AdminAction: calls the idle strategy's Idle(0).
-//
-//   - Calls idle.Reset() on all exit paths (success, terminal, cap, timeout). Nil
-//     cfg.IdleStrategy uses session Config.IdleStrategy when set; otherwise default.
-//     Nil cfg.NanoClock uses session AeronConfig.NanoClock when set, else wall clock.
+// Calls the session's Aeron client DoWork() before each offerFn call. Calls
+// cfg.PollFn after a retriable code below the attempt cap.
 //
 // Returns:
 //
@@ -143,14 +142,17 @@ func controlOfferUntilPositive(
 //   - [Config.MessageRetryAttempts] offers from the connected session: 0,
 //     ControlOfferAttemptsError.
 //   - [Config.ControlOfferRetryTimeout] elapsed: 0, ControlOfferTimeoutError.
-//   - Done ctx, including an earlier ctx.Deadline(): 0, ctx.Err(). Wins over the
-//     three errors above.
+//   - Transport fault: 0 and the stored cause on an owned client, or
+//     ErrTransportTerminating on a caller-supplied client.
+//   - Done ctx, including an earlier ctx.Deadline(): 0, ctx.Err(). Wins over
+//     every error above except a nil-argument error.
 //
 // Cap and deadline expired on one attempt: ControlOfferAttemptsError wins.
 //
-// Invoker-only: this method drives DoWork on behalf of the caller for the duration
-// of the retry loop only. Archive control request and response share one driver
-// client; polling the response subscription during offer retry unblocks publication
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe from
+// other goroutines.
+//
+// Polling the response subscription during offer retry unblocks publication
 // backpressure when the archive replies on the response stream.
 //
 // Example:
@@ -166,6 +168,7 @@ func (client *Client) ControlOfferUntilPositive(
 	if client == nil {
 		return 0, errNilSession
 	}
+	cfg.transportFault = client.transportFaultError
 	return controlOfferUntilPositive(
 		ctx,
 		client.aeronClient,

@@ -4,6 +4,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -924,5 +925,105 @@ func TestClient_ControlOfferUntilPositive_closedSession(t *testing.T) {
 		requireControlTerminal(t, err, aeron.Closed)
 		require.Zero(t, pos)
 		require.Equal(t, 1, seqPub.calls)
+	})
+}
+
+func TestControlOfferUntilPositive_transportFault(t *testing.T) {
+	faultErr := errors.New("transport fault")
+
+	t.Run("fault_before_first_offer", func(t *testing.T) {
+		harness := aeron.NewAsyncConnectTestHarness(t)
+		var checks, offers int
+		pos, err := controlOfferUntilPositive(
+			t.Context(),
+			harness.Client,
+			Config{},
+			ControlOfferConfig{
+				transportFault: func() error {
+					checks++
+					return faultErr
+				},
+			},
+			func() int64 {
+				offers++
+				return aeron.BackPressured
+			},
+		)
+		require.Zero(t, pos)
+		require.ErrorIs(t, err, faultErr)
+		require.Equal(t, 1, checks)
+		require.Zero(t, offers)
+	})
+
+	for _, tc := range []struct {
+		name      string
+		offer     int64
+		moveClock bool
+	}{
+		{name: "fault_after_back_pressure", offer: aeron.BackPressured},
+		{name: "fault_on_deadline_iteration", offer: aeron.BackPressured, moveClock: true},
+		{name: "fault_after_admin_action", offer: aeron.AdminAction},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const timeout = time.Millisecond
+			harness, nowNs := controlOfferRetryHarnessWithNanoClock(t, 5_000_000_000)
+			var checks, offers, polls int
+			pos, err := controlOfferUntilPositive(
+				t.Context(),
+				harness.Client,
+				Config{ControlOfferRetryTimeout: timeout},
+				ControlOfferConfig{
+					NanoClock: func() int64 { return nowNs.Load() },
+					PollFn: func() int {
+						polls++
+
+						if tc.moveClock {
+							nowNs.Add(timeout.Nanoseconds())
+						}
+						return 0
+					},
+					transportFault: func() error {
+						checks++
+						if checks >= 2 {
+							return faultErr
+						}
+						return nil
+					},
+				},
+				func() int64 {
+					offers++
+					return tc.offer
+				},
+			)
+			require.Zero(t, pos)
+			require.ErrorIs(t, err, faultErr)
+			require.Equal(t, 2, checks)
+			require.Equal(t, 1, offers)
+			require.Equal(t, 1, polls)
+		})
+	}
+
+	t.Run("context_error_wins", func(t *testing.T) {
+		harness := aeron.NewAsyncConnectTestHarness(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		var offers int
+		pos, err := controlOfferUntilPositive(
+			ctx,
+			harness.Client,
+			Config{},
+			ControlOfferConfig{
+				transportFault: func() error {
+					cancel()
+					return faultErr
+				},
+			},
+			func() int64 {
+				offers++
+				return aeron.BackPressured
+			},
+		)
+		require.Zero(t, pos)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, offers)
 	})
 }

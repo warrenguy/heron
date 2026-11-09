@@ -1692,39 +1692,31 @@ func (a *Agent) SetLogRecordingID(recordingID int64) {
 	a.localLogRecordingID = recordingID
 }
 
-// TruncateLogEntry removes every recorded byte at or above logPosition and
-// unbinds the log adapter so no position above logPosition remains.
+// TruncateLogEntry removes every recorded byte at or above logPosition.
 //
 // Behaviour:
-//   - refuses first when the control is missing, the recording is active, the
-//     recording id is null, or logPosition is misaligned
 //   - truncates the cluster log recording through [LogTruncateControl]
 //   - unbinds the log adapter at logPosition
 //   - removes the retired snapshot waits and cancelled takes above
 //     logPosition
-//   - does not write recording.log; the election lowers the term entry
+//   - does not write recording.log. The election lowers the term entry
 //   - does not stop a recording
 //
-// The truncate control stores logPosition as the recording stop position. A
-// later [Agent.PrepareForNewLeadership] derives that position, not the
-// pre-truncate extent. leadershipTermID is accepted for host-signature parity
-// and is unused.
+// TruncateLogEntry ignores leadershipTermID, which exists for host-signature
+// parity.
 //
-// Concurrency: invoker-only. Blocks the invoker for the archive reply.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines. Blocks for the archive reply.
 //
 // Returns an error when:
-//   - no [LogTruncateControl] is wired
+//   - [LogTruncateControl] is not wired
 //   - [Agent.IsRecordingActive] reports true
 //   - [Agent.LocalLogRecordingID] is the null sentinel
 //   - logPosition is negative or is not aligned to [logbuffer.FrameAlignment]
-//   - the archive refuses the truncate or the wait times out
+//   - [LogTruncateControl.TruncateLogRecording] returns an error
 //
 // On error TruncateLogEntry leaves the log adapter and the retired snapshot
-// waits untouched. The truncate control leaves the recording stop position
-// unchanged. The caller must not lower any position.
-//
-// archive.Client.TruncateRecording documents a refused truncate, including
-// the data-header partial-update case.
+// waits untouched. The caller must not lower any position.
 func (a *Agent) TruncateLogEntry(leadershipTermID, logPosition int64) error {
 	_ = leadershipTermID
 	if a.truncateControl == nil {
