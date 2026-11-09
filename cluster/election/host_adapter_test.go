@@ -1,6 +1,7 @@
 package election_test
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -971,6 +972,10 @@ func TestHostAdapter_forwardSmoke(t *testing.T) {
 	require.True(t, replay.IsDone())
 	require.Equal(t, int64(200), replay.Position())
 	require.Equal(t, 0, replay.DoWork(0))
+
+	require.False(t, host.IsTerminating())
+	agent.TerminateOnError(errors.New("fatal"))
+	require.True(t, host.IsTerminating())
 }
 
 // Asserts HostAdapter TrackCatchupCompletion delegates to the agent without

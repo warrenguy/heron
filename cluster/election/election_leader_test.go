@@ -320,6 +320,62 @@ func TestHandleLeaderReplay_doneShort(t *testing.T) {
 	require.Equal(t, 1, spy.closeCalls)
 }
 
+func TestHandleLeaderReplay_terminationStopsPublishes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name              string
+		installTerminates bool
+		workTerminates    bool
+		wantInstallSend   bool
+		wantWorkSend      bool
+	}{
+		{name: "without termination", wantInstallSend: true, wantWorkSend: true},
+		{name: "termination in replay work", workTerminates: true, wantInstallSend: true},
+		{name: "termination at replay install", installTerminates: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fx := newElectionFixture(t)
+			spy := &spyLogReplay{
+				doWork: func(int64) int {
+					if tc.workTerminates {
+						fx.host.terminating = true
+					}
+
+					return 0
+				},
+			}
+			fx.host.newLogReplay = func(int64, int64) election.LogReplay {
+				fx.host.terminating = tc.installTerminates
+				return spy
+			}
+			election.SetStateForTest(fx.election, election.ElectionStateLeaderReplay)
+			election.SetLogSessionIDForTest(fx.election, fixtureLogSessionID)
+
+			tickAndRequireSends := func(want bool) {
+				fx.publisher.Reset()
+				fx.host.publishCommitPositionCalls = nil
+				fx.advance(fx.cfg.LeaderHeartbeatIntervalNs)
+
+				_ = fx.doWork()
+
+				require.Equal(t, want, len(fx.publisher.Sent) > 0)
+				require.Equal(t, want, len(fx.host.publishCommitPositionCalls) > 0)
+			}
+
+			// Install tick.
+			tickAndRequireSends(tc.wantInstallSend)
+
+			// Replay work tick.
+			tickAndRequireSends(tc.wantWorkSend)
+		})
+	}
+}
+
 func TestHandleLeaderInit_joinLeaderErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 
