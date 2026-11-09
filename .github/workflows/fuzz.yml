@@ -49,15 +49,12 @@ jobs:
     needs: targets
     name: fuzz ${{ matrix.pkg }} ${{ matrix.name }}
     runs-on: ubuntu-24.04
-    # One target per job: a 6m cap plus the package build.
-    timeout-minutes: 15
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 42 }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
-      FUZZ_TIME: ${{ github.event_name == 'pull_request' && '45s' || '2m' }}
-      FUZZ_TIMEOUT: 6m
       FUZZ_PKG: ${{ matrix.pkg }}
       FUZZ_NAME: ${{ matrix.name }}
     steps:
@@ -81,7 +78,7 @@ jobs:
             fuzz-corpus-${{ runner.os }}-${{ env.GOARCH }}-${{ matrix.id }}-
 
       - name: Fuzz
-        run: make fuzz
+        run: make fuzz ${{ github.event_name != 'pull_request' && 'FUZZ_TIME=30m FUZZ_MINIMIZE_TIME=60s' || '' }}
 
       - name: Save fuzz corpus
         if: ${{ !cancelled() && github.event_name != 'pull_request' }}

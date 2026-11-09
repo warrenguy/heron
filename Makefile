@@ -66,8 +66,9 @@ SHELL_SCRIPTS := $$(find . -name '*.sh' -type f ! -path './.git/*' ! -path './ve
 TEST_TIMEOUT ?= 2m
 # Per-target fuzz budget (FUZZ_TIME). Default 45s. 30s timed out on heavy targets.
 FUZZ_TIME ?= 45s
-# Per-target go test -timeout for make fuzz. Covers baseline, FUZZ_TIME, and minimization.
-FUZZ_TIMEOUT ?= 5m
+# Shrink budget per new corpus entry and crasher.
+# A short budget returns workers to mutation sooner.
+FUZZ_MINIMIZE_TIME ?= 2s
 # Wall-clock cap for full check (check-static + unit + stress).
 CHECK_TIMEOUT ?= 5m
 
@@ -241,8 +242,9 @@ fuzz: ## Run all Fuzz* tests, or one with FUZZ_PKG and FUZZ_NAME
 	failed=; \
 	while read -r pkg name; do \
 		echo "fuzz $$pkg $$name"; \
-		go test -timeout=$(FUZZ_TIMEOUT) -tags=$(UNIT_TEST_TAGS) -run '^$$' \
-			-fuzz=^$$name$$ -fuzztime=$(FUZZ_TIME) $$pkg \
+		go test -tags=$(UNIT_TEST_TAGS) -run '^$$' \
+			-fuzz=^$$name$$ -fuzztime=$(FUZZ_TIME) \
+			-fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $$pkg \
 			|| failed="$$failed $$pkg:$$name"; \
 	done <<< "$$targets"; \
 	[ -z "$$failed" ] || { echo "fuzz: failed targets:$$failed" >&2; exit 1; }
