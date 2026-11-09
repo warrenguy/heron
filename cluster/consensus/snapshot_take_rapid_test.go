@@ -406,6 +406,7 @@ func TestSnapshotTake_model_rapid(t *testing.T) {
 			rt.Helper()
 			active := status == actionStatusWaiting || status == actionStatusTake
 			require.Equal(rt, active, a.HasPendingSnapshotAction(), step)
+			require.Equal(rt, status == actionStatusWaiting, a.HasPendingSnapshotWait(), step)
 			require.Equal(rt, status == actionStatusTake, a.snapshotTake != nil, step)
 			if a.snapshotTake != nil {
 				require.Equal(rt, position, a.snapshotTake.logPosition, step)

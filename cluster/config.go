@@ -235,8 +235,8 @@ type Config struct {
 	//   - The Cluster Errors counter (type 212) counts each report, even a
 	//     dropped one.
 	//   - After ConsensusModule.Close the module does not count or report.
-	//   - A fatal cause or an archive STORAGE_SPACE code ends the member after
-	//     its report.
+	//   - A fatal cause, an archive STORAGE_SPACE code, or
+	//     [ErrReplayHoldExpired] ends the member after its report.
 	//
 	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
 	// other error is a fault.
@@ -244,8 +244,8 @@ type Config struct {
 	// Concurrency: ErrorHandler runs inside a duty cycle tick or a blocking
 	// archive.Client method. ErrorHandler must not:
 	//   - panic or block the duty cycle
-	//   - call a Runner, ConsensusModule or consensus.Agent method that ticks,
-	//     sends or changes state, except [consensus.Agent.TerminateOnError]
+	//   - call a Runner, ConsensusModule, or consensus.Agent method that ticks,
+	//     sends, or changes state, except [consensus.Agent.TerminateOnError]
 	//   - call archive.Client.Poll, a blocking archive.Client method, or a New*
 	//     request builder
 	//

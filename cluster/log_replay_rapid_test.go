@@ -14,53 +14,80 @@ type progressStep struct {
 	nowNs           int64
 	adapterPosition int64
 	image           replayImageState
-	held            bool
+	hold            replayHold
 }
 
-// replayProgressModel is the pure prefix fold of the observe update rule.
-// The stall deadline folds the same way as [replayProgress.observe].
-// Invariant checks pair with the model. A shared formula bug fails an
-// invariant check. Model agreement alone lets a shared formula bug pass.
+// replayProgressModel is the pure prefix fold of the [replayProgress.observe]
+// update rule, both deadlines included. Invariant checks catch a formula bug
+// shared with the model. Model agreement alone passes that bug.
 type replayProgressModel struct {
 	startPosition  int64
 	stopPosition   int64
 	stallTimeoutNs int64
+	holdTimeoutNs  int64
 }
 
-// expect returns the position and the done flag after steps[:n+1].
-func (m *replayProgressModel) expect(steps []progressStep, n int) (int64, bool) {
+// expect returns the position, the done flag, and the expired flag after
+// steps[:n+1].
+func (m *replayProgressModel) expect(steps []progressStep, n int) (int64, bool, bool) {
 	position := m.startPosition
 	var stallDeadlineNs int64
+	var holdDeadlineNs int64
+
 	for _, step := range steps[:n+1] {
 		previous := position
 		position = min(max(position, step.adapterPosition), m.stopPosition)
+
+		if modelHoldDeadline(m.holdTimeoutNs, &holdDeadlineNs, step) {
+			return position, false, true
+		}
+
+		held := step.hold != replayHoldNone
+
 		if position >= m.stopPosition {
-			if !step.held {
-				return position, true
+			if !held {
+				return position, true, false
 			}
+
 			continue
 		}
-		if step.held {
+
+		if held {
 			stallDeadlineNs = step.nowNs + m.stallTimeoutNs
 			continue
 		}
+
 		switch {
 		case step.image != replayImageOpen:
-			return position, true
+			return position, true, false
 		case m.stallTimeoutNs == 0:
 		case position > previous || stallDeadlineNs == 0:
 			stallDeadlineNs = step.nowNs + m.stallTimeoutNs
 		case step.nowNs >= stallDeadlineNs:
-			return position, true
+			return position, true, false
 		}
 	}
-	return position, false
+
+	return position, false, false
 }
 
-// TestReplayProgress_progression_rapid asserts replayProgress.observe.
-// Position stays at or above the start and at or below the stop. done
-// marks once. A hold blocks an end below the stop and at the stop.
-// Position and done match the model.
+// modelHoldDeadline folds [replayProgress.stepHoldDeadline].
+func modelHoldDeadline(holdTimeoutNs int64, holdDeadlineNs *int64, step progressStep) bool {
+	closedAck := step.hold == replayHoldServiceAcks && step.image == replayImageClosed
+	if !closedAck {
+		*holdDeadlineNs = 0
+		return false
+	}
+
+	if *holdDeadlineNs == 0 {
+		*holdDeadlineNs = step.nowNs + holdTimeoutNs
+		return false
+	}
+
+	return step.nowNs >= *holdDeadlineNs
+}
+
+// TestReplayProgress_progression_rapid asserts the observe invariants.
 func TestReplayProgress_progression_rapid(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -77,6 +104,8 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 			stallTimeoutNs = rapid.Int64Range(1, 1<<20).Draw(rt, "stallTimeoutNs")
 		}
 
+		holdTimeoutNs := rapid.Int64Range(1, 1<<20).Draw(rt, "holdTimeoutNs")
+
 		// Draw deltas, not absolute positions. A monotonic absolute draw shrinks
 		// into cases production cannot produce (same reason as
 		// agent_rapid_test commit-position draws). The clock is the running
@@ -90,12 +119,18 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 			replayImageEndOfStream,
 			replayImageClosed,
 		})
+		holdState := rapid.SampledFrom([]replayHold{
+			replayHoldNone,
+			replayHoldServiceAcks,
+			replayHoldSnapshotTake,
+		})
+
 		for i := range steps {
 			delta := rapid.Int64Range(0, 1<<16).Draw(rt, "delta")
 			overshoot := rapid.Bool().Draw(rt, "overshoot")
 			nowDelta := rapid.Int64Range(0, 1<<21).Draw(rt, "nowDelta")
 			image := imageState.Draw(rt, "image")
-			held := rapid.Bool().Draw(rt, "held")
+			hold := holdState.Draw(rt, "hold")
 			nowNs += nowDelta
 			adapterPosition := cursor + delta
 			if overshoot {
@@ -105,7 +140,7 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 				nowNs:           nowNs,
 				adapterPosition: adapterPosition,
 				image:           image,
-				held:            held,
+				hold:            hold,
 			}
 			if adapterPosition > cursor && adapterPosition <= stopPosition {
 				cursor = adapterPosition
@@ -116,29 +151,49 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 			startPosition:  startPosition,
 			stopPosition:   stopPosition,
 			stallTimeoutNs: stallTimeoutNs,
+			holdTimeoutNs:  holdTimeoutNs,
 		}
 		p := &replayProgress{
 			startPosition:  startPosition,
 			stopPosition:   stopPosition,
 			position:       startPosition,
 			stallTimeoutNs: stallTimeoutNs,
+			holdTimeoutNs:  holdTimeoutNs,
 		}
 
 		previous := startPosition
 		var atDone int64
 		var atReason string
 		seenDone := false
-		// progressNow is the latest time the deadline restarts: the first
-		// step, a held step below the stop, or a position rise below the stop.
+		var expiredPos int64
+		var expiredReason string
+		// progressNow is the time of the latest stall deadline restart.
 		var progressNow int64
+		// closedAckStartNs is the first step of the current closed-image ack
+		// hold. Tracked apart from the model, so invariant 6 does not share
+		// its deadline formula.
+		var closedAckStartNs int64
+		inClosedAck := false
+
 		for i, step := range steps {
 			wasDone := p.done
-			p.observe(step.nowNs, step.adapterPosition, step.image, step.held)
+			wasExpired := p.holdExpired
+			closedAck := step.hold == replayHoldServiceAcks && step.image == replayImageClosed
+			if !closedAck {
+				inClosedAck = false
+			}
+
+			if closedAck && !inClosedAck {
+				inClosedAck = true
+				closedAckStartNs = step.nowNs
+			}
+
+			p.observe(step.nowNs, step.adapterPosition, step.image, step.hold)
 
 			if !wasDone {
 				rose := p.position > previous
 				belowStop := p.position < stopPosition
-				if i == 0 || (belowStop && (step.held || rose)) {
+				if i == 0 || (belowStop && (step.hold != replayHoldNone || rose)) {
 					progressNow = step.nowNs
 				}
 			}
@@ -164,18 +219,20 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 			}
 
 			// 4. A hold does not set done.
-			if !wasDone && step.held {
+			if !wasDone && step.hold != replayHoldNone {
 				require.False(rt, p.done)
 			}
 
 			// 5. Model and code agree at every step.
-			wantPos, wantDone := model.expect(steps, i)
+			wantPos, wantDone, wantExpired := model.expect(steps, i)
 			require.Equal(rt, wantPos, p.position)
 			require.Equal(rt, wantDone, p.done)
+			require.Equal(rt, wantExpired, p.holdExpired)
 
-			if p.position >= stopPosition {
+			if p.position >= stopPosition && !p.holdExpired {
 				require.Empty(rt, p.reason)
 			}
+
 			if !wasDone && p.reason == replayStalledReason {
 				require.GreaterOrEqual(rt, step.nowNs-progressNow, stallTimeoutNs)
 			}
@@ -193,6 +250,23 @@ func TestReplayProgress_progression_rapid(t *testing.T) {
 
 			if stallTimeoutNs == 0 {
 				require.NotEqual(rt, replayStalledReason, p.reason)
+			}
+
+			if wasExpired {
+				require.False(rt, p.done)
+				require.Equal(rt, expiredPos, p.position)
+				require.Equal(rt, expiredReason, p.reason)
+			}
+
+			// 6. Only a service-ack hold on an image closed short of end of
+			// stream expires. Expiry waits holdTimeoutNs.
+			if p.holdExpired && !wasExpired {
+				expiredPos = p.position
+				expiredReason = p.reason
+				require.Equal(rt, replayHoldExpiredReason, p.reason)
+				require.Equal(rt, replayHoldServiceAcks, step.hold)
+				require.Equal(rt, replayImageClosed, step.image)
+				require.GreaterOrEqual(rt, step.nowNs-closedAckStartNs, holdTimeoutNs)
 			}
 
 			previous = p.position

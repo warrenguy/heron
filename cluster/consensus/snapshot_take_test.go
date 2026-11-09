@@ -368,9 +368,11 @@ func TestSnapshotTake_recordsModuleSnapshot(t *testing.T) {
 
 	actionPos := f.request(t, nowNs)
 	require.True(t, a.HasPendingSnapshotAction())
+	require.True(t, a.HasPendingSnapshotWait())
 	f.ack(t, actionPos, 0, 77, 0)
 	result, _ := f.tickUntilResolved(t, nowNs, 1)
 	require.False(t, a.HasPendingSnapshotAction())
+	require.False(t, a.HasPendingSnapshotWait())
 
 	require.Len(t, archive.pubs, 1)
 	pub := archive.pubs[0]

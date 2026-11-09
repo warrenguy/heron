@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"luas.fast/aeron"
 	"luas.fast/archive"
@@ -25,7 +26,14 @@ const (
 	// servicesNotJoinedReason names a replay whose services did not ack the
 	// replay JoinLog before the deadline.
 	servicesNotJoinedReason = "services did not join the log replay"
+
+	replayHoldExpiredReason = "replay image closed before the services acked the snapshot action"
 )
+
+// ErrReplayHoldExpired reports an election log replay held at a snapshot
+// wait after its image closed. A service still owed its ack one ImageAwaitNs
+// later.
+var ErrReplayHoldExpired = errors.New("cluster: replay hold expired after the image closed")
 
 // replayControl is the archive control surface a cluster log replay needs.
 //
@@ -48,8 +56,9 @@ type replayControl interface {
 
 var _ replayControl = (*archive.Client)(nil)
 
-// logReplayDeps are the collaborators a cluster log replay needs. All fields
-// are required except Ctx, which takes a default when nil.
+// logReplayDeps carries the collaborators a cluster log replay needs.
+//
+// The caller must set every field except Ctx and ErrorHandler.
 type logReplayDeps struct {
 	// Ctx carries context values into the archive control calls. [newLogReplay]
 	// detaches cancel, matching the log recording control. Nil takes
@@ -75,10 +84,12 @@ type logReplayDeps struct {
 	ReplayChannel  string
 	ReplayStreamID int32
 
-	// ImageAwaitNs is the positive cap on each wait:
+	// ImageAwaitNs is the cap on each wait:
 	//   - the wait for the replay image
 	//   - the wait for the services to join, after the image bind
 	//   - in bound-image mode, each wait for the image to deliver
+	//   - a queued snapshot wait after the replay image closes short of its
+	//     end of stream
 	//
 	// The caller must set a positive ImageAwaitNs. OpenConsensusModule
 	// passes the election leader heartbeat timeout.
@@ -86,10 +97,15 @@ type logReplayDeps struct {
 	// This package does not default ImageAwaitNs. The default lives on
 	// election.ElectionConfig, which this file must not import.
 	ImageAwaitNs int64
+
+	// ErrorHandler receives [ErrReplayHoldExpired] before the replay ends the
+	// member. Nil skips the report. OpenConsensusModule sets the module error
+	// handler.
+	ErrorHandler func(error)
 }
 
 // logReplay replays this member's own cluster log through the module log
-// adapter. The adapter feeds every frame to the module. It raises commit.
+// adapter.
 //
 // Behaviour:
 //   - Bound-image mode drains an open image the adapter already holds at
@@ -97,20 +113,23 @@ type logReplayDeps struct {
 //     image. A bound image that does not deliver for one ImageAwaitNs ends
 //     the replay.
 //   - Archive mode replays the local recording through an archive session.
-//     It drains only after every service acks the replay JoinLog.
+//     It drains only after every service acks the replay JoinLog. Past the
+//     services deadline the replay finishes at its start.
 //   - End of stream below the stop ends the replay in either mode.
 //   - A pending snapshot wait or an unresolved module snapshot take holds
-//     the drain at the action. A closed image, end of stream or the stall
-//     deadline ends a held replay only after every hold clears.
-//   - IsDone stays true once the replay has finished.
+//     the drain at the action. End of stream or the stall deadline ends a
+//     held replay only after the hold clears.
+//   - A hold that expires on a closed image ends the member. IsDone stays
+//     false. [replayProgress.stepHoldDeadline] states the expiry rule.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [logReplay.DoWork]. Not safe
+// from other goroutines.
 //
 // Lifetime: the helper does not outlive the election state that built it. The
-// election builds the helper on entry to a replay state and closes the helper
-// on every exit.
+// election builds the helper on entry to a replay state. The election closes
+// the helper on every exit.
 //
-// Ownership: owns the archive replay session, the replay subscription and the
+// Ownership: owns the archive replay session, the replay subscription, and the
 // replay image binding. Does not own the archive client, the transport client,
 // the agent, or a bound-image mode image.
 type logReplay struct {
@@ -127,23 +146,15 @@ type logReplay struct {
 
 var _ consensus.LogReplay = (*logReplay)(nil)
 
-// newLogReplay picks the replay mode. Archive mode starts the archive replay
-// and registers the session-filtered subscription.
-//
-// Behaviour: builds one replay over the member's own log. The checks run in
-// this order:
-//  1. stopPosition at or below startPosition: done at startPosition.
-//  2. The module log adapter holds an open image at startPosition:
-//     bound-image mode. The mode sets the stall timeout to ImageAwaitNs.
-//  3. No local log recording: done at startPosition.
-//  4. Otherwise archive mode.
+// newLogReplay picks the replay mode.
 //
 // The helper is never nil. A construction failure returns a helper that is
 // done at startPosition. The election then retries instead of recording a
 // position the replay did not reach.
 //
-// Concurrency: invoker-only. Blocks the invoker for the archive control
-// response and the subscription registration.
+// Concurrency: call from the goroutine that runs [logReplay.DoWork]. Not safe
+// from other goroutines. The call blocks that goroutine for the archive
+// control response and the subscription registration.
 func newLogReplay(
 	deps logReplayDeps,
 	startPosition int64,
@@ -157,6 +168,7 @@ func newLogReplay(
 			startPosition: startPosition,
 			stopPosition:  stopPosition,
 			position:      startPosition,
+			holdTimeoutNs: deps.ImageAwaitNs,
 		},
 	}
 
@@ -216,23 +228,12 @@ func newLogReplay(
 	return r
 }
 
-// DoWork drives one await, join or drain step.
+// DoWork drives one await, join, or drain step.
 //
-// Behaviour:
-//   - Bound-image mode drains on every call.
-//   - Archive mode awaits the image first. On discovery DoWork binds the
-//     image, sends the replay JoinLog and sets the services deadline.
-//   - Archive mode does not drain until the replay JoinLog publishes and
-//     every service acks it. Past the services deadline the replay is
-//     done at its start.
-//
-// Returns:
-//   - 0 when closed or done, when still awaiting the image or the services
-//     inside the bound, or when a drain batch is empty
-//   - 1 when the image is first bound
-//   - the fragment count from one drain batch
+// Returns the fragment count from one drain batch, 1 when DoWork first binds
+// the image, and 0 otherwise.
 func (r *logReplay) DoWork(nowNs int64) int {
-	if r.closed || r.progress.done {
+	if r.closed || r.progress.done || r.progress.holdExpired {
 		return 0
 	}
 	if r.imageBound {
@@ -294,38 +295,56 @@ func (r *logReplay) awaitImage(nowNs int64) int {
 //   - An adapter that no longer holds the replay image counts as closed.
 //     drain skips the poll, so a different image does not feed the module,
 //     raise commit, or advance the replay.
-//   - drain reads the snapshot hold after the poll. The poll can queue a
+//   - drain reads the hold kind after the poll. The poll can queue a
 //     snapshot wait.
 func (r *logReplay) drain(nowNs int64) int {
 	agent := r.deps.Agent
 	adapter := agent.LogAdapter()
+
 	if adapter.Image() != r.image {
-		r.progress.observe(
-			nowNs,
-			r.progress.position,
-			replayImageClosed,
-			agent.HasPendingSnapshotAction(),
-		)
+		r.observeDrain(nowNs, r.progress.position, replayImageClosed)
 		return 0
 	}
+
 	received := agent.ReplayLogPoll(r.progress.stopPosition, nowNs)
-	r.progress.observe(
-		nowNs,
-		adapter.Position(),
-		replayImageStateOf(adapter),
-		agent.HasPendingSnapshotAction(),
-	)
+	r.observeDrain(nowNs, adapter.Position(), replayImageStateOf(adapter))
+
 	return received
+}
+
+// observeDrain stores one drain observation. An expired hold ends the member.
+// [logReplay.DoWork] does not drain after an expiry, so the fault report runs
+// once.
+func (r *logReplay) observeDrain(
+	nowNs, adapterPosition int64,
+	image replayImageState,
+) {
+	agent := r.deps.Agent
+
+	r.progress.observe(nowNs, adapterPosition, image, replayHoldOf(agent))
+
+	if !r.progress.holdExpired {
+		return
+	}
+
+	err := fmt.Errorf("%w: snapshot wait at position %d", ErrReplayHoldExpired, r.progress.position)
+
+	if r.deps.ErrorHandler != nil {
+		r.deps.ErrorHandler(err)
+	}
+
+	agent.TerminateOnError(err)
 }
 
 // replayImageStateOf reports closed for a nil adapter or a nil image.
 func replayImageStateOf(adapter *consensus.LogAdapter) replayImageState {
-	if adapter.IsLogEndOfStream() {
+	switch {
+	case adapter.IsLogEndOfStream():
 		return replayImageEndOfStream
-	}
-	if adapter.IsImageClosed() {
+	case adapter.IsImageClosed():
 		return replayImageClosed
 	}
+
 	return replayImageOpen
 }
 
@@ -388,8 +407,8 @@ func (r *logReplay) Close() {
 	r.subscription = nil
 }
 
-// reason returns why the replay stopped. Returns the empty string when the
-// replay reached its bound or is still running.
+// reason returns why the replay stopped. Returns the empty string unless the
+// replay ended short or a hold expired.
 func (r *logReplay) reason() string {
 	return r.progress.reason
 }
@@ -408,23 +427,55 @@ const (
 	// replayImageOpen is an open image below its end of stream.
 	replayImageOpen replayImageState = iota
 
-	// replayImageEndOfStream is an image whose subscriber position reached
-	// the end-of-stream position its publisher sent.
+	// replayImageEndOfStream is an open or closed image whose subscriber
+	// position reached the end-of-stream position its publisher sent.
 	replayImageEndOfStream
 
-	// replayImageClosed is a closed image, or an adapter that no longer
-	// holds the replay image.
+	// replayImageClosed is an image closed short of its end of stream, or an
+	// adapter that no longer holds the replay image.
 	replayImageClosed
 )
+
+// replayHold reports what holds the replay at a snapshot action.
+type replayHold uint8
+
+const (
+	replayHoldNone replayHold = iota
+
+	// replayHoldServiceAcks is a queued snapshot wait. A service still owes
+	// its ack.
+	replayHoldServiceAcks
+
+	// replayHoldSnapshotTake is a module snapshot take after the wait pops.
+	replayHoldSnapshotTake
+)
+
+// replayHoldOf checks the queued wait first.
+// [consensus.Agent.HasPendingSnapshotAction] also reports that wait.
+func replayHoldOf(agent *consensus.Agent) replayHold {
+	switch {
+	case agent.HasPendingSnapshotWait():
+		return replayHoldServiceAcks
+	case agent.HasPendingSnapshotAction():
+		return replayHoldSnapshotTake
+	}
+	return replayHoldNone
+}
 
 // replayProgress tracks how far a cluster log replay has run and why the
 // replay stopped.
 //
-// Behaviour: position never goes backwards and never exceeds stopPosition.
-// done marks once. After done, position stops moving.
+// Behaviour:
+//   - position never goes backwards
+//   - position never exceeds stopPosition
+//   - done marks once. After done, position stops moving.
+//   - holdExpired marks once. After that mark, position, done, and reason
+//     stay unchanged.
 //
 // Zero stallTimeoutNs turns the stall deadline off. stallDeadlineNs stays
 // zero until [replayProgress.observe] sets it.
+//
+// holdTimeoutNs is positive.
 type replayProgress struct {
 	startPosition   int64
 	stopPosition    int64
@@ -433,44 +484,53 @@ type replayProgress struct {
 	reason          string
 	stallTimeoutNs  int64
 	stallDeadlineNs int64
+	holdTimeoutNs   int64
+	holdDeadlineNs  int64
+	holdExpired     bool
 }
 
 // observe stores one drained batch. nowNs is the caller clock.
-// adapterPosition is the adapter position after the batch. held reports a
-// pending snapshot action, as [consensus.Agent.HasPendingSnapshotAction]
-// does.
-//
-// Behaviour:
-//   - At or above the stop, observe marks the replay done unless held.
-//   - Below the stop, a hold suspends every short end and restarts the
-//     stall deadline.
-//   - Otherwise end of stream, a closed image or the stall deadline ends
-//     the replay short. A position rise restarts the stall deadline.
+// adapterPosition is the adapter position after the batch. An expiry does not
+// finish the replay.
 func (p *replayProgress) observe(
 	nowNs, adapterPosition int64,
 	image replayImageState,
-	held bool,
+	hold replayHold,
 ) {
-	if p.done {
+	if p.done || p.holdExpired {
 		return
 	}
+
 	previous := p.position
 	p.position = min(max(p.position, adapterPosition), p.stopPosition)
+
+	if p.stepHoldDeadline(nowNs, image, hold) {
+		p.holdExpired = true
+		p.reason = replayHoldExpiredReason
+
+		return
+	}
+
+	held := hold != replayHoldNone
+
 	if p.position >= p.stopPosition {
 		if !held {
 			p.markDone("")
 		}
+
 		return
 	}
+
 	if held {
 		// Not read when stallTimeoutNs is zero.
 		p.stallDeadlineNs = nowNs + p.stallTimeoutNs
+
 		return
 	}
+
 	switch image {
 	case replayImageEndOfStream:
 		p.markDone(replayEndOfStreamReason)
-
 	case replayImageClosed:
 		p.markDone(replayEndedShortReason)
 
@@ -483,6 +543,37 @@ func (p *replayProgress) observe(
 			p.markDone(replayStalledReason)
 		}
 	}
+}
+
+// stepHoldDeadline advances the hold deadline.
+//
+// Behaviour:
+//   - A service-ack hold on [replayImageClosed] expires one holdTimeoutNs
+//     after the first such call.
+//   - A close at end of stream does not expire. Each service still on the
+//     image has reached the action and owes only the ack after its take.
+//   - A call without that service-ack hold clears the deadline.
+//
+// Returns true when nowNs reaches the deadline.
+func (p *replayProgress) stepHoldDeadline(
+	nowNs int64,
+	image replayImageState,
+	hold replayHold,
+) bool {
+	closedAck := hold == replayHoldServiceAcks && image == replayImageClosed
+	if !closedAck {
+		p.holdDeadlineNs = 0
+
+		return false
+	}
+
+	if p.holdDeadlineNs == 0 {
+		p.holdDeadlineNs = nowNs + p.holdTimeoutNs
+
+		return false
+	}
+
+	return nowNs >= p.holdDeadlineNs
 }
 
 // hasEndedWithoutClose reports a replay done short at end of stream or the
