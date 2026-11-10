@@ -245,7 +245,7 @@ jobs:
 
       - name: Live soak
         env:
-          LUAS_SOAK_SEED: "12688821764857039849"
+          LUAS_SOAK_SEED: "9012209"
           LUAS_SOAK_DURATION: 1m
         run: make test-soak SOAK_TEST_TIMEOUT=25m
 
