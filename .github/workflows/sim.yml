@@ -10,6 +10,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - .github/actions/setup/**
       - .github/workflows/sim.yml
       - Makefile
 
@@ -45,16 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Write Go arch cache marker
-        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: |
-            go.sum
-            .go-arch-cache-marker
+      - uses: ./.github/actions/setup
 
       # ci.yml runs each sim on its fixed base seed. A scheduled or dispatched
       # run draws a new one.
