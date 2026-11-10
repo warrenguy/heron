@@ -3,12 +3,15 @@
 package consensus
 
 import (
+	"math"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
+	"luas.fast/aeron"
 	"luas.fast/cluster/codecs"
 	"luas.fast/internal/testutil"
 )
@@ -903,6 +906,233 @@ func TestReplayJoinTracking_rapid(t *testing.T) {
 				}
 				clearReplayMarks()
 				state = replayJoinModelNone
+			}
+			assertInvariants()
+		}
+	})
+}
+
+type logJoinHoldOpKind int
+
+const (
+	logJoinHoldOpOtherWait logJoinHoldOpKind = iota
+	logJoinHoldOpSnapshotWait
+	logJoinHoldOpFollowerJoin
+	logJoinHoldOpReplayJoin
+	logJoinHoldOpLeaderJoin
+	logJoinHoldOpRetry
+	logJoinHoldOpPop
+	logJoinHoldOpUnbind
+	logJoinHoldOpElectionEntry
+	logJoinHoldOpPrepare
+)
+
+// logJoinHoldModelWait is one queued wait in the model FIFO. tracked marks the
+// wait of the tracked JoinLog.
+type logJoinHoldModelWait struct {
+	position int64
+	tracked  bool
+}
+
+// Asserts logJoinWaitsAhead and the log poll bound against a FIFO model.
+// Positions repeat, so a retire can drop the tracked JoinLog wait. The bound
+// image closes partway through some runs.
+//
+// The model does not send service acks. ServiceCount 0 lets a pop run without
+// them.
+func TestLogJoinHold_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		t := testutil.IterationTB(t, rt)
+
+		rt.Helper()
+
+		a, image, adapter := agentWithLogJoin(t, 1, 0, AgentConfig{
+			Role:   RoleFollower,
+			Commit: new(atomic.Int64),
+		})
+		adapter.SetImage(image)
+		a.SetElectionFactory((&recordingElectionFactory{}).factory())
+		connected, _ := boundServiceProxy(t)
+		disconnected := boundServiceProxyWithLimit(t, 0, false)
+
+		waits := make([]logJoinHoldModelWait, 0)
+		unpublished := false
+		followerTracked := false
+		hasPending := false
+		pendingPos := int64(0)
+		snapshotPos := int64(0)
+		imageOpen := true
+
+		trackedIndex := func() int {
+			return slices.IndexFunc(waits, func(w logJoinHoldModelWait) bool {
+				return w.tracked
+			})
+		}
+		clearTracked := func() {
+			for i := range waits {
+				waits[i].tracked = false
+			}
+			unpublished = false
+		}
+		// startJoin applies one JoinLog publish outcome to the model.
+		startJoin := func(position int64, stored, tracked bool) {
+			clearTracked()
+			hasPending = stored
+			pendingPos = position
+			if stored {
+				unpublished = tracked
+				return
+			}
+			waits = append(waits, logJoinHoldModelWait{position: position, tracked: tracked})
+		}
+		useProxy := func(stored bool) {
+			if stored {
+				a.SetServiceProxy(disconnected)
+				return
+			}
+			a.SetServiceProxy(connected)
+		}
+		// supersede applies the new election rule for the tracked JoinLog.
+		supersede := func() {
+			hasPending = false
+			keepHold := followerTracked && trackedIndex() >= 0 && imageOpen
+			if !keepHold {
+				clearTracked()
+			}
+		}
+		assertInvariants := func() {
+			rt.Helper()
+			expectedCount := trackedIndex() + 1
+			if unpublished {
+				expectedCount = logJoinUnpublished
+			}
+			require.Equal(rt, expectedCount, a.logJoinWaitsAhead)
+			require.Equal(rt, expectedCount == 0, a.IsReplayLogJoined())
+			require.Equal(rt, hasPending, a.HasPendingJoinLog())
+
+			positions := make([]int64, 0, len(waits))
+			for _, w := range waits {
+				positions = append(positions, w.position)
+			}
+			require.Equal(rt, positions, append([]int64{}, a.serviceAckWaits...))
+
+			expectedBound := int64(math.MaxInt64)
+			if snapshotPos != 0 {
+				expectedBound = min(expectedBound, snapshotPos)
+			}
+
+			if hasPending {
+				expectedBound = min(expectedBound, pendingPos)
+			}
+
+			if index := trackedIndex(); index >= 0 {
+				expectedBound = min(expectedBound, waits[index].position)
+			}
+			require.Equal(rt, expectedBound, a.holdLogPollBound(math.MaxInt64))
+		}
+
+		positions := []int64{64, 128, 192}
+		nOps := rapid.IntRange(1, 40).Draw(rt, "nOps")
+		closeAt := rapid.IntRange(nOps/2, nOps).Draw(rt, "closeAt")
+		for i := range nOps {
+			if i == closeAt {
+				aeron.ImageInternalCloseForHooks(image)
+				imageOpen = false
+			}
+
+			pos := rapid.SampledFrom(positions).Draw(rt, "pos")
+			stored := rapid.Bool().Draw(rt, "stored")
+			kind := rapid.SampledFrom([]logJoinHoldOpKind{
+				logJoinHoldOpOtherWait,
+				logJoinHoldOpSnapshotWait,
+				logJoinHoldOpFollowerJoin,
+				logJoinHoldOpReplayJoin,
+				logJoinHoldOpLeaderJoin,
+				logJoinHoldOpRetry,
+				logJoinHoldOpPop,
+				logJoinHoldOpUnbind,
+				logJoinHoldOpElectionEntry,
+				logJoinHoldOpPrepare,
+			}).Draw(rt, "kind")
+
+			switch kind {
+			case logJoinHoldOpOtherWait:
+				// Stands for a RequestServiceAck or termination wait.
+				a.serviceAckWaits = append(a.serviceAckWaits, pos)
+				waits = append(waits, logJoinHoldModelWait{position: pos})
+
+			case logJoinHoldOpSnapshotWait:
+				if snapshotPos != 0 {
+					break
+				}
+				a.queueSnapshotWait(pos, 0, 0)
+				waits = append(waits, logJoinHoldModelWait{position: pos})
+				snapshotPos = pos
+
+			case logJoinHoldOpFollowerJoin:
+				useProxy(stored)
+				a.publishFollowerJoinLog(FollowerLogJoinParams{LogJoinPosition: pos})
+				startJoin(pos, stored, true)
+				followerTracked = true
+
+			case logJoinHoldOpReplayJoin:
+				useProxy(stored)
+				a.PublishReplayJoinLog(ReplayLogJoin{StartPosition: pos, StopPosition: pos + 4096})
+				startJoin(pos, stored, true)
+				followerTracked = false
+
+			case logJoinHoldOpLeaderJoin:
+				useProxy(stored)
+				a.publishLeaderJoinLog(pos, 1, false)
+				startJoin(pos, stored, false)
+
+			case logJoinHoldOpRetry:
+				a.SetServiceProxy(connected)
+				if !hasPending {
+					require.Equal(rt, 0, a.retryPendingJoinLog())
+					break
+				}
+				require.Equal(rt, 1, a.retryPendingJoinLog())
+				waits = append(waits, logJoinHoldModelWait{position: pendingPos, tracked: unpublished})
+				unpublished = false
+				hasPending = false
+
+			case logJoinHoldOpPop:
+				if len(waits) == 0 {
+					break
+				}
+
+				if waits[0].position == snapshotPos {
+					a.snapshotWaitPosition = 0
+					snapshotPos = 0
+				}
+				a.popServiceAckWait()
+				waits = waits[1:]
+
+			case logJoinHoldOpUnbind:
+				a.UnbindReplayLog(nil)
+				if unpublished {
+					hasPending = false
+				}
+				clearTracked()
+
+			case logJoinHoldOpElectionEntry:
+				require.Equal(rt, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false))
+				a.election = nil
+				supersede()
+
+			case logJoinHoldOpPrepare:
+				_, prepared, err := a.PrepareForNewLeadership(0, 0)
+				require.NoError(rt, err)
+				require.True(rt, prepared)
+				if snapshotPos != 0 {
+					waits = slices.DeleteFunc(waits, func(w logJoinHoldModelWait) bool {
+						return w.position == snapshotPos
+					})
+					snapshotPos = 0
+				}
+				supersede()
 			}
 			assertInvariants()
 		}

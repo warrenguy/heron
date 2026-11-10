@@ -342,7 +342,7 @@ func TestElectionReinstall_triggerMatrix(t *testing.T) {
 		})
 		a.SetElectionFactory(fac.factory())
 		a.pendingJoinLog = &codecs.JoinLogFields{LogPosition: 99}
-		a.replayJoinWaitsAhead = replayJoinUnpublished
+		a.logJoinWaitsAhead = logJoinUnpublished
 		require.True(t, a.HasPendingJoinLog())
 		require.False(t, a.IsReplayLogJoined())
 

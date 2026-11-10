@@ -150,18 +150,31 @@ func (a *Agent) queueSnapshotWait(logPosition, leadershipTermID, timestamp int64
 //     the pop, the module snapshot take lowers the bound to the same
 //     position until the take resolves.
 //   - On a non-leader, a pending JoinLog publish lowers the bound to the
-//     JoinLog position. The poll consumes no frame past that position until
-//     the publish succeeds, so follower commit stays there.
+//     JoinLog position. The poll does not consume a frame past that position
+//     until the publish succeeds, so follower commit stays there.
+//   - On a non-leader, a tracked JoinLog wait lowers the bound to its log
+//     position until the services ack. A poll before the ack moves the
+//     driver join position of a service above the JoinLog position. A new
+//     election keeps the hold of a follower JoinLog while its image stays
+//     bound.
 //
 // The JoinLog hold keeps a snapshot wait from queueing ahead of the JoinLog
-// wait. The service acks the JoinLog before any later snapshot action.
+// wait. The services ack the JoinLog before any later snapshot action.
 func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
 	if hold := a.snapshotHoldPosition(); hold != 0 {
 		boundPosition = min(boundPosition, hold)
 	}
-	pending := a.pendingJoinLog
-	if pending != nil && a.role != RoleLeader {
+
+	if a.role == RoleLeader {
+		return boundPosition
+	}
+
+	if pending := a.pendingJoinLog; pending != nil {
 		boundPosition = min(boundPosition, pending.LogPosition)
+	}
+
+	if a.logJoinWaitsAhead > 0 {
+		boundPosition = min(boundPosition, a.serviceAckWaits[a.logJoinWaitsAhead-1])
 	}
 	return boundPosition
 }
@@ -207,6 +220,7 @@ func (a *Agent) abandonSnapshotPosition(logPosition int64) *abandonedSnapshotWai
 //
 // Behaviour:
 //   - clears snapshotWaitPosition
+//   - updates logJoinWaitsAhead through lowerLogJoinWaitsAhead
 //   - drops each tracker entry at the position through
 //     [serviceAckTracker.dropAt], which notes each dropped ack id
 //   - marks each service with no dropped entry as owing one ack at the
@@ -218,6 +232,8 @@ func (a *Agent) retireSnapshotWait() {
 		return
 	}
 	retired := a.abandonSnapshotPosition(pos)
+
+	a.lowerLogJoinWaitsAhead(pos)
 	a.serviceAckWaits = slices.DeleteFunc(a.serviceAckWaits, func(wait int64) bool {
 		return wait == pos
 	})

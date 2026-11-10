@@ -403,21 +403,23 @@ type Agent struct {
 	// RequestServiceAck returns ErrServiceControlUnbound.
 	serviceProxy *ServiceProxy
 
-	// pendingJoinLog is one JoinLog awaiting a successful publish, or nil.
-	// A retriable publish outcome stores it. retryPendingJoinLog offers it
-	// after the election or steady branch. A newer join replaces it.
-	// PrepareForNewLeadership and enterElection clear it. UnbindReplayLog
-	// clears an unpublished replay JoinLog.
+	// pendingJoinLog is one JoinLog awaiting a successful publish, or nil. A
+	// retriable publish outcome stores it. retryPendingJoinLog offers it
+	// again.
 	pendingJoinLog *codecs.JoinLogFields
 
-	// replayJoinWaitsAhead counts the coordination waits up to and including
-	// the replay JoinLog wait. replayJoinUnpublished marks a replay JoinLog
-	// awaiting a successful publish. 0 means no replay JoinLog is tracked.
+	// logJoinWaitsAhead counts the coordination waits up to and including
+	// the wait of the tracked JoinLog, a replay or a follower join.
+	// logJoinUnpublished marks a tracked JoinLog awaiting a successful
+	// publish. 0 means the agent does not track a JoinLog.
 	//
-	// A replay JoinLog publish sets the count. Each wait pop lowers a
-	// positive value by one. A terminal publish code, UnbindReplayLog,
-	// PrepareForNewLeadership and enterElection reset it to 0.
-	replayJoinWaitsAhead int
+	// A positive count indexes serviceAckWaits. Each removal from that FIFO
+	// must update the count.
+	logJoinWaitsAhead int
+
+	// followerJoinTracked reports whether the tracked JoinLog is a follower
+	// join. Each tracked JoinLog publish writes it.
+	followerJoinTracked bool
 
 	// serviceAckWaits holds log positions of published coordination points
 	// whose acks are not yet consumed. FIFO. The first entry pairs with the
@@ -1791,37 +1793,37 @@ func (a *Agent) IsPrepareInProgress() bool {
 
 // teardownForNewLeadership runs first-call prepare teardown. Does not write
 // prepareInProgress. Does not poll the recording stop.
-//
-// Catchup teardown runs here, not on the CATCHUP election exit. At the CATCHUP
-// exit the log adapter still reads the catchup image.
-//
-// clearSessionsAfter runs before releaseSessionsForNewTerm, so a cleared
-// session still holds its egress for the CLOSED event.
-//
-// The module snapshot take cancel runs before StopAllCatchups. The take
-// closes its archive requests before the catchup stop uses the same client.
-//
-// The cluster control toggle stays INACTIVE for the rest of the teardown. The
-// snapshot wait retire and the take cancel run on a follower. A follower does
-// not reset the toggle.
 func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.RoleSet(RoleFollower)
+
+	// The toggle stays INACTIVE for the rest of the teardown. The snapshot
+	// wait retire and the take cancel run on a follower. A follower does not
+	// reset the toggle.
 	if a.controlToggle != nil {
 		a.controlToggle.Store(int64(ControlToggleInactive))
 	}
+
 	a.SetLeaderMemberID(nullMemberID)
 	a.lastPublishedAppendPosition = 0
 	a.timeOfLastAppendPositionSendNs = 0
 	a.timeOfLastAppendPositionUpdateNs = nowNs
 	a.appendNotReadySinceNs = nullValue
-	a.pendingJoinLog = nil
-	a.replayJoinWaitsAhead = 0
+	a.dropSupersededLogJoin()
 	a.retireSnapshotWait()
+
+	// The take closes its archive requests before the catchup stop uses the
+	// same client.
 	a.cancelSnapshotTake()
+
+	// Catchup teardown runs here, not on the CATCHUP election exit. At that
+	// exit the log adapter still reads the catchup image.
 	a.StopAllCatchups()
 	a.RemoveCatchupLogDestination()
 	a.reseedLogSubscriptionForNewTerm()
 	a.restoreUncommittedEntries(logPosition)
+
+	// Clear before the release, so a cleared session still holds its egress
+	// for the CLOSED event.
 	a.clearSessionsAfter(logPosition)
 	a.releaseSessionsForNewTerm()
 	a.clusterTermination = nil
@@ -1829,7 +1831,7 @@ func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 
 // reseedLogSubscriptionForNewTerm replaces the log subscription when the log
 // adapter holds no open image or the last follower join query missed. Clears
-// the miss.
+// the miss. The dropped image ends the log join tracking.
 //
 // The driver holds a session in cool-down on the old receive endpoint after
 // its image closes without end of stream. A fresh subscription opens a new
@@ -1848,6 +1850,7 @@ func (a *Agent) reseedLogSubscriptionForNewTerm() {
 		return
 	}
 	a.logAdapter.SetImage(nil)
+	a.logJoinWaitsAhead = 0
 	_ = a.catchupControl.ReseedLogSubscription()
 }
 
@@ -1994,38 +1997,25 @@ func (a *Agent) startLeaderLogRecording(
 }
 
 // JoinLogAsFollower binds the live cluster log image for params.LogSessionID
-// into the wired [LogAdapter], starts the REMOTE cluster log recording when a
-// control is wired, and sets role [RoleFollower].
+// into the wired [LogAdapter]. Starts the REMOTE cluster log recording when a
+// control is wired. Sets role [RoleFollower].
 //
-// params.IsBoundRejoin true routes to [Agent.rejoinBoundLog]: no image
-// selection, no rebind, recording restart only. Bound re-join publishes no
-// JoinLog: the image, recording, and log spec are unchanged.
+// params.IsBoundRejoin true routes to [Agent.rejoinBoundLog], which only
+// restarts the recording. A bound re-join does not publish a JoinLog, because
+// the image, recording, and log spec stay the same.
 //
-// On a successful fresh bind, publishes JoinLog when a service proxy is bound.
-// Publish failure does not fail JoinLogAsFollower. Same pending and terminal
-// policy as [Agent.JoinLogAsLeader].
+// On a successful fresh bind, publishes JoinLog when the agent holds a service
+// proxy. Publish failure does not fail JoinLogAsFollower. Same pending and
+// terminal policy as [Agent.JoinLogAsLeader]. A follower log poll holds at the
+// JoinLog position until the services ack it.
 //
 // Returns:
-//   - joined false, nil: no [LogJoinSource] or no [LogAdapter] is wired, or the
-//     source no longer holds an open image for that session (election retries
-//     until leader heartbeat timeout)
-//   - joined false, err: the recording cannot be started, or a live recording
-//     cannot be stopped after the image is gone post-start
-//   - joined true, nil: the image is bound
-//
-// The image is looked up before start and again after. The second check is
-// required: the start await drives transport DoWork and can close the
-// pre-start image. A live recording is stopped when that re-fetch is nil.
-// Clean stop leaves the join free to retry. Stop error fails closed for
-// prepare drain.
-//
-// Does not touch the known leader id: the term install already set it.
-// Clearing the known leader id would stop follower commit notification and
-// append reporting.
-//
-// The join cancels a module snapshot take in flight before any recording
-// start. The cancel does not store a result. The take and the recording
-// start share the module archive client.
+//   - joined false, nil: the agent lacks a wired [LogJoinSource] or
+//     [LogAdapter], or the source no longer holds an open image for that
+//     session (election retries until leader heartbeat timeout)
+//   - joined false, err: the recording start failed, or the stop of a live
+//     recording failed after the image closed post-start
+//   - joined true, nil: the adapter holds the image
 //
 // A new join restarts the [Agent.CatchupPoll] progress timeout at nowNs.
 func (a *Agent) JoinLogAsFollower(
@@ -2035,10 +2025,14 @@ func (a *Agent) JoinLogAsFollower(
 	joined bool,
 	err error,
 ) {
+	// The take and the recording start share the module archive client. The
+	// cancel does not store a result.
 	a.cancelSnapshotTake()
+
 	if a.joinSource == nil || a.logAdapter == nil {
 		return false, nil
 	}
+
 	if params.IsBoundRejoin {
 		return a.rejoinBoundLog(params)
 	}
@@ -2050,6 +2044,9 @@ func (a *Agent) JoinLogAsFollower(
 		return false, startErr
 	}
 
+	// The start await drives transport DoWork and can close the pre-start
+	// image, so look the image up again. A clean stop of the live recording
+	// leaves the join free to retry.
 	image := a.joinSource.Image(params.LogSessionID)
 	if image == nil {
 		if stopErr := a.stopLogRecordingAfterVanishedImage(); stopErr != nil {
@@ -2060,6 +2057,9 @@ func (a *Agent) JoinLogAsFollower(
 
 	a.logAdapter.SetImage(image)
 	a.timeOfLastAppendPositionUpdateNs = nowNs
+
+	// The known leader id stays as the term install set it. A clear would
+	// stop follower commit notification and append reporting.
 	a.RoleSet(RoleFollower)
 	a.publishFollowerJoinLog(params)
 	return true, nil

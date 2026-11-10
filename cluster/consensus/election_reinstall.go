@@ -205,22 +205,20 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //
 // Behaviour:
 //   - refuses in TERMINATING, during a live election, or without a factory
-//   - reads the append seed before the role flip, since a leader's append
-//     source reports the publication position
 //   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
-//   - after a non-nil runner returns: clears pendingJoinLog and the replay
-//     join tracking, sets role to follower, then installs
-//   - reads no log
 //   - isLogEndOfStream seeds GracefulClosedLeaderID from leaderMemberID,
 //     else the null member id. A leader holds the null id, so a leader
 //     install seeds the null id
 //
-// Returns: 1 when a runner was installed, else 0.
+// Returns: 1 when it installed a runner, else 0.
 func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) int {
 	if a.moduleState == ModuleStateTerminating || a.election != nil || a.electionFactory == nil {
 		return 0
 	}
+
+	// Read the append seed before the role flip. The append source of a
+	// leader reports the publication position.
 	position, ready := a.appendPositionForSeed()
 	gracefulClosedLeaderID := nullMemberID
 	if isLogEndOfStream {
@@ -236,12 +234,11 @@ func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) in
 	if runner == nil {
 		return 0
 	}
-	// Clear a superseded unpublished JoinLog and the replay join tracking at
-	// settled re-entry before the new election runs. Clear at install. Does
-	// not wait for election Init. PrepareForNewLeadership still clears on
-	// mid-election re-Init and when a runner never reaches Prepare.
-	a.pendingJoinLog = nil
-	a.replayJoinWaitsAhead = 0
+
+	// Drop the superseded JoinLog state at install. Does not wait for
+	// election Init. PrepareForNewLeadership still drops it on mid-election
+	// re-Init and when a runner never reaches Prepare.
+	a.dropSupersededLogJoin()
 	a.RoleSet(RoleFollower)
 	a.installElection(runner, trigger)
 	return 1

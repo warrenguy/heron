@@ -280,8 +280,8 @@ func (a *Agent) popServiceAckWait() {
 	a.removeServiceAckHead()
 	a.serviceAckWaits = slices.Delete(a.serviceAckWaits, 0, 1)
 
-	if a.replayJoinWaitsAhead > 0 {
-		a.replayJoinWaitsAhead--
+	if a.logJoinWaitsAhead > 0 {
+		a.logJoinWaitsAhead--
 	}
 }
 
@@ -336,7 +336,7 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 			a.serviceAckWaits = append(a.serviceAckWaits, fields.LogPosition)
 		}
 		a.pendingJoinLog = nil
-		a.markReplayJoinPublished()
+		a.markLogJoinPublished()
 		return 1
 	}
 	if aeron.IsOfferRetriable(pos) {
@@ -345,8 +345,8 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 	}
 
 	a.pendingJoinLog = nil
-	if a.replayJoinWaitsAhead == replayJoinUnpublished {
-		a.replayJoinWaitsAhead = 0
+	if a.logJoinWaitsAhead == logJoinUnpublished {
+		a.logJoinWaitsAhead = 0
 	}
 
 	a.markServicePublishFailure(pos)
@@ -354,6 +354,8 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 }
 
 // publishLeaderJoinLog builds leader JoinLog fields and publishes or queues.
+// Clears the log join tracking, because the leader JoinLog supersedes a
+// tracked follower JoinLog.
 //
 // Non-IPC log channels get the spy prefix so services subscribe without
 // competing as receivers on the leader publication.
@@ -362,6 +364,7 @@ func (a *Agent) publishLeaderJoinLog(
 	logSessionID int32,
 	isStartup bool,
 ) {
+	a.logJoinWaitsAhead = 0
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    logPosition,
 		MaxLogPosition: math.MaxInt64,
@@ -379,6 +382,12 @@ func (a *Agent) publishLeaderJoinLog(
 //
 // Uses params channel unchanged (no spy prefix).
 func (a *Agent) publishFollowerJoinLog(params FollowerLogJoinParams) {
+	if a.serviceProxy == nil {
+		return
+	}
+
+	a.logJoinWaitsAhead = logJoinUnpublished
+	a.followerJoinTracked = true
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    params.LogJoinPosition,
 		MaxLogPosition: math.MaxInt64,
