@@ -19,18 +19,7 @@ jobs:
       - &checkout-step
         uses: actions/checkout@v7
 
-      - &go-arch-cache-marker-step
-        name: Write Go arch cache marker
-        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
-
-      - &setup-go-step
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: |
-            go.sum
-            .go-arch-cache-marker
+      - uses: ./.github/actions/setup
 
       - uses: actions/cache@v6
         with:
@@ -47,30 +36,9 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
-
-      - &setup-java-step
-        uses: actions/setup-java@v6
+      - uses: ./.github/actions/setup
         with:
-          distribution: temurin
-          java-version: 26
-          cache: maven
-
-      # setup-java does not install mvn. Pin 3.9.x (Makefile needs 3.8.2+).
-      - &install-maven-step
-        name: Install Maven
-        env:
-          MAVEN_VERSION: "3.9.16"
-          MAVEN_SHA512: "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
-        run: |
-          set -euo pipefail
-          tarball="${RUNNER_TEMP}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 -o "${tarball}" "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          echo "${MAVEN_SHA512}  ${tarball}" | sha512sum -c -
-          sudo tar -xzC /opt -f "${tarball}"
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "$GITHUB_PATH"
-          "/opt/apache-maven-${MAVEN_VERSION}/bin/mvn" -v
+          java: true
 
       - name: Contract oracles and stale checks
         run: make check-static-extra
@@ -89,8 +57,7 @@ jobs:
       GOARCH: ${{ matrix.goarch }}
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
+      - uses: ./.github/actions/setup
 
       - name: Check test
         run: make check-test
@@ -100,8 +67,7 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
+      - uses: ./.github/actions/setup
 
       - name: Property tests
         run: make test-rapid
@@ -112,8 +78,7 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
+      - uses: ./.github/actions/setup
       - name: Election sim soak
         env:
           ELECTION_SIM_RUNS: "1000"
@@ -133,8 +98,7 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
+      - uses: ./.github/actions/setup
       - name: Replication sim soak
         env:
           REPLICATION_SIM_RUNS: "180"
@@ -154,20 +118,9 @@ jobs:
     env: *go-arch-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
-
-      - &aeronmd-cache-step
-        uses: actions/cache@v6
-        id: aeronmd-cache
+      - uses: ./.github/actions/setup
         with:
-          path: bin/aeronmd
-          key: aeronmd-${{ env.GOARCH }}-${{ hashFiles('specs/versions.yaml', 'test/integration/docker/aeronmd/Dockerfile', 'scripts/build-aeronmd.sh') }}
-
-      - &aeronmd-cache-touch-step
-        name: Refresh aeronmd mtime
-        if: steps.aeronmd-cache.outputs.cache-hit == 'true'
-        run: touch bin/aeronmd
+          aeronmd: true
 
       - name: Integration tests
         run: make test-integration
@@ -180,8 +133,7 @@ jobs:
       smokes: ${{ steps.list.outputs.smokes }}
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
+      - uses: ./.github/actions/setup
 
       - name: List smoke-* Makefile targets
         id: list
@@ -201,10 +153,9 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
-      - *aeronmd-cache-step
-      - *aeronmd-cache-touch-step
+      - uses: ./.github/actions/setup
+        with:
+          aeronmd: true
 
       - name: Docker smoke
         run: make smoke-${{ matrix.smoke }}
@@ -216,12 +167,10 @@ jobs:
     env: *go-arch-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
-      - *setup-java-step
-      - *install-maven-step
-      - *aeronmd-cache-step
-      - *aeronmd-cache-touch-step
+      - uses: ./.github/actions/setup
+        with:
+          java: true
+          aeronmd: true
 
       - name: Live Archive cluster tests
         run: make test-cluster-archive
@@ -233,12 +182,10 @@ jobs:
     env: *amd64-env
     steps:
       - *checkout-step
-      - *go-arch-cache-marker-step
-      - *setup-go-step
-      - *setup-java-step
-      - *install-maven-step
-      - *aeronmd-cache-step
-      - *aeronmd-cache-touch-step
+      - uses: ./.github/actions/setup
+        with:
+          java: true
+          aeronmd: true
 
       - name: Prepare namespaces
         run: .github/scripts/prepare-soak-namespaces.sh
