@@ -125,7 +125,8 @@ func (n *FaultNetwork) Heal() error {
 
 // Rules returns the bridge fault chain text.
 func (n *FaultNetwork) Rules() (string, error) {
-	return combinedOutput(nsCommand(faultBridgeNS, "nft", "list", "chain", "bridge", "faults", "forward"))
+	cmd := nsCommand(faultBridgeNS, "nft", "list", "chain", "bridge", "faults", "forward")
+	return combinedOutput(cmd)
 }
 
 func (n *FaultNetwork) build() error {
