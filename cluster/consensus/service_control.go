@@ -354,6 +354,8 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 }
 
 // publishLeaderJoinLog builds leader JoinLog fields and publishes or queues.
+// Clears the log join tracking, because the leader JoinLog supersedes a
+// tracked follower JoinLog.
 //
 // Non-IPC log channels get the spy prefix so services subscribe without
 // competing as receivers on the leader publication.
@@ -362,6 +364,7 @@ func (a *Agent) publishLeaderJoinLog(
 	logSessionID int32,
 	isStartup bool,
 ) {
+	a.logJoinWaitsAhead = 0
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    logPosition,
 		MaxLogPosition: math.MaxInt64,
@@ -384,6 +387,7 @@ func (a *Agent) publishFollowerJoinLog(params FollowerLogJoinParams) {
 	}
 
 	a.logJoinWaitsAhead = logJoinUnpublished
+	a.followerJoinTracked = true
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    params.LogJoinPosition,
 		MaxLogPosition: math.MaxInt64,

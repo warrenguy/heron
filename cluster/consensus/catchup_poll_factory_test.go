@@ -400,6 +400,95 @@ func TestCatchupPoll_holdsForFollowerJoinAck(t *testing.T) {
 	require.Equal(t, ends[1], adapter.Position())
 }
 
+// Asserts a new election keeps the follower JoinLog hold while the bound image
+// stays open. The ack releases the poll.
+func TestReplayLogPoll_holdsForFollowerJoinAckAcrossElection(t *testing.T) {
+	const (
+		sessionID        int32 = 11
+		snapshotPosition int64 = 4096
+	)
+
+	tests := []struct {
+		name              string
+		snapshotWaitAhead bool
+		reenter           func(t *testing.T, a *Agent)
+	}{
+		{name: "prepare", reenter: requirePrepared},
+		{
+			name: "settled re-entry",
+			reenter: func(t *testing.T, a *Agent) {
+				t.Helper()
+				a.SetElectionFactory((&recordingElectionFactory{}).factory())
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false))
+			},
+		},
+		{
+			// The retire removes the wait ahead of the JoinLog wait.
+			name:              "prepare retires a snapshot wait ahead",
+			snapshotWaitAhead: true,
+			reenter:           requirePrepared,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, image, adapter := agentWithLogJoin(t, sessionID, 0, AgentConfig{
+				Role:         RoleFollower,
+				Commit:       new(atomic.Int64),
+				ServiceCount: 1,
+			})
+			q := attachQueueServiceIngress(a)
+			proxy, _ := boundServiceProxy(t)
+			a.SetServiceProxy(proxy)
+			ends := writeCatchupPollFrames(t, image, 1)
+
+			if tt.snapshotWaitAhead {
+				a.queueSnapshotWait(snapshotPosition, 0, 0)
+			}
+
+			joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: sessionID}, 1)
+			require.NoError(t, err)
+			require.True(t, joined)
+
+			// Phase: the election starts before the ack.
+			tt.reenter(t, a)
+			require.Same(t, image, adapter.Image())
+			require.Equal(t, 1, a.PendingServiceAckWaits())
+			require.Equal(t, 0, a.ReplayLogPoll(ends[1], 3))
+			require.Equal(t, int64(0), adapter.Position())
+
+			// Phase: the ack releases the poll.
+			ackAndPopWait(t, a, q, 0, a.ExpectedServiceAckID())
+			require.Equal(t, 1, a.ReplayLogPoll(ends[1], 4))
+			require.Equal(t, ends[1], adapter.Position())
+		})
+	}
+}
+
+// Asserts PrepareForNewLeadership drops the follower JoinLog hold when the
+// bound image closed. The JoinLog wait stays queued.
+func TestPrepareForNewLeadership_dropsFollowerJoinHoldWithClosedImage(t *testing.T) {
+	const sessionID int32 = 11
+
+	a, image, _ := agentWithLogJoin(t, sessionID, 0, AgentConfig{
+		Role:         RoleFollower,
+		Commit:       new(atomic.Int64),
+		ServiceCount: 1,
+	})
+	proxy, _ := boundServiceProxy(t)
+	a.SetServiceProxy(proxy)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: sessionID}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.False(t, a.IsReplayLogJoined())
+
+	aeron.ImageInternalCloseForHooks(image)
+	requirePrepared(t, a)
+	require.True(t, a.IsReplayLogJoined())
+	require.Equal(t, 1, a.PendingServiceAckWaits())
+}
+
 // Asserts CatchupPoll does nothing outside ACTIVE and SUSPENDED. In ACTIVE,
 // the stopped recording and the closed image fail the poll, and the tick
 // sits past the no-progress deadline.

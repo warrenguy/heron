@@ -1541,3 +1541,68 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 		})
 	}
 }
+
+// Asserts retireSnapshotWait keeps logJoinWaitsAhead on the tracked JoinLog
+// wait, or clears it when the retire drops that wait.
+func TestRetireSnapshotWait_logJoinCount(t *testing.T) {
+	t.Parallel()
+
+	const (
+		otherPos   int64 = 64
+		retiredPos int64 = 128
+		trackedPos int64 = 192
+	)
+
+	tests := []struct {
+		name          string
+		waits         []int64
+		count         int
+		expectedWaits []int64
+		expectedCount int
+	}{
+		{
+			name:          "wait ahead of the tracked wait",
+			waits:         []int64{retiredPos, trackedPos},
+			count:         2,
+			expectedWaits: []int64{trackedPos},
+			expectedCount: 1,
+		},
+		{
+			name:          "wait behind the tracked wait",
+			waits:         []int64{trackedPos, retiredPos},
+			count:         1,
+			expectedWaits: []int64{trackedPos},
+			expectedCount: 1,
+		},
+		{
+			name:          "tracked wait shares the position with another wait ahead",
+			waits:         []int64{otherPos, retiredPos, retiredPos},
+			count:         3,
+			expectedWaits: []int64{otherPos},
+			expectedCount: 0,
+		},
+		{
+			name:          "unpublished JoinLog",
+			waits:         []int64{retiredPos},
+			count:         logJoinUnpublished,
+			expectedWaits: []int64{},
+			expectedCount: logJoinUnpublished,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			a := NewAgent(AgentConfig{})
+			a.serviceAckWaits = tt.waits
+			a.logJoinWaitsAhead = tt.count
+			a.snapshotWaitPosition = retiredPos
+
+			a.retireSnapshotWait()
+
+			require.Equal(t, tt.expectedWaits, a.serviceAckWaits)
+			require.Equal(t, tt.expectedCount, a.logJoinWaitsAhead)
+		})
+	}
+}
