@@ -653,10 +653,7 @@ func (a *Agent) Close() {
 	a.closeSnapshotTake()
 	a.disconnectEgress()
 	a.adapter.SetImage(nil)
-	if a.logSubscription != nil {
-		_ = a.logSubscription.Close()
-		a.logSubscription = nil
-	}
+	a.closeLogSubscription()
 }
 
 // Role returns the role adopted from the last bound JoinLog, or
@@ -933,8 +930,7 @@ func (a *Agent) joinWork(nowNs int64) int {
 	if a.logSubscription != nil &&
 		(a.logSubscription.Channel() != event.logChannel ||
 			a.logSubscription.StreamID() != event.logStreamID) {
-		_ = a.logSubscription.Close()
-		a.logSubscription = nil
+		a.closeLogSubscription()
 	}
 	if a.logSubscription == nil {
 		if a.subscriptions == nil {
@@ -972,8 +968,15 @@ func (a *Agent) joinWork(nowNs int64) int {
 		return 0
 	}
 
-	if event.logPosition != a.logPosition || image.JoinPosition() != event.logPosition {
-		a.handleError(ErrLogNotContiguous)
+	joinPosition := image.JoinPosition()
+	if event.logPosition != a.logPosition || joinPosition != event.logPosition {
+		a.handleError(fmt.Errorf(
+			"%w: logPosition=%d eventPosition=%d joinPosition=%d",
+			ErrLogNotContiguous,
+			a.logPosition,
+			event.logPosition,
+			joinPosition,
+		))
 		return 0
 	}
 
@@ -989,15 +992,27 @@ func (a *Agent) joinWork(nowNs int64) int {
 
 // maybeUnbind releases a done image after a poll with no progress, unless a
 // snapshot take runs. It advances logPosition to the image position to cover
-// consumed padding. It does not close the subscription.
+// consumed padding. It closes the subscription, so a later join on the same
+// session id does not find the done image.
 func (a *Agent) maybeUnbind(polled int) {
 	if a.take != nil || polled != 0 || !a.adapter.isDone() {
 		return
 	}
 	a.logPosition = max(a.adapter.Image().Position(), a.logPosition)
 	a.adapter.SetImage(nil)
+	a.closeLogSubscription()
 	a.disconnectEgress()
 	a.changeRole(codecs.RoleFollower)
+}
+
+// closeLogSubscription closes the log subscription, if one is open.
+func (a *Agent) closeLogSubscription() {
+	if a.logSubscription == nil {
+		return
+	}
+
+	_ = a.logSubscription.Close()
+	a.logSubscription = nil
 }
 
 // handleError passes err to the error handler. When isFatal reports true,
