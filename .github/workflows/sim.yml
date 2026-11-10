@@ -1,0 +1,85 @@
+name: sim
+
+on:
+  schedule:
+    - cron: "13 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Decimal base seed. Empty draws a new seed.
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/sim.yml
+      - Makefile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# GOARCH must match runner arch (see Makefile SUPPORTED_GOARCHES).
+env:
+  GOARCH: amd64
+
+jobs:
+  sim:
+    name: ${{ matrix.sim }} sim
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sim: election
+            pr_args: ELECTION_SIM_RUNS=10
+            nightly_args: ELECTION_SIM_RUNS=50000 ELECTION_SIM_TIMEOUT=60m
+          - sim: replication
+            pr_args: REPLICATION_SIM_RUNS=10
+            nightly_args: REPLICATION_SIM_RUNS=9000 REPLICATION_SIM_TIMEOUT=60m
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      SEED: ${{ inputs.seed }}
+      LUAS_SIM_SAVE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Write Go arch cache marker
+        run: echo "${{ env.GOARCH }}" > .go-arch-cache-marker
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .go-arch-cache-marker
+
+      # ci.yml runs each sim on its fixed base seed. A scheduled or dispatched
+      # run draws a new one.
+      - name: Choose base seed
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          seed="${SEED:-$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')}"
+          if [[ ! "${seed}" =~ ^[0-9]+$ ]]; then
+            echo "::error::seed must be decimal digits"
+            exit 1
+          fi
+          echo "base seed ${seed}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "LUAS_SIM_SEED=${seed}" >> "${GITHUB_ENV}"
+
+      # ci.yml runs the full PR counts. Here a pull request runs only enough to
+      # exercise the workflow.
+      - name: Sim
+        run: make test-${{ matrix.sim }}-sim ${{ github.event_name == 'pull_request' && matrix.pr_args || matrix.nightly_args }}
+
+      - name: Upload sim failures
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.sim }}-sim-failures-attempt-${{ github.run_attempt }}
+          path: test/sim/testdata/sim/failures/
+          if-no-files-found: ignore
+          retention-days: 30

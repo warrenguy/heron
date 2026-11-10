@@ -226,9 +226,59 @@ jobs:
       - name: Live Archive cluster tests
         run: make test-cluster-archive
 
+  # A short run on a fixed seed checks that the soak itself still works.
+  soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - *go-arch-cache-marker-step
+      - *setup-go-step
+      - *setup-java-step
+      - *install-maven-step
+      - *aeronmd-cache-step
+      - *aeronmd-cache-touch-step
+
+      - name: Prepare namespaces
+        run: .github/scripts/prepare-soak-namespaces.sh
+
+      - name: Live soak
+        env:
+          LUAS_SOAK_SEED: "9012209"
+          LUAS_SOAK_DURATION: 1m
+        run: make test-soak SOAK_TEST_TIMEOUT=25m
+
+      # A skipped soak exits 0 and writes no result.
+      - name: Require result rows
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          for row in soak-result.json; do
+            if [ -z "$(find .artifacts/soak -name "${row}")" ]; then
+              echo "::error::missing ${row}"
+              exit 1
+            fi
+          done
+          {
+            echo '```json'
+            find .artifacts/soak -name soak-result.json -exec cat {} +
+            printf '\n```\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload soak failure bundle
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-failure-attempt-${{ github.run_attempt }}
+          path: .artifacts/soak/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 30
+
   ci-ok:
     if: always()
-    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes, cluster-archive]
+    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes, cluster-archive, soak]
     runs-on: ubuntu-24.04
     steps:
       - *checkout-step
@@ -243,6 +293,7 @@ jobs:
           INTEGRATION: ${{ needs.integration.result }}
           DOCKER_SMOKES: ${{ needs.docker-smokes.result }}
           CLUSTER_ARCHIVE: ${{ needs.cluster-archive.result }}
+          SOAK: ${{ needs.soak.result }}
         run: |
           source .github/scripts/require-job-result.sh
           require_job lint "${LINT}"
@@ -254,4 +305,5 @@ jobs:
           require_job integration "${INTEGRATION}"
           require_job docker-smokes "${DOCKER_SMOKES}"
           require_job cluster-archive "${CLUSTER_ARCHIVE}"
+          require_job soak "${SOAK}"
           require_jobs_exit "all required jobs passed"
