@@ -216,7 +216,7 @@ func TestPublishReplayJoinLog(t *testing.T) {
 
 				// The JoinLog frame publishes after the request frame.
 				require.Greater(t, pub.Position(), before)
-				require.Equal(t, 0, a.replayJoinWaitsAhead)
+				require.Equal(t, 0, a.logJoinWaitsAhead)
 				require.False(t, a.HasPendingJoinLog())
 				require.Equal(t, 1, a.PendingServiceAckWaits())
 				require.False(t, a.IsReplayLogJoined())
@@ -302,7 +302,7 @@ func TestPublishReplayJoinLog(t *testing.T) {
 				ackAndPopWait(t, a, q, 100, 0)
 				ackAndPopWait(t, a, q, startPosition, 1)
 				require.True(t, a.IsReplayLogJoined())
-				require.Equal(t, 0, a.replayJoinWaitsAhead)
+				require.Equal(t, 0, a.logJoinWaitsAhead)
 				require.NoError(t, a.ServiceAckFailure())
 			},
 		},

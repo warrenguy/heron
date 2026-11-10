@@ -361,30 +361,27 @@ func (r *logReplay) IsDone() bool {
 // Close stops the archive replay. It closes a retained subscription.
 //
 // Behaviour:
-//   - sets closed before touching the session or subscription so a later
-//     DoWork must not treat the helper's own teardown as an external stop
-//   - archive mode: calls [consensus.Agent.UnbindReplayLog] once the image
-//     was bound. The adapter drops the image only while it still holds it.
-//     The call also drops an unpublished replay JoinLog
-//   - bound-image mode calls [consensus.Agent.UnbindReplayLog] only after
-//     end of stream or the stall deadline
-//   - issues StopReplay when a live session may remain: the session was
-//     started and the replay did not reach its bound. The stop blocks on the
-//     module archive client, so it first cancels a module snapshot take in
-//     flight through [consensus.Agent.CloseSnapshotTake]. The take shares
-//     that client and may hold an open handle
-//   - skips the stop await when a length-bounded session already delivered
-//     its full range
-//   - closes the subscription when construction retained one
+//   - archive mode: calls [consensus.Agent.UnbindReplayLog] once the replay
+//     binds the image. The call also drops an unpublished replay JoinLog
+//   - bound-image mode: calls [consensus.Agent.UnbindReplayLog] only after
+//     end of stream or the stall deadline. The call also ends the follower
+//     JoinLog hold on that image
+//   - issues StopReplay when the replay started a session and did not reach
+//     its bound. Cancels a module snapshot take in flight first
 //
 // Idempotent.
 //
-// Concurrency: invoker-only. May block for the archive control response.
+// Concurrency: call from the goroutine that runs [logReplay.DoWork]. Not safe
+// from other goroutines. May block for the archive control response.
 func (r *logReplay) Close() {
 	if r.closed {
 		return
 	}
+
+	// Set closed first, so a later DoWork does not treat this teardown as an
+	// external stop.
 	r.closed = true
+
 	if r.image != nil && (!r.imageBound || r.progress.hasEndedWithoutClose()) {
 		r.deps.Agent.UnbindReplayLog(r.image)
 	}
@@ -396,7 +393,10 @@ func (r *logReplay) Close() {
 		return
 	}
 	if r.progress.position < r.progress.stopPosition {
+		// The stop blocks on the module archive client. A snapshot take
+		// shares that client and may hold an open handle.
 		r.deps.Agent.CloseSnapshotTake()
+
 		// No liveness pre-check. StopReplay on an unknown session replies OK.
 		r.closeErr = errors.Join(
 			r.closeErr,

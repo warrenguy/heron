@@ -6,9 +6,9 @@ import (
 	"github.com/warrenguy/luas/cluster/codecs/clusterwire"
 )
 
-// replayJoinUnpublished is the replayJoinWaitsAhead value while the replay
-// JoinLog waits for a successful publish.
-const replayJoinUnpublished = -1
+// logJoinUnpublished is the logJoinWaitsAhead value while a tracked JoinLog
+// waits for a successful publish.
+const logJoinUnpublished = -1
 
 // ReplayLogJoin holds the JoinLog fields for one archive replay.
 type ReplayLogJoin struct {
@@ -56,16 +56,14 @@ func (a *Agent) BindReplayLog(image *aeron.Image) {
 // raises commit to the adapter position.
 //
 // Behaviour:
-//   - A nil adapter or an adapter with no image returns 0.
+//   - A nil adapter or an adapter without an image returns 0.
 //   - Outside ACTIVE and SUSPENDED, the call does not poll and returns 0.
-//   - A pending snapshot wait lowers the bound to its log position. After
-//     the pop, the module snapshot take holds the bound there until the take
-//     resolves.
-//   - On a non-leader, a pending JoinLog publish lowers the bound to the
-//     JoinLog position.
+//   - holdLogPollBound lowers the bound for a pending snapshot wait, JoinLog
+//     publish, or JoinLog ack.
 //   - nowNs becomes the session learn time for the poll.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Returns the fragment count.
 func (a *Agent) ReplayLogPoll(stopPosition, nowNs int64) int {
@@ -76,20 +74,27 @@ func (a *Agent) ReplayLogPoll(stopPosition, nowNs int64) int {
 	return a.pollBoundLog(adapter, stopPosition, nowNs)
 }
 
-// UnbindReplayLog clears the replay join tracking. It then clears the adapter
+// UnbindReplayLog clears the log join tracking. It then clears the adapter
 // image when the adapter still holds image.
 //
-// Behaviour: an unpublished replay JoinLog drops, so a dead replay session does
-// not reach a service. A published replay JoinLog keeps its wait.
+// Behaviour:
+//   - A bound-image replay unbinds the image of a follower join, so the call
+//     also ends a follower JoinLog hold.
+//   - An unpublished tracked JoinLog drops, so a dead session does not reach a
+//     service.
+//   - A published tracked JoinLog keeps its wait.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Ownership: does not own image. The caller closes it.
 func (a *Agent) UnbindReplayLog(image *aeron.Image) {
-	if a.replayJoinWaitsAhead == replayJoinUnpublished {
+	if a.logJoinWaitsAhead == logJoinUnpublished {
 		a.pendingJoinLog = nil
 	}
-	a.replayJoinWaitsAhead = 0
+
+	a.logJoinWaitsAhead = 0
+
 	adapter := a.logAdapter
 	if adapter != nil && adapter.Image() == image {
 		adapter.SetImage(nil)
@@ -106,14 +111,17 @@ func (a *Agent) UnbindReplayLog(image *aeron.Image) {
 //   - A terminal publish code marks [Agent.ServicePublishFailure].
 //   - While serviceAckFailure is nil, [Agent.IsReplayLogJoined] reports false
 //     until the replay JoinLog wait pops. A terminal publish code,
-//     [Agent.UnbindReplayLog], or a new election clears the tracking earlier.
+//     [Agent.UnbindReplayLog], or a new election clears the replay tracking
+//     earlier.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 	if a.serviceProxy == nil {
 		return
 	}
-	a.replayJoinWaitsAhead = replayJoinUnpublished
+	a.logJoinWaitsAhead = logJoinUnpublished
+	a.followerJoinTracked = false
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    join.StartPosition,
 		MaxLogPosition: join.StopPosition,
@@ -127,28 +135,67 @@ func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 	})
 }
 
-// IsReplayLogJoined reports whether every service acked the replay JoinLog.
+// IsReplayLogJoined reports whether the agent has stopped waiting for the
+// services to ack a tracked JoinLog, a replay or a follower join.
 //
 // Behaviour:
-//   - Reports false once serviceAckFailure is marked.
-//   - Otherwise reports true when the agent does not track a replay JoinLog.
+//   - Reports false once the agent marks serviceAckFailure.
+//   - Otherwise reports true when the agent does not track a JoinLog.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) IsReplayLogJoined() bool {
-	return a.serviceAckFailure == nil && a.replayJoinWaitsAhead == 0
+	return a.serviceAckFailure == nil && a.logJoinWaitsAhead == 0
 }
 
-// markReplayJoinPublished starts the replay join count once the replay JoinLog
-// publishes. The replay JoinLog wait is the last queued entry, so the count is
-// the FIFO length. While serviceAckFailure is marked, publishJoinLog does not
-// queue a wait, so the count is 0.
-func (a *Agent) markReplayJoinPublished() {
-	if a.replayJoinWaitsAhead != replayJoinUnpublished {
+// markLogJoinPublished starts the join count once a tracked JoinLog publishes.
+// Its wait is the last queued entry, so the count is the FIFO length. Under a
+// marked serviceAckFailure, publishJoinLog does not queue a wait, so the count
+// is 0.
+func (a *Agent) markLogJoinPublished() {
+	if a.logJoinWaitsAhead != logJoinUnpublished {
 		return
 	}
+
 	if a.serviceAckFailure != nil {
-		a.replayJoinWaitsAhead = 0
+		a.logJoinWaitsAhead = 0
 		return
 	}
-	a.replayJoinWaitsAhead = len(a.serviceAckWaits)
+	a.logJoinWaitsAhead = len(a.serviceAckWaits)
+}
+
+// dropSupersededLogJoin clears the unpublished JoinLog and the log join
+// tracking that a new election supersedes. A published follower JoinLog keeps
+// its count while its image stays open. The services still hold that JoinLog,
+// so the poll hold stays until they ack. Without an open image, the next
+// follower join publishes a new JoinLog.
+func (a *Agent) dropSupersededLogJoin() {
+	a.pendingJoinLog = nil
+
+	keepHold := a.followerJoinTracked && a.logJoinWaitsAhead > 0 && !a.logAdapter.IsImageClosed()
+	if keepHold {
+		return
+	}
+
+	a.logJoinWaitsAhead = 0
+}
+
+// lowerLogJoinWaitsAhead updates the join count for a retire that drops every
+// wait at position. Call before the FIFO delete.
+func (a *Agent) lowerLogJoinWaitsAhead(position int64) {
+	if a.logJoinWaitsAhead <= 0 {
+		return
+	}
+
+	trackedIndex := a.logJoinWaitsAhead - 1
+	if a.serviceAckWaits[trackedIndex] == position {
+		a.logJoinWaitsAhead = 0
+		return
+	}
+
+	for _, wait := range a.serviceAckWaits[:trackedIndex] {
+		if wait == position {
+			a.logJoinWaitsAhead--
+		}
+	}
 }
