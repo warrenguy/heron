@@ -370,6 +370,36 @@ func TestCatchupPoll_failsWithoutProgress(t *testing.T) {
 	})
 }
 
+// Asserts CatchupPoll holds at the follower JoinLog position until the service
+// acks it. A later poll would move the service join above that position.
+func TestCatchupPoll_holdsForFollowerJoinAck(t *testing.T) {
+	const sessionID int32 = 11
+
+	a, image, adapter := agentWithLogJoin(t, sessionID, 0, AgentConfig{
+		Role:         RoleFollower,
+		Commit:       new(atomic.Int64),
+		ServiceCount: 1,
+	})
+	q := attachQueueServiceIngress(a)
+	proxy, _ := boundServiceProxy(t)
+	a.SetServiceProxy(proxy)
+	ends := writeCatchupPollFrames(t, image, 1)
+
+	joined, err := a.JoinLogAsFollower(FollowerLogJoinParams{LogSessionID: sessionID}, 1)
+	require.NoError(t, err)
+	require.True(t, joined)
+	require.Equal(t, 1, a.PendingServiceAckWaits())
+
+	// Phase: the poll holds while the JoinLog wait stays queued.
+	require.Equal(t, 0, catchupPoll(t, a, ends[1], 2))
+	require.Equal(t, int64(0), adapter.Position())
+
+	// Phase: the ack releases the poll.
+	ackAndPopWait(t, a, q, 0, a.ExpectedServiceAckID())
+	require.Equal(t, 1, catchupPoll(t, a, ends[1], 3))
+	require.Equal(t, ends[1], adapter.Position())
+}
+
 // Asserts CatchupPoll does nothing outside ACTIVE and SUSPENDED. In ACTIVE,
 // the stopped recording and the closed image fail the poll, and the tick
 // sits past the no-progress deadline.

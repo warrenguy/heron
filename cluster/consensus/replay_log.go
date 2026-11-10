@@ -6,9 +6,9 @@ import (
 	"luas.fast/cluster/codecs/clusterwire"
 )
 
-// replayJoinUnpublished is the replayJoinWaitsAhead value while the replay
-// JoinLog waits for a successful publish.
-const replayJoinUnpublished = -1
+// logJoinUnpublished is the logJoinWaitsAhead value while a tracked JoinLog
+// waits for a successful publish.
+const logJoinUnpublished = -1
 
 // ReplayLogJoin holds the JoinLog fields for one archive replay.
 type ReplayLogJoin struct {
@@ -82,14 +82,15 @@ func (a *Agent) ReplayLogPoll(stopPosition, nowNs int64) int {
 // Behaviour: an unpublished replay JoinLog drops, so a dead replay session does
 // not reach a service. A published replay JoinLog keeps its wait.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Ownership: does not own image. The caller closes it.
 func (a *Agent) UnbindReplayLog(image *aeron.Image) {
-	if a.replayJoinWaitsAhead == replayJoinUnpublished {
+	if a.logJoinWaitsAhead == logJoinUnpublished {
 		a.pendingJoinLog = nil
 	}
-	a.replayJoinWaitsAhead = 0
+	a.logJoinWaitsAhead = 0
 	adapter := a.logAdapter
 	if adapter != nil && adapter.Image() == image {
 		adapter.SetImage(nil)
@@ -108,12 +109,13 @@ func (a *Agent) UnbindReplayLog(image *aeron.Image) {
 //     until the replay JoinLog wait pops. A terminal publish code,
 //     [Agent.UnbindReplayLog], or a new election clears the tracking earlier.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 	if a.serviceProxy == nil {
 		return
 	}
-	a.replayJoinWaitsAhead = replayJoinUnpublished
+	a.logJoinWaitsAhead = logJoinUnpublished
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    join.StartPosition,
 		MaxLogPosition: join.StopPosition,
@@ -131,24 +133,25 @@ func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 //
 // Behaviour:
 //   - Reports false once serviceAckFailure is marked.
-//   - Otherwise reports true when the agent does not track a replay JoinLog.
+//   - Otherwise reports true when the agent does not track a JoinLog.
 //
-// Concurrency: invoker-only.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 func (a *Agent) IsReplayLogJoined() bool {
-	return a.serviceAckFailure == nil && a.replayJoinWaitsAhead == 0
+	return a.serviceAckFailure == nil && a.logJoinWaitsAhead == 0
 }
 
-// markReplayJoinPublished starts the replay join count once the replay JoinLog
-// publishes. The replay JoinLog wait is the last queued entry, so the count is
-// the FIFO length. While serviceAckFailure is marked, publishJoinLog does not
-// queue a wait, so the count is 0.
-func (a *Agent) markReplayJoinPublished() {
-	if a.replayJoinWaitsAhead != replayJoinUnpublished {
+// markLogJoinPublished starts the join count once a tracked JoinLog publishes.
+// Its wait is the last queued entry, so the count is the FIFO length. While
+// serviceAckFailure is marked, publishJoinLog does not queue a wait, so the
+// count is 0.
+func (a *Agent) markLogJoinPublished() {
+	if a.logJoinWaitsAhead != logJoinUnpublished {
 		return
 	}
 	if a.serviceAckFailure != nil {
-		a.replayJoinWaitsAhead = 0
+		a.logJoinWaitsAhead = 0
 		return
 	}
-	a.replayJoinWaitsAhead = len(a.serviceAckWaits)
+	a.logJoinWaitsAhead = len(a.serviceAckWaits)
 }

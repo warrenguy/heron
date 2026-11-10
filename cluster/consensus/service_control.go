@@ -280,8 +280,8 @@ func (a *Agent) popServiceAckWait() {
 	a.removeServiceAckHead()
 	a.serviceAckWaits = slices.Delete(a.serviceAckWaits, 0, 1)
 
-	if a.replayJoinWaitsAhead > 0 {
-		a.replayJoinWaitsAhead--
+	if a.logJoinWaitsAhead > 0 {
+		a.logJoinWaitsAhead--
 	}
 }
 
@@ -336,7 +336,7 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 			a.serviceAckWaits = append(a.serviceAckWaits, fields.LogPosition)
 		}
 		a.pendingJoinLog = nil
-		a.markReplayJoinPublished()
+		a.markLogJoinPublished()
 		return 1
 	}
 	if aeron.IsOfferRetriable(pos) {
@@ -345,8 +345,8 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 	}
 
 	a.pendingJoinLog = nil
-	if a.replayJoinWaitsAhead == replayJoinUnpublished {
-		a.replayJoinWaitsAhead = 0
+	if a.logJoinWaitsAhead == logJoinUnpublished {
+		a.logJoinWaitsAhead = 0
 	}
 
 	a.markServicePublishFailure(pos)
@@ -379,6 +379,11 @@ func (a *Agent) publishLeaderJoinLog(
 //
 // Uses params channel unchanged (no spy prefix).
 func (a *Agent) publishFollowerJoinLog(params FollowerLogJoinParams) {
+	if a.serviceProxy == nil {
+		return
+	}
+
+	a.logJoinWaitsAhead = logJoinUnpublished
 	a.publishOrQueueJoinLog(codecs.JoinLogFields{
 		LogPosition:    params.LogJoinPosition,
 		MaxLogPosition: math.MaxInt64,

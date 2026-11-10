@@ -152,6 +152,9 @@ func (a *Agent) queueSnapshotWait(logPosition, leadershipTermID, timestamp int64
 //   - On a non-leader, a pending JoinLog publish lowers the bound to the
 //     JoinLog position. The poll consumes no frame past that position until
 //     the publish succeeds, so follower commit stays there.
+//   - On a non-leader, a tracked JoinLog wait lowers the bound to its log
+//     position until the service acks. A poll before the ack moves the driver
+//     join position of the service above the JoinLog position.
 //
 // The JoinLog hold keeps a snapshot wait from queueing ahead of the JoinLog
 // wait. The service acks the JoinLog before any later snapshot action.
@@ -162,6 +165,9 @@ func (a *Agent) holdLogPollBound(boundPosition int64) int64 {
 	pending := a.pendingJoinLog
 	if pending != nil && a.role != RoleLeader {
 		boundPosition = min(boundPosition, pending.LogPosition)
+	}
+	if a.logJoinWaitsAhead > 0 && a.role != RoleLeader {
+		boundPosition = min(boundPosition, a.serviceAckWaits[a.logJoinWaitsAhead-1])
 	}
 	return boundPosition
 }

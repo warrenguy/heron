@@ -209,7 +209,7 @@ func (a *Agent) appendPositionForSeed() (int64, bool) {
 //     source reports the publication position
 //   - refuses when the factory returns nil. Role and pendingJoinLog stay
 //     unchanged
-//   - after a non-nil runner returns: clears pendingJoinLog and the replay
+//   - after a non-nil runner returns: clears pendingJoinLog and the log
 //     join tracking, sets role to follower, then installs
 //   - reads no log
 //   - isLogEndOfStream seeds GracefulClosedLeaderID from leaderMemberID,
@@ -236,12 +236,12 @@ func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) in
 	if runner == nil {
 		return 0
 	}
-	// Clear a superseded unpublished JoinLog and the replay join tracking at
+	// Clear a superseded unpublished JoinLog and the log join tracking at
 	// settled re-entry before the new election runs. Clear at install. Does
 	// not wait for election Init. PrepareForNewLeadership still clears on
 	// mid-election re-Init and when a runner never reaches Prepare.
 	a.pendingJoinLog = nil
-	a.replayJoinWaitsAhead = 0
+	a.logJoinWaitsAhead = 0
 	a.RoleSet(RoleFollower)
 	a.installElection(runner, trigger)
 	return 1

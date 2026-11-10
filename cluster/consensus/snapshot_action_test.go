@@ -1489,16 +1489,22 @@ func TestSnapshotActionConsume_paths(t *testing.T) {
 				proxy, _ := boundServiceProxy(t)
 				f.agent.SetServiceProxy(proxy)
 				require.Equal(t, 1, f.agent.retryPendingJoinLog())
-				f.agent.followerConsensusWork(nowNs)
-				require.Equal(t, f.actionEnd, f.adapter.Position())
-				require.Equal(t, f.actionEnd, f.agent.snapshotWaitPosition)
-				require.Equal(t, []int64{0, f.actionEnd}, f.agent.serviceAckWaits)
-				requireHandlerIdle(t, f.handler)
 
-				// The service acks the JoinLog first, then the action.
+				// The published JoinLog holds the poll until its ack.
+				f.agent.followerConsensusWork(nowNs)
+				require.Equal(t, int64(0), f.adapter.Position())
+				require.Equal(t, []int64{0}, f.agent.serviceAckWaits)
+
 				enqueueServiceAck(t, f.queue, 0, 0, 0)
 				require.Equal(t, 1, f.agent.pollServiceControl())
 				require.Equal(t, 1, f.agent.serviceControlWork())
+
+				f.agent.followerConsensusWork(nowNs)
+				require.Equal(t, f.actionEnd, f.adapter.Position())
+				require.Equal(t, f.actionEnd, f.agent.snapshotWaitPosition)
+				require.Equal(t, []int64{f.actionEnd}, f.agent.serviceAckWaits)
+				requireHandlerIdle(t, f.handler)
+
 				ackAndPop(t, f, 1)
 				require.NoError(t, f.agent.ServiceAckFailure())
 

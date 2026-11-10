@@ -410,14 +410,15 @@ type Agent struct {
 	// clears an unpublished replay JoinLog.
 	pendingJoinLog *codecs.JoinLogFields
 
-	// replayJoinWaitsAhead counts the coordination waits up to and including
-	// the replay JoinLog wait. replayJoinUnpublished marks a replay JoinLog
-	// awaiting a successful publish. 0 means no replay JoinLog is tracked.
+	// logJoinWaitsAhead counts the coordination waits up to and including
+	// the wait of the tracked JoinLog, a replay or a follower join.
+	// logJoinUnpublished marks a tracked JoinLog awaiting a successful
+	// publish. 0 means the agent does not track a JoinLog.
 	//
-	// A replay JoinLog publish sets the count. Each wait pop lowers a
+	// A tracked JoinLog publish sets the count. Each wait pop lowers a
 	// positive value by one. A terminal publish code, UnbindReplayLog,
 	// PrepareForNewLeadership and enterElection reset it to 0.
-	replayJoinWaitsAhead int
+	logJoinWaitsAhead int
 
 	// serviceAckWaits holds log positions of published coordination points
 	// whose acks are not yet consumed. FIFO. The first entry pairs with the
@@ -1815,7 +1816,7 @@ func (a *Agent) teardownForNewLeadership(logPosition, nowNs int64) {
 	a.timeOfLastAppendPositionUpdateNs = nowNs
 	a.appendNotReadySinceNs = nullValue
 	a.pendingJoinLog = nil
-	a.replayJoinWaitsAhead = 0
+	a.logJoinWaitsAhead = 0
 	a.retireSnapshotWait()
 	a.cancelSnapshotTake()
 	a.StopAllCatchups()
