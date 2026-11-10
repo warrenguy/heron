@@ -111,6 +111,9 @@ Works:
   snapshot on a stopped member.
 - Restart loads the latest snapshot and replays the local log after it. It
   rebuilds sessions and timers from both.
+- Termination and shutdown; cluster control toggles; the module state
+  machine with the upstream state codes.
+- Admin requests: the client snapshot request.
 
 Partial:
 
@@ -127,13 +130,11 @@ Partial:
   supported.
 - A Go leader needs a multicast log channel (no publication MDC destinations in
   the transport).
+- Node control toggle: the module ignores REPLICATE_STANDBY_SNAPSHOT and
+  VALIDATE_RECORDING_LOG.
 
 Not implemented:
 
-- Termination and shutdown, cluster control and node control toggles, the module
-  state machine.
-- Admin requests: the client snapshot request works only against a Java
-  cluster.
 - Cluster counters, mark file, backup and standby, `ClusterTool`, extensions,
   authorisation service, service messages.
 
@@ -155,6 +156,7 @@ Works:
 - Snapshots: `TakeSnapshotHandler` records a service snapshot on a snapshot
   action. On restart, `LoadSnapshotHandler` restores it.
 - Restart on a non-empty log, with or without a snapshot.
+- Termination, role change and background work handlers.
 
 Partial:
 
@@ -163,7 +165,6 @@ Partial:
 
 Not implemented:
 
-- Termination, `onRoleChange`, `onTerminate`, background work.
 - Service messages to the log, mark file, counters.
 
 ## Out of scope
