@@ -295,12 +295,12 @@ func TestAgent_Join_leaderBindClearsClosing(t *testing.T) {
 		require.True(t, agent.CloseClientSession(id))
 	}
 	position := agent.LogPosition()
-	replaceLogSubscription(t, agent, testLogSessionID, testLogStreamID, position)
 
 	// rebind caps the image at position, unbinds it, then binds a JoinLog
 	// with role.
 	rebind := func(role codecs.Role) {
 		t.Helper()
+		replaceLogSubscription(t, agent, testLogSessionID, testLogStreamID, position)
 		event := defaultJoinEvent(position)
 		event.role = role
 		agent.handleJoinLog(event)
@@ -587,6 +587,7 @@ func TestAgent_Unbind_endOfStream(t *testing.T) {
 			require.Equal(t, span, image.Position())
 
 			// Phase 2: a zero-fragment tick unbinds at end of stream.
+			sub := agent.logSubscription
 			if !tc.wordFirst {
 				aeron.ImageSetEndOfStreamPositionForHooks(image, word)
 			}
@@ -594,7 +595,7 @@ func TestAgent_Unbind_endOfStream(t *testing.T) {
 			require.Equal(t, 0, agent.DoWork(0))
 			require.NoError(t, agent.ServiceFailure())
 			require.Equal(t, int64(math.MaxInt64), agent.adapter.MaxLogPosition())
-			require.False(t, image.IsClosed())
+			require.Equal(t, !tc.wantBound, sub.IsClosed())
 			require.Equal(t, tc.wantBound, agent.IsLogBound())
 			if tc.wantBound {
 				require.Equal(t, codecs.RoleLeader, agent.Role())
@@ -606,33 +607,27 @@ func TestAgent_Unbind_endOfStream(t *testing.T) {
 			require.Equal(t, codecs.RoleFollower, agent.Role())
 			require.Equal(t, streamEnd, agent.LogPosition())
 
-			// Phase 3: rejoin on the reused subscription.
-			const (
-				newSessionID           int32 = 77
-				newImageRegistrationID int64 = 9102
-			)
-			sub := agent.logSubscription
-			next := aeron.NewTestImageForSubscriptionHooksWithSessionID(
+			// Phase 3: a rejoin on the session id of the ended image binds the
+			// new image.
+			next := replaceLogSubscription(
 				t,
-				sub,
-				newSessionID,
-				newImageRegistrationID,
+				agent,
+				testLogSessionID,
+				testLogStreamID,
 				streamEnd,
 			)
-			require.True(t, aeron.SubscriptionAddImageForHooks(sub, next))
 
 			join := defaultJoinEvent(streamEnd)
-			join.logSessionID = newSessionID
 			join.memberID = 11
 			join.role = codecs.RoleCandidate
 			agent.handleJoinLog(join)
 			require.True(t, agent.HasPendingJoin())
 
-			require.GreaterOrEqual(t, agent.DoWork(0), 1)
+			work := agent.DoWork(0)
 			require.NoError(t, agent.ServiceFailure())
+			require.GreaterOrEqual(t, work, 1)
 			require.True(t, agent.IsLogBound())
 			require.Same(t, next, agent.adapter.Image())
-			require.Same(t, sub, agent.logSubscription)
 			require.False(t, agent.HasPendingJoin())
 			require.Equal(t, streamEnd, agent.LogPosition())
 			require.Equal(t, int32(11), agent.MemberID())
