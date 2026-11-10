@@ -574,6 +574,178 @@ func TestJoinLog_pendingPublishRetry(t *testing.T) {
 	require.Equal(t, clusterwire.BooleanType_TRUE, got.IsStartup)
 }
 
+func TestIsLeaderLogJoined(t *testing.T) {
+	t.Parallel()
+
+	const joinPosition int64 = 100
+
+	join := func(t testing.TB, a *Agent) {
+		t.Helper()
+		a.SetLocalLogStream("aeron:ipc", 100)
+		require.NoError(t, a.JoinLogAsLeader(1, joinPosition, 1, false))
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "nil proxy does not hold",
+			run: func(t *testing.T) {
+				a := NewAgent(AgentConfig{})
+				join(t, a)
+				require.True(t, a.IsLeaderLogJoined())
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+			},
+		},
+		{
+			name: "zero services pop the wait without an ack",
+			run: func(t *testing.T) {
+				a, _, _ := agentWithServiceControl(t, 0)
+				join(t, a)
+				require.False(t, a.IsLeaderLogJoined())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "holds until every service acks",
+			run: func(t *testing.T) {
+				a, q, _ := agentWithServiceControl(t, 2)
+				join(t, a)
+				require.False(t, a.IsLeaderLogJoined())
+
+				enqueueServiceAck(t, q, joinPosition, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.serviceControlWork())
+				require.False(t, a.IsLeaderLogJoined())
+
+				enqueueServiceAck(t, q, joinPosition, 0, 1)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 1, a.serviceControlWork())
+				require.True(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "pending publish holds and the retry sets the count",
+			run: func(t *testing.T) {
+				a, q := agentWithServiceIngress(1)
+				a.SetServiceProxy(boundServiceProxyWithLimit(t, 0, false))
+				join(t, a)
+				require.True(t, a.HasPendingJoinLog())
+				require.Equal(t, logJoinUnpublished, a.logJoinWaitsAhead)
+				require.False(t, a.IsLeaderLogJoined())
+
+				connected, _ := boundServiceProxy(t)
+				a.SetServiceProxy(connected)
+				require.Equal(t, 1, a.retryPendingJoinLog())
+				require.Equal(t, 1, a.logJoinWaitsAhead)
+				require.False(t, a.IsLeaderLogJoined())
+
+				ackAndPopWait(t, a, q, joinPosition, 0)
+				require.True(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "earlier follower join stays ahead of the leader join",
+			run: func(t *testing.T) {
+				a, q, _ := agentWithServiceControl(t, 1)
+				a.publishFollowerJoinLog(FollowerLogJoinParams{LogJoinPosition: 64})
+				require.True(t, a.followerJoinTracked)
+				join(t, a)
+				require.False(t, a.followerJoinTracked)
+				require.Equal(t, 2, a.logJoinWaitsAhead)
+
+				ackAndPopWait(t, a, q, 64, 0)
+				require.False(t, a.IsLeaderLogJoined())
+
+				ackAndPopWait(t, a, q, joinPosition, 1)
+				require.True(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "terminal publish ends the member and does not open the hold",
+			run: func(t *testing.T) {
+				a, _, pub := agentWithServiceControl(t, 1)
+				require.NoError(t, pub.Close())
+				join(t, a)
+				requireTerminated(t, a, a.ServicePublishFailure(), false)
+				require.Equal(t, 0, a.logJoinWaitsAhead)
+				require.False(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "ack failure ends the member and does not open the hold",
+			run: func(t *testing.T) {
+				a, q, _ := agentWithServiceControl(t, 1)
+				join(t, a)
+				enqueueServiceAck(t, q, joinPosition+64, 0, 0)
+				require.Equal(t, 1, a.pollServiceControl())
+				require.Equal(t, 0, a.serviceControlWork())
+				requireTerminated(t, a, a.ServiceAckFailure(), false)
+				require.False(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "prepare clears the tracking and keeps the wait",
+			run: func(t *testing.T) {
+				a, _, _ := agentWithServiceControl(t, 1)
+				join(t, a)
+				_, prepared, err := a.PrepareForNewLeadership(joinPosition, 1)
+				require.NoError(t, err)
+				require.True(t, prepared)
+				require.Equal(t, 0, a.logJoinWaitsAhead)
+				require.True(t, a.IsLeaderLogJoined())
+				require.Equal(t, 1, a.PendingServiceAckWaits())
+			},
+		},
+		{
+			name: "prepare drops a pending leader join",
+			run: func(t *testing.T) {
+				a, _ := agentWithServiceIngress(1)
+				a.SetServiceProxy(boundServiceProxyWithLimit(t, 0, false))
+				join(t, a)
+				_, prepared, err := a.PrepareForNewLeadership(joinPosition, 1)
+				require.NoError(t, err)
+				require.True(t, prepared)
+				require.False(t, a.HasPendingJoinLog())
+				require.True(t, a.IsLeaderLogJoined())
+				require.Equal(t, 0, a.PendingServiceAckWaits())
+			},
+		},
+		{
+			name: "election entry clears the tracking",
+			run: func(t *testing.T) {
+				a, _, _ := agentWithServiceControl(t, 1)
+				a.SetElectionFactory((&recordingElectionFactory{}).factory())
+				join(t, a)
+				require.Equal(t, 1, a.enterElection(ElectionTriggerLeaderHeartbeatTimeout, false))
+				require.Equal(t, 0, a.logJoinWaitsAhead)
+				require.True(t, a.IsLeaderLogJoined())
+			},
+		},
+		{
+			name: "terminating refuses the append after the ack",
+			run: func(t *testing.T) {
+				a, q, _ := agentWithServiceControl(t, 1)
+				join(t, a)
+				ackAndPopWait(t, a, q, joinPosition, 0)
+				require.True(t, a.IsLeaderLogJoined())
+
+				a.setModuleState(ModuleStateTerminating, moduleStateReasonTerminationPosition)
+				require.False(t, a.IsLeaderLogJoined())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
 func TestJoinLog_terminalPublishMarksOnce(t *testing.T) {
 	t.Parallel()
 

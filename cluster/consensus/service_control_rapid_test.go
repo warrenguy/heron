@@ -920,6 +920,7 @@ const (
 	logJoinHoldOpFollowerJoin
 	logJoinHoldOpReplayJoin
 	logJoinHoldOpLeaderJoin
+	logJoinHoldOpLeaderJoinNoProxy
 	logJoinHoldOpRetry
 	logJoinHoldOpPop
 	logJoinHoldOpUnbind
@@ -976,15 +977,17 @@ func TestLogJoinHold_rapid(t *testing.T) {
 			unpublished = false
 		}
 		// startJoin applies one JoinLog publish outcome to the model.
-		startJoin := func(position int64, stored, tracked bool) {
+		startJoin := func(position int64, stored bool) {
 			clearTracked()
 			hasPending = stored
 			pendingPos = position
+
 			if stored {
-				unpublished = tracked
+				unpublished = true
 				return
 			}
-			waits = append(waits, logJoinHoldModelWait{position: position, tracked: tracked})
+
+			waits = append(waits, logJoinHoldModelWait{position: position, tracked: true})
 		}
 		useProxy := func(stored bool) {
 			if stored {
@@ -1009,6 +1012,7 @@ func TestLogJoinHold_rapid(t *testing.T) {
 			}
 			require.Equal(rt, expectedCount, a.logJoinWaitsAhead)
 			require.Equal(rt, expectedCount == 0, a.IsReplayLogJoined())
+			require.Equal(rt, expectedCount == 0, a.IsLeaderLogJoined())
 			require.Equal(rt, hasPending, a.HasPendingJoinLog())
 
 			positions := make([]int64, 0, len(waits))
@@ -1049,6 +1053,7 @@ func TestLogJoinHold_rapid(t *testing.T) {
 				logJoinHoldOpFollowerJoin,
 				logJoinHoldOpReplayJoin,
 				logJoinHoldOpLeaderJoin,
+				logJoinHoldOpLeaderJoinNoProxy,
 				logJoinHoldOpRetry,
 				logJoinHoldOpPop,
 				logJoinHoldOpUnbind,
@@ -1073,19 +1078,25 @@ func TestLogJoinHold_rapid(t *testing.T) {
 			case logJoinHoldOpFollowerJoin:
 				useProxy(stored)
 				a.publishFollowerJoinLog(FollowerLogJoinParams{LogJoinPosition: pos})
-				startJoin(pos, stored, true)
+				startJoin(pos, stored)
 				followerTracked = true
 
 			case logJoinHoldOpReplayJoin:
 				useProxy(stored)
 				a.PublishReplayJoinLog(ReplayLogJoin{StartPosition: pos, StopPosition: pos + 4096})
-				startJoin(pos, stored, true)
+				startJoin(pos, stored)
 				followerTracked = false
 
 			case logJoinHoldOpLeaderJoin:
 				useProxy(stored)
 				a.publishLeaderJoinLog(pos, 1, false)
-				startJoin(pos, stored, false)
+				startJoin(pos, stored)
+				followerTracked = false
+
+			case logJoinHoldOpLeaderJoinNoProxy:
+				a.SetServiceProxy(nil)
+				a.publishLeaderJoinLog(pos, 1, false)
+				clearTracked()
 
 			case logJoinHoldOpRetry:
 				a.SetServiceProxy(connected)

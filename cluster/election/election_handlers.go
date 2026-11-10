@@ -266,7 +266,8 @@ func (e *Election) handleLeaderReady(nowNs int64) int {
 		nowNs,
 		e.cfg.LeaderHeartbeatTimeoutNs,
 	)
-	if hasQuorum && e.completeElection(nowNs) {
+	readyToAppend := hasQuorum && e.deps.Handler.IsLeaderLogJoined()
+	if readyToAppend && e.completeElection(nowNs) {
 		workCount++
 	}
 	return workCount

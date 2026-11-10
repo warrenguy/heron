@@ -19,6 +19,8 @@ func (NoopAgentHandler) JoinLogAsLeader(int64, int64, int32, bool) error {
 	return nil
 }
 
+func (NoopAgentHandler) IsLeaderLogJoined() bool { return true }
+
 func (NoopAgentHandler) JoinLogAsFollower(
 	consensus.FollowerLogJoinParams,
 	int64,
