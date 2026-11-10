@@ -386,12 +386,12 @@ SOAK_ARTIFACT_DIR := $(ROOT)/.artifacts/soak
 SOAK_TEST_TIMEOUT ?= 55m
 
 .PHONY: test-soak
-test-soak: ## Live: fault-network checks
+test-soak: bin/aeronmd bin/luas-archive-java.jar ## Live: faulted cluster soak
 	mkdir -p $(SOAK_ARTIFACT_DIR)
 	go test -exec $(ROOT)/scripts/soak-namespace.sh -timeout=$(SOAK_TEST_TIMEOUT) \
 		-v -race -count=1 -tags=integration,cluster_soak \
 		-artifacts -outputdir=$(SOAK_ARTIFACT_DIR) \
-		-run '^TestFaultNetwork_' ./test/integration/cluster_soak/
+		./test/integration/cluster_soak/
 
 JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml
