@@ -39,8 +39,12 @@ type MemberReady struct {
 
 // MemberStatus is one sample of a child member.
 //
-// Started is false while the child waits for the start signal. It is true
-// once the duty loop runs.
+// Started is false while the child waits for the start signal and true once
+// the duty loop runs.
+//
+// LogSessionID is the log publication's session id. An unbound publication
+// reports 0, which is also a valid id. LogPublicationBound distinguishes the
+// two cases.
 type MemberStatus struct {
 	Started             bool
 	MemberID            int32
@@ -54,11 +58,13 @@ type MemberStatus struct {
 	LastElectionTrigger consensus.ElectionTrigger
 	LocalLogRecordingID int64
 	RecordingActive     bool
+	LogPublicationBound bool
 	LogSessionID        int32
 	LogImageSessions    []int32
 	ServiceLogPosition  int64
 	AppliedCount        int64
 	EchoFailures        int64
+	ApplyDigest         uint64
 }
 
 // MemberApplied is one sequenced session message the service applied.
@@ -66,24 +72,26 @@ type MemberApplied struct {
 	Seq int64
 }
 
-// MemberExit is the record a child writes after a stop, a failed setup, a
-// member termination, a transport loss, or a service failure. Error is empty
-// on a clean stop.
+// ExitTextDecodeRequest is the exit-record prefix for a request decode error.
+const ExitTextDecodeRequest = "keyvalue: decode request"
+
+// MemberExit is the record a child writes when it exits. Error is empty on a
+// clean stop.
 type MemberExit struct {
-	Error string
+	Error      string
+	Terminated bool
 }
 
-// ProcessMember is one child process incarnation.
+// ProcessMember is one child process incarnation. Call every method from the
+// test goroutine.
 //
-// One goroutine reads status records to EOF, then reaps the child, then closes
-// doneCh. Every other method runs on the test goroutine.
-//
-// ProcessMember owns the child and the read end of the status pipe. cmd owns
-// the lifeline pipe on the child's stdin. cmd.Wait closes the write end after
-// the child exits.
+// A reader goroutine calls the status handler after it stores each status
+// record. The handler must not block or call ProcessMember methods.
 type ProcessMember struct {
 	cmd     *exec.Cmd
 	logPath string
+
+	statusHandler func(MemberStatus)
 
 	mu      sync.Mutex
 	ready   *MemberReady
@@ -91,7 +99,8 @@ type ProcessMember struct {
 	applied []MemberApplied
 	exitRec *MemberExit
 
-	doneCh chan struct{}
+	waitDone chan struct{}
+	doneCh   chan struct{}
 }
 
 // startProcessMember starts cmd with a status pipe on fd 3 and a lifeline
@@ -99,7 +108,11 @@ type ProcessMember struct {
 //
 // The parent closes its status write end after Start, so the reader sees EOF
 // when the child exits.
-func startProcessMember(cmd *exec.Cmd, logPath string) (*ProcessMember, error) {
+func startProcessMember(
+	cmd *exec.Cmd,
+	logPath string,
+	handler func(MemberStatus),
+) (*ProcessMember, error) {
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("process member: log file: %w", err)
@@ -128,9 +141,11 @@ func startProcessMember(cmd *exec.Cmd, logPath string) (*ProcessMember, error) {
 	closeFiles(logFile, statusW)
 
 	member := &ProcessMember{
-		cmd:     cmd,
-		logPath: logPath,
-		doneCh:  make(chan struct{}),
+		cmd:           cmd,
+		logPath:       logPath,
+		statusHandler: handler,
+		waitDone:      make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 	go member.run(statusR)
 	return member, nil
@@ -145,8 +160,13 @@ func closeFiles(files ...*os.File) {
 func (m *ProcessMember) run(statusR *os.File) {
 	defer close(m.doneCh)
 
+	go func() {
+		_ = m.cmd.Wait()
+		close(m.waitDone)
+	}()
+
 	m.readStatus(statusR)
-	_ = m.cmd.Wait()
+	<-m.waitDone
 }
 
 func (m *ProcessMember) readStatus(statusR *os.File) {
@@ -167,7 +187,6 @@ func (m *ProcessMember) readStatus(statusR *os.File) {
 
 func (m *ProcessMember) store(rec memberRecord) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	switch {
 	case rec.Ready != nil:
@@ -182,6 +201,18 @@ func (m *ProcessMember) store(rec memberRecord) {
 	case rec.Exit != nil:
 		m.exitRec = rec.Exit
 	}
+
+	m.mu.Unlock()
+
+	if rec.Status != nil && m.statusHandler != nil {
+		m.statusHandler(rec.Status.clone())
+	}
+}
+
+func (s *MemberStatus) clone() MemberStatus {
+	cp := *s
+	cp.LogImageSessions = slices.Clone(s.LogImageSessions)
+	return cp
 }
 
 // Kill sends SIGKILL, then waits for process exit and status EOF.
@@ -196,6 +227,35 @@ func (m *ProcessMember) SignalStop() error {
 	return m.signal(syscall.SIGTERM)
 }
 
+// HasExited reports whether process exit and status EOF both happened.
+func (m *ProcessMember) HasExited() bool {
+	return isClosed(m.doneCh)
+}
+
+// AwaitExit waits up to bound for process exit and status EOF.
+//
+// AwaitExit does not send a signal or check the exit code.
+func (m *ProcessMember) AwaitExit(bound time.Duration) error {
+	if !m.awaitDone(bound) {
+		return fmt.Errorf("process member: exit bound %s elapsed", bound)
+	}
+
+	return nil
+}
+
+func (m *ProcessMember) awaitDone(bound time.Duration) bool {
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+
+	select {
+	case <-m.doneCh:
+		return true
+	case <-timer.C:
+		// select picks at random among ready cases.
+		return isClosed(m.doneCh)
+	}
+}
+
 // AwaitStop waits up to bound for process exit and status EOF.
 //
 // Returns an error when:
@@ -205,17 +265,9 @@ func (m *ProcessMember) SignalStop() error {
 //
 // AwaitStop sends SIGKILL before it returns the bound error.
 func (m *ProcessMember) AwaitStop(bound time.Duration) error {
-	timer := time.NewTimer(bound)
-	defer timer.Stop()
-
-	select {
-	case <-m.doneCh:
-	case <-timer.C:
-		// select picks at random among ready cases. Re-check before the kill.
-		if !isClosed(m.doneCh) {
-			_ = m.Kill()
-			return fmt.Errorf("process member: stop bound %s elapsed", bound)
-		}
+	if !m.awaitDone(bound) {
+		_ = m.Kill()
+		return fmt.Errorf("process member: stop bound %s elapsed", bound)
 	}
 
 	m.mu.Lock()
@@ -291,9 +343,7 @@ func (m *ProcessMember) Status() (MemberStatus, bool) {
 		return MemberStatus{}, false
 	}
 
-	cp := *m.status
-	cp.LogImageSessions = slices.Clone(m.status.LogImageSessions)
-	return cp, true
+	return m.status.clone(), true
 }
 
 // Applied returns a copy of every applied record, oldest first.
@@ -317,8 +367,11 @@ func (m *ProcessMember) ExitRecord() (MemberExit, bool) {
 }
 
 // ProcessState returns the reaped child's state, or nil before the reap.
+//
+// The state can be non-nil before HasExited reports true, while the reader
+// still stores the exit record.
 func (m *ProcessMember) ProcessState() *os.ProcessState {
-	if !isClosed(m.doneCh) {
+	if !isClosed(m.waitDone) {
 		return nil
 	}
 

@@ -54,6 +54,9 @@ type DriverCounters struct {
 	mapped *cnc.MappedCncFile
 	reader *cnc.CountersReader
 	byType map[int32]int32
+
+	recording          *cnc.RecordingPositionCache
+	recordingArchiveID int64
 }
 
 // OpenDriverCounters maps the CnC file under aeronDir.
@@ -138,6 +141,7 @@ func (c *DriverCounters) Close() error {
 	mapped := c.mapped
 	c.mapped = nil
 	c.reader = nil
+	c.recording = nil
 	return mapped.Close()
 }
 
@@ -167,12 +171,12 @@ func (c *DriverCounters) RecordingPosition(archiveID, recordingID int64) (int64,
 		return 0, false
 	}
 
-	slot, ok := c.reader.FindRecordingPositionCounter(recordingID, archiveID)
-	if !ok {
-		return 0, false
+	if c.recording == nil || c.recordingArchiveID != archiveID {
+		c.recording = cnc.NewRecordingPositionCache(c.reader, archiveID)
+		c.recordingArchiveID = archiveID
 	}
 
-	return slot.Get(), true
+	return c.recording.RecordingPosition(recordingID)
 }
 
 // HasClient reports whether the driver holds a client heartbeat counter for

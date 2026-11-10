@@ -169,6 +169,15 @@ const (
 	ProcessClusterSmokeLogEndpoint = "239.255.12.107:15604"
 )
 
+// Live soak endpoints. The pair reserves one three-member consensus port
+// block (base+1 .. base+205) and one shared cluster-log multicast endpoint.
+//
+// The final octet of the group address must be odd.
+const (
+	LiveSoakPortBase    = 16800
+	LiveSoakLogEndpoint = "239.255.12.103:16804"
+)
+
 // Cluster termination endpoints. The pair reserves one three-member consensus
 // port block (17101-17305) and one shared cluster-log multicast endpoint. The
 // next block above starts at 18301 (ClusterControlPortBase).
@@ -902,6 +911,12 @@ func multicastPortLedger() []portLedgerBlock {
 			logEndpoint: ProcessClusterSmokeLogEndpoint,
 		},
 		{
+			name:        "live-soak",
+			portBase:    LiveSoakPortBase,
+			memberCount: 3,
+			logEndpoint: LiveSoakLogEndpoint,
+		},
+		{
 			name:        "cluster-termination",
 			portBase:    ClusterTerminationPortBase,
 			memberCount: 3,
@@ -988,7 +1003,9 @@ func portInBlock(port, portBase, memberCount int) bool {
 
 // ClusterLogChannelTemplate confines cluster-log multicast to loopback.
 //
-// Without interface=, the driver joins the group on the default route interface
-// and the frames leave the host. ttl=0 confines traffic to a single host. A
+// Without interface=, the driver joins the group on the default route interface.
+// The frames then leave the host. ttl=0 confines traffic to a single host. A
 // multi-host cluster needs the cluster interface and a positive ttl.
-const ClusterLogChannelTemplate = "aeron:udp?term-length=64k|interface=127.0.0.1|ttl=0"
+const ClusterLogChannelTemplate = clusterLogChannelPrefix + "|interface=127.0.0.1|ttl=0"
+
+const clusterLogChannelPrefix = "aeron:udp?term-length=64k"
