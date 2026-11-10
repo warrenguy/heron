@@ -17,13 +17,10 @@ type FollowerLogJoinParams struct {
 }
 
 // AgentHandler is the election-to-agent boundary for term transitions.
-// Implemented by the consensus module agent; mocked in election tests.
 //
-// Three methods reach the archive control client through [LogRecordingControl]
-// and can fail. A non-nil error from any of those methods means the caller
-// must not proceed with the transition the caller asked for. The election
-// routes every failure to its own error handler. The error handler returns
-// the state machine to init and re-attempts on the next duty cycle.
+// Three methods reach the archive control client through [LogRecordingControl],
+// so they can fail. A non-nil error from any of them means the caller must not
+// proceed with the transition.
 //
 // Method semantics follow aeron ConsensusModuleAgent.
 type AgentHandler interface {
@@ -82,6 +79,10 @@ type AgentHandler interface {
 		logSessionID int32,
 		isStartup bool,
 	) error
+
+	// IsLeaderLogJoined reports whether the leader may append to the term that
+	// JoinLogAsLeader started.
+	IsLeaderLogJoined() bool
 
 	// JoinLogAsFollower binds the live cluster log image for
 	// params.LogSessionID and may start the REMOTE cluster log recording.

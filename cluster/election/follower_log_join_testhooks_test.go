@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"luas.fast/aeron"
+	"luas.fast/cluster/codecs"
+	"luas.fast/cluster/codecs/clusterwire"
 	"luas.fast/cluster/consensus"
 	"luas.fast/cluster/election"
 	"luas.fast/cluster/recordinglog"
@@ -52,10 +54,46 @@ func TestMultiMemberElectionCompletion(t *testing.T) {
 
 func runMultiMemberElectionCompletion(t *testing.T, n int, seedJoinImages bool) {
 	t.Helper()
-	require.GreaterOrEqual(t, n, 1)
 
 	clock := &FakeClock{nowNs: 1_000_000_000}
 	epochClock := &FakeEpochClock{nowMs: 1_000}
+	nodes := newMultiMemberNodes(t, n, 0, seedJoinImages, clock, epochClock)
+
+	completed := false
+
+	for range followerLogJoinMaxTick {
+		nowNs := clock.nowNs
+
+		for _, node := range nodes {
+			node.agent.DoWork(nowNs)
+		}
+
+		if seedJoinImages && allElectionsComplete(nodes) {
+			completed = true
+			break
+		}
+
+		advanceFakeClocks(clock, epochClock, followerLogJoinTickNs)
+	}
+
+	if !seedJoinImages {
+		requireMultiMemberElectionStalled(t, nodes)
+		return
+	}
+
+	require.True(t, completed, "election did not complete within %d ticks", followerLogJoinMaxTick)
+	requireMultiMemberElectionComplete(t, nodes)
+}
+
+func newMultiMemberNodes(
+	t testing.TB,
+	n, serviceCount int,
+	seedJoinImages bool,
+	clock *FakeClock,
+	epochClock *FakeEpochClock,
+) []*multiMemberNode {
+	t.Helper()
+	require.GreaterOrEqual(t, n, 1)
 
 	// Build log publishers first so join images can carry every session id.
 	logPublishers := make([]*consensus.LogPublisher, n)
@@ -118,6 +156,7 @@ func runMultiMemberElectionCompletion(t *testing.T, n int, seedJoinImages bool) 
 			ThisMemberID:              id,
 			LeaderMemberID:            election.NullMemberID,
 			Role:                      consensus.RoleFollower,
+			ServiceCount:              serviceCount,
 		})
 		agent.SetAppendSource(consensus.NewLogAppendPosition(agent))
 		agent.SetIngress(ingresses[i])
@@ -175,27 +214,65 @@ func runMultiMemberElectionCompletion(t *testing.T, n int, seedJoinImages bool) 
 			observer:     observer,
 		}
 	}
+	return nodes
+}
 
-	completed := false
-	for range followerLogJoinMaxTick {
-		nowNs := clock.nowNs
-		for _, node := range nodes {
-			node.agent.DoWork(nowNs)
-		}
-		if seedJoinImages && allElectionsComplete(nodes) {
-			completed = true
-			break
-		}
-		advanceFakeClocks(clock, epochClock, followerLogJoinTickNs)
+// TestLeaderReady_holdsAppendForServiceJoinAck runs real agents with one
+// service per member. Only the leader service acks, and only after the hold.
+func TestLeaderReady_holdsAppendForServiceJoinAck(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{1, 3} {
+		t.Run(fmt.Sprintf("members=%d", n), func(t *testing.T) {
+			t.Parallel()
+
+			clock := &FakeClock{nowNs: 1_000_000_000}
+			epochClock := &FakeEpochClock{nowMs: 1_000}
+			nodes := newMultiMemberNodes(t, n, 1, true, clock, epochClock)
+			leader := nodes[0]
+			leaderIngress := &consensus.QueueConsensusIngress{}
+			leader.agent.SetServiceIngress(leaderIngress)
+
+			for _, node := range nodes {
+				proxy := consensus.NewServiceProxy()
+				proxy.SetPublication(aeron.NewTestPublicationForHooksWithConnected(t, true))
+				node.agent.SetServiceProxy(proxy)
+			}
+
+			tick := func(ticks int) {
+				for range ticks {
+					for _, node := range nodes {
+						node.agent.DoWork(clock.nowNs)
+					}
+
+					advanceFakeClocks(clock, epochClock, followerLogJoinTickNs)
+				}
+			}
+
+			tick(followerLogJoinMaxTick)
+
+			require.Equal(t, consensus.RoleLeader, leader.agent.Role())
+			require.Equal(t, election.ElectionStateLeaderReady, leader.election.State())
+			require.Equal(t, 1, leader.agent.PendingServiceAckWaits())
+			require.Zero(t, leader.logPublisher.Position())
+			require.NotNil(t, leader.agent.Election())
+
+			buf := make([]byte, codecs.ServiceAckEncodedLen())
+			end, ok := codecs.EncodeServiceAck(
+				buf,
+				0,
+				uint16(clusterwire.ServiceAckSbeSchemaVersion),
+				codecs.ServiceAckFields{RelevantID: 1},
+			)
+			require.True(t, ok)
+			leaderIngress.Enqueue(buf[:end])
+			tick(1)
+
+			require.Nil(t, leader.agent.Election())
+			require.Contains(t, leader.observer.states, election.ElectionStateClosed)
+			require.Positive(t, leader.logPublisher.Position())
+		})
 	}
-
-	if !seedJoinImages {
-		requireMultiMemberElectionStalled(t, nodes)
-		return
-	}
-
-	require.True(t, completed, "election did not complete within %d ticks", followerLogJoinMaxTick)
-	requireMultiMemberElectionComplete(t, nodes)
 }
 
 func multiMemberElectionConfig(memberID int32) election.ElectionConfig {
