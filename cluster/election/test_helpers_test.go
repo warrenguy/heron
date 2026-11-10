@@ -119,6 +119,7 @@ type recordingAgentHandler struct {
 	scriptPreparePending bool
 	joinLeaderErr        error
 	joinFollowerErr      error
+	leaderJoinAckPending bool
 
 	prepareCalls       int
 	prepareLogPosition int64
@@ -167,6 +168,8 @@ func (h *recordingAgentHandler) JoinLogAsLeader(
 	})
 	return h.joinLeaderErr
 }
+
+func (h *recordingAgentHandler) IsLeaderLogJoined() bool { return !h.leaderJoinAckPending }
 
 func (h *recordingAgentHandler) JoinLogAsFollower(
 	params consensus.FollowerLogJoinParams,

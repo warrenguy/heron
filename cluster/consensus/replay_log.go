@@ -106,23 +106,11 @@ func (a *Agent) UnbindReplayLog(image *aeron.Image) {
 // Behaviour:
 //   - On a nil service proxy, the call is a silent no-op.
 //   - The call replaces any stored pending JoinLog.
-//   - A successful publish queues one wait at the replay start, unless
-//     serviceAckFailure is marked.
-//   - A terminal publish code marks [Agent.ServicePublishFailure].
-//   - While serviceAckFailure is nil, [Agent.IsReplayLogJoined] reports false
-//     until the replay JoinLog wait pops. A terminal publish code,
-//     [Agent.UnbindReplayLog], or a new election clears the replay tracking
-//     earlier.
 //
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines.
 func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
-	if a.serviceProxy == nil {
-		return
-	}
-	a.logJoinWaitsAhead = logJoinUnpublished
-	a.followerJoinTracked = false
-	a.publishOrQueueJoinLog(codecs.JoinLogFields{
+	a.publishTrackedJoinLog(codecs.JoinLogFields{
 		LogPosition:    join.StartPosition,
 		MaxLogPosition: join.StopPosition,
 		MemberID:       a.thisMemberID,
@@ -132,20 +120,36 @@ func (a *Agent) PublishReplayJoinLog(join ReplayLogJoin) {
 		Role:           RoleFollower.Code(),
 		IsStandby:      clusterwire.BooleanType_FALSE,
 		LogChannel:     []byte(join.LogChannel),
-	})
+	}, false)
 }
 
 // IsReplayLogJoined reports whether the agent has stopped waiting for the
-// services to ack a tracked JoinLog, a replay or a follower join.
+// services to ack a tracked JoinLog: a replay, a follower join, or a leader
+// join.
 //
-// Behaviour:
-//   - Reports false once the agent marks serviceAckFailure.
-//   - Otherwise reports true when the agent does not track a JoinLog.
+// Behaviour: reports false once the agent marks serviceAckFailure.
 //
 // Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
 // other goroutines.
 func (a *Agent) IsReplayLogJoined() bool {
 	return a.serviceAckFailure == nil && a.logJoinWaitsAhead == 0
+}
+
+// IsLeaderLogJoined reports whether the leader may append to its new term.
+// A spy subscription joins at the publication position. An append before the
+// services join therefore puts their join position above the JoinLog position.
+//
+// Behaviour:
+//   - Reports false until the services ack the leader JoinLog.
+//   - Reports true with a nil service proxy.
+//
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
+func (a *Agent) IsLeaderLogJoined() bool {
+	if a.moduleState == ModuleStateTerminating || a.termination != nil {
+		return false
+	}
+	return a.IsReplayLogJoined()
 }
 
 // markLogJoinPublished starts the join count once a tracked JoinLog publishes.

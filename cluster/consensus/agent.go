@@ -409,9 +409,9 @@ type Agent struct {
 	pendingJoinLog *codecs.JoinLogFields
 
 	// logJoinWaitsAhead counts the coordination waits up to and including
-	// the wait of the tracked JoinLog, a replay or a follower join.
-	// logJoinUnpublished marks a tracked JoinLog awaiting a successful
-	// publish. 0 means the agent does not track a JoinLog.
+	// the wait of the tracked JoinLog. logJoinUnpublished marks a tracked
+	// JoinLog awaiting a successful publish. 0 means the agent does not track
+	// a JoinLog.
 	//
 	// A positive count indexes serviceAckWaits. Each removal from that FIFO
 	// must update the count.
@@ -1892,14 +1892,11 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 	a.logPublicationReseed = f
 }
 
-// JoinLogAsLeader sets role [RoleLeader], records the leadership term, stores
-// logPosition as the NewLeadershipTermEvent term base, clears the follower
-// append target (leaderMemberID to nullMemberID), and starts the LOCAL cluster
-// log recording when a control is wired.
+// JoinLogAsLeader joins the term as leader. It starts the LOCAL cluster log
+// recording when a control is wired.
 //
-// Role and term fields write before the recording start. The join also
-// unbinds the log adapter image, so a later election replay never reads a
-// follower image of an earlier term. The image stays open.
+// The join unbinds the log adapter image, so a later election replay never
+// reads a follower image of an earlier term. The image stays open.
 //
 // With a [LogPublicationReseed] wired and a known recording id, the recording
 // start requires the publication at logPosition under logSessionID.
@@ -1908,27 +1905,19 @@ func (a *Agent) SetLogPublicationReseed(f LogPublicationReseed) {
 // stop position.
 //
 // On success, publishes JoinLog (template 40) when a service proxy is bound.
-// Publish failure does not fail JoinLogAsLeader. Retriable outcomes store a
-// pending JoinLog for [Agent.retryPendingJoinLog]. Terminal outcomes mark
-// [Agent.ServicePublishFailure] once.
+// Publish failure does not fail JoinLogAsLeader. [Agent.IsLeaderLogJoined]
+// reports false until the services ack the JoinLog.
 //
-// A failed start still keeps the agent in the leader role for the term install
-// path and publishes no JoinLog.
+// A failed start returns its error. The agent stays in the leader role for the
+// term install path.
 //
 // Returns an error when:
 //   - a control is wired, the recording is not already active, and the log
 //     publisher or its publication is unbound
 //   - the publication fails the recording start check above
-//   - the start fails
 //
-// Nil control skips recording and returns nil. JoinLog still publishes on that
-// success path when a proxy is bound.
-//
-// isStartup is written into the JoinLog IsStartup field.
-//
-// The join first cancels a module snapshot take in flight. The cancel does
-// not store a result. On the leader path, a take exists only after an
-// election replay that ended short.
+// The join first cancels a module snapshot take in flight. On the leader path,
+// a take exists only after an election replay that ended short.
 func (a *Agent) JoinLogAsLeader(
 	leadershipTermID int64,
 	logPosition int64,
@@ -2005,8 +1994,9 @@ func (a *Agent) startLeaderLogRecording(
 // the image, recording, and log spec stay the same.
 //
 // On a successful fresh bind, publishes JoinLog when the agent holds a service
-// proxy. Publish failure does not fail JoinLogAsFollower. Same pending and
-// terminal policy as [Agent.JoinLogAsLeader]. A follower log poll holds at the
+// proxy. Publish failure does not fail JoinLogAsFollower. Retriable outcomes
+// store a pending JoinLog for [Agent.retryPendingJoinLog]. Terminal outcomes
+// mark [Agent.ServicePublishFailure] once. A follower log poll holds at the
 // JoinLog position until the services ack it.
 //
 // Returns:

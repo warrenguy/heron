@@ -151,6 +151,10 @@ func (h *simAgentHandler) JoinLogAsLeader(
 	return h.agentCM.JoinLogAsLeader(leadershipTermID, logPosition, logSessionID, isStartup)
 }
 
+func (h *simAgentHandler) IsLeaderLogJoined() bool {
+	return h.agentCM == nil || h.agentCM.IsLeaderLogJoined()
+}
+
 func (h *simAgentHandler) JoinLogAsFollower(
 	params consensus.FollowerLogJoinParams,
 	nowNs int64,

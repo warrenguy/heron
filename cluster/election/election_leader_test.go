@@ -13,6 +13,93 @@ import (
 	"github.com/warrenguy/luas/cluster/recordinglog"
 )
 
+func TestElection_leaderReadyHoldsForLeaderLogJoin(t *testing.T) {
+	t.Parallel()
+
+	requireHeld := func(t testing.TB, fx *electionFixture) {
+		t.Helper()
+		require.Equal(t, election.ElectionStateLeaderReady, fx.election.State())
+		require.Empty(t, fx.host.appendNewLeadershipTermEventCalls)
+		require.Empty(t, fx.agent.electionCompleteNs)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		opts    []fixtureOption
+		toReady func(fx *electionFixture)
+		peers   int
+	}{
+		{
+			name: "single node",
+			opts: []fixtureOption{withSingleNode(), withPositions(0, 0, 0)},
+			toReady: func(fx *electionFixture) {
+				fx.driveUntilState(election.ElectionStateLeaderReady, 10)
+			},
+		},
+		{
+			name:  "three members",
+			opts:  []fixtureOption{withAppointedLeaderID(0)},
+			peers: 2,
+			toReady: func(fx *electionFixture) {
+				fx.canvassTo(election.ElectionStateCandidateBallot)
+				fx.injectVote(1, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+				fx.injectVote(2, fx.cfg.LeadershipTermID, fx.cfg.AppendPosition, true)
+				fx.driveUntilState(election.ElectionStateLeaderReady, 20)
+				fx.injectAppendPosition(1, fx.election.LeadershipTermID(), fx.cfg.AppendPosition)
+				fx.injectAppendPosition(2, fx.election.LeadershipTermID(), fx.cfg.AppendPosition)
+			},
+		},
+	} {
+		newHeldFixture := func(t *testing.T) *electionFixture {
+			t.Helper()
+			fx := newElectionFixture(t, tc.opts...)
+			fx.agent.leaderJoinAckPending = true
+			tc.toReady(fx)
+			return fx
+		}
+
+		t.Run(tc.name+" closes after the ack", func(t *testing.T) {
+			t.Parallel()
+
+			fx := newHeldFixture(t)
+			fx.publisher.Reset()
+
+			// Hold: the leader has quorum and keeps publishing its term.
+			const heldIntervals = 3
+			for range heldIntervals {
+				fx.advance(fx.cfg.LeaderHeartbeatIntervalNs)
+				fx.doWork()
+				requireHeld(t, fx)
+			}
+			require.Len(t, fx.publisher.Sent, heldIntervals*tc.peers)
+
+			for _, m := range fx.publisher.Sent {
+				require.Equal(t, uint16(clusterwire.NewLeadershipTermSbeTemplateID), m.TemplateID)
+			}
+
+			// Ack: the next duty cycle appends and closes.
+			fx.agent.leaderJoinAckPending = false
+			fx.doWork()
+			require.Equal(t, election.ElectionStateClosed, fx.election.State())
+			require.Len(t, fx.host.appendNewLeadershipTermEventCalls, 1)
+			require.Len(t, fx.agent.electionCompleteNs, 1)
+		})
+
+		t.Run(tc.name+" reset during the hold does not append", func(t *testing.T) {
+			t.Parallel()
+
+			fx := newHeldFixture(t)
+			fx.doWork()
+			requireHeld(t, fx)
+
+			fx.election.HandleError(fx.clock.nowNs, errors.New("reset during hold"))
+			require.Equal(t, election.ElectionStateInit, fx.election.State())
+			require.Empty(t, fx.host.appendNewLeadershipTermEventCalls)
+			require.Empty(t, fx.agent.electionCompleteNs)
+		})
+	}
+}
+
 // leaderLogReplicationFixture drives a 3-node election to LEADER_LOG_REPLICATION
 // with quorumPosition holding below the append position so the state does not
 // advance.

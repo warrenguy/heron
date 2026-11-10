@@ -353,9 +353,22 @@ func (a *Agent) publishJoinLog(fields *codecs.JoinLogFields) int {
 	return 0
 }
 
-// publishLeaderJoinLog builds leader JoinLog fields and publishes or queues.
-// Clears the log join tracking, because the leader JoinLog supersedes a
-// tracked follower JoinLog.
+// publishTrackedJoinLog makes fields the tracked JoinLog, then publishes or
+// queues it. The tracking comes first because [Agent.markLogJoinPublished]
+// reads it.
+func (a *Agent) publishTrackedJoinLog(fields codecs.JoinLogFields, isFollower bool) {
+	if a.serviceProxy == nil {
+		return
+	}
+
+	a.logJoinWaitsAhead = logJoinUnpublished
+	a.followerJoinTracked = isFollower
+	a.publishOrQueueJoinLog(fields)
+}
+
+// publishLeaderJoinLog publishes or queues the leader JoinLog as the tracked
+// JoinLog. A nil service proxy clears the tracking, because a stale count would
+// hold the leader with no ack to release it.
 //
 // Non-IPC log channels get the spy prefix so services subscribe without
 // competing as receivers on the leader publication.
@@ -364,8 +377,12 @@ func (a *Agent) publishLeaderJoinLog(
 	logSessionID int32,
 	isStartup bool,
 ) {
-	a.logJoinWaitsAhead = 0
-	a.publishOrQueueJoinLog(codecs.JoinLogFields{
+	if a.serviceProxy == nil {
+		a.logJoinWaitsAhead = 0
+		return
+	}
+
+	a.publishTrackedJoinLog(codecs.JoinLogFields{
 		LogPosition:    logPosition,
 		MaxLogPosition: math.MaxInt64,
 		MemberID:       a.thisMemberID,
@@ -375,20 +392,14 @@ func (a *Agent) publishLeaderJoinLog(
 		Role:           RoleLeader.Code(),
 		IsStandby:      clusterwire.BooleanType_FALSE,
 		LogChannel:     []byte(spyPrefixLogChannel(a.localLogChannel)),
-	})
+	}, false)
 }
 
 // publishFollowerJoinLog builds follower JoinLog fields and publishes or queues.
 //
 // Uses params channel unchanged (no spy prefix).
 func (a *Agent) publishFollowerJoinLog(params FollowerLogJoinParams) {
-	if a.serviceProxy == nil {
-		return
-	}
-
-	a.logJoinWaitsAhead = logJoinUnpublished
-	a.followerJoinTracked = true
-	a.publishOrQueueJoinLog(codecs.JoinLogFields{
+	a.publishTrackedJoinLog(codecs.JoinLogFields{
 		LogPosition:    params.LogJoinPosition,
 		MaxLogPosition: math.MaxInt64,
 		MemberID:       a.thisMemberID,
@@ -398,7 +409,7 @@ func (a *Agent) publishFollowerJoinLog(params FollowerLogJoinParams) {
 		Role:           RoleFollower.Code(),
 		IsStandby:      clusterwire.BooleanType_FALSE,
 		LogChannel:     []byte(params.LogChannel),
-	})
+	}, true)
 }
 
 // spyPrefixLogChannel returns channel unchanged for IPC media, else with the
