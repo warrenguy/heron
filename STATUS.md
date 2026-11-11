@@ -13,10 +13,14 @@ Works:
   subscriptions.
 - `Offer` (fragmented up to the maximum message length) and `TryClaim` on
   concurrent and exclusive publications.
+- `OfferVector` builds one message from several buffers. A reserved value
+  supplier sets the reserved value of each frame.
 - `Subscription` and `Image` `Poll`, `ControlledPoll` and `BoundedControlledPoll`;
   fragment and controlled fragment assemblers.
 - Multi-destination subscriptions (`Subscription.AddDestination` /
   `RemoveDestination`).
+- Multi-destination publications (manual MDC): blocking and async add and
+  remove of a destination.
 - Available and unavailable image handlers.
 - Counters: blocking `Client.AddCounter` and `Counter.Close`.
 
@@ -29,11 +33,13 @@ Partial:
 - `atomicbuffer.VolatileInt32At` and `VolatileInt64At` check neither bounds
   nor alignment. An empty buffer panics. Any other out-of-range offset reads
   outside the slice with no panic.
+- A client that falls behind the driver broadcast reports
+  `ErrBroadcastLapped` to `ErrorHandler`. The client keeps running. Java
+  terminates it.
 
 Not implemented:
 
 - Counters: static counters, available and unavailable counter handlers.
-- Publication destinations (manual MDC `addDestination` / `removeDestination`).
 - `Image.reject`, `blockPoll` / `rawPoll`, `controlledPeek`,
   `ExclusivePublication.appendPadding` / `offerBlock`, publication revoke.
 - `ChannelUri` and `ChannelUriStringBuilder`.
@@ -47,6 +53,8 @@ Covers the operations the cluster needs.
 Works:
 
 - Connect with challenge/response authentication; close.
+- Connect requests the archive id. `Client.ArchiveID` returns it.
+- Connect over a `control-mode=response` response channel.
 - Start and stop recording (optionally waiting for the recording signal), extend
   recording, replay, stop replay, list a single recording, truncate.
 - Non-blocking start, extend and stop recording.
@@ -61,7 +69,7 @@ Not implemented:
 - Position queries: recording, start, stop and max recorded position.
 - Bounded replay, `ReplayParams`, `stopAllReplays`, `ReplayMerge`,
   `PersistentSubscription`.
-- Purge, segment operations, archive id request.
+- Purge, segment operations.
 - Automatic control session keepalive: the proxy has `TryKeepAlive`, but the
   client never sends it.
 
@@ -75,6 +83,8 @@ Works:
   keepalive and the snapshot admin request.
 - Egress polling with fragment reassembly; leader failover on `NewLeaderEvent`;
   close.
+- `AeronConfig.ErrorHandler` receives errors from the transport client that
+  connect creates.
 
 Partial:
 
@@ -82,7 +92,9 @@ Partial:
   `UnsupportedMessageLength` for messages larger than one frame instead of
   fragmenting.
 - `TryClaim` copies the payload on commit rather than writing in place.
-- Errors are untyped; there is no error handler hook.
+- Most errors are untyped. A caller cannot match them with `errors.Is` or
+  `errors.As`.
+- Connect rejects a `control-mode=response` egress channel.
 
 Not implemented:
 
@@ -100,6 +112,8 @@ Works:
 - Election (all upstream election states); `recording.log` and
   `node-state.dat` byte-compatible with Java.
 - Leader commit and quorum; log publication; log recording on every member.
+- The log runs on a multicast channel, or on a unicast channel with one log
+  endpoint per member.
 - Follower catchup by archive replay within a term; divergent log truncation;
   member restart and rejoin.
 - Log replication: a member behind the new leader's term base copies the
@@ -128,8 +142,6 @@ Partial:
   a nanosecond cluster clock.
 - Mixed Java/Go clusters: only a cold start with an appointed leader is
   supported.
-- A Go leader needs a multicast log channel (no publication MDC destinations in
-  the transport).
 - Node control toggle: the module ignores REPLICATE_STANDBY_SNAPSHOT and
   VALIDATE_RECORDING_LOG.
 
