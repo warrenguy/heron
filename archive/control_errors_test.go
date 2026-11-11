@@ -108,3 +108,47 @@ func TestControlResponseTimeoutError_Error(t *testing.T) {
 		})
 	}
 }
+
+func TestControlResponseNotConnectedError_Error(t *testing.T) {
+	t.Parallel()
+
+	const notConnected = "response channel from archive is not connected: correlation_id=1234"
+
+	tests := []struct {
+		name      string
+		operation string
+		want      string
+	}{
+		{
+			name:      "controlResponse",
+			operation: ControlResponseAwaitOperation,
+			want:      "archive: control response: " + notConnected,
+		},
+		{
+			name:      "listRecordingDescriptor",
+			operation: ListRecordingDescriptorAwaitOperation,
+			want:      "archive: list recording descriptor: " + notConnected,
+		},
+		{
+			name:      "stopRecording",
+			operation: StopRecordingAwaitOperation,
+			want:      "archive: stop recording: " + notConnected,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := &ControlResponseNotConnectedError{
+				Operation:     tc.operation,
+				CorrelationID: 1234,
+			}
+			require.Equal(t, tc.want, err.Error())
+			require.ErrorIs(t, err, ErrNotConnected)
+
+			_, ok := ExceptionCode(err)
+			require.False(t, ok)
+		})
+	}
+}

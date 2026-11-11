@@ -45,7 +45,7 @@ func runAwaitLoopNeverMatching(
 		aeronClient,
 		cfg,
 		pollFn,
-		nil,
+		awaitChecks{},
 		timeout,
 		correlationID,
 		ControlResponseAwaitOperation,
@@ -88,7 +88,7 @@ func TestOfferAndAwait_offerRetryDoesNotStarveResponseAwait(t *testing.T) {
 		harness.Client,
 		cfg,
 		poller.Poll,
-		nil,
+		awaitChecks{},
 		poller,
 		func() (int64, bool) {
 			offerCalls++
@@ -232,6 +232,277 @@ func TestRunControlAwaitLoop_contextCanceled(t *testing.T) {
 	})
 }
 
+const (
+	notConnectedLoopStartNs       int64 = 5_000_000_000
+	notConnectedLoopTimeout             = 10 * time.Nanosecond
+	notConnectedLoopCorrelationID int64 = 4711
+)
+
+// notConnectedLoop drives runControlAwaitLoop on an idle harness client with a
+// test clock. Each subtest moves the clock through pollFn.
+type notConnectedLoop struct {
+	nowNs          int64
+	transportFault func() error
+	isConnected    func() bool
+	matchFn        func() (bool, error)
+}
+
+func (loop *notConnectedLoop) run(
+	tb testing.TB,
+	ctx context.Context,
+	pollFn func() int,
+) error {
+	tb.Helper()
+
+	harness := aeron.NewAsyncConnectTestHarness(tb)
+	loop.nowNs = notConnectedLoopStartNs
+	matchFn := loop.matchFn
+
+	if matchFn == nil {
+		matchFn = func() (bool, error) { return false, nil }
+	}
+
+	return runControlAwaitLoop(
+		ctx,
+		harness.Client,
+		Config{
+			IdleStrategy: idlestrategy.NoOp,
+			AeronConfig: aeron.Config{
+				NanoClock: func() int64 { return loop.nowNs },
+			},
+		},
+		pollFn,
+		awaitChecks{transportFault: loop.transportFault, isConnected: loop.isConnected},
+		notConnectedLoopTimeout,
+		notConnectedLoopCorrelationID,
+		ControlResponseAwaitOperation,
+		matchFn,
+	)
+}
+
+func requireControlResponseNotConnected(
+	tb testing.TB,
+	err error,
+	wantOperation string,
+	wantCorrelationID int64,
+) {
+	tb.Helper()
+
+	var notConnectedErr *ControlResponseNotConnectedError
+	require.ErrorAs(tb, err, &notConnectedErr)
+	require.Equal(tb, wantOperation, notConnectedErr.Operation)
+	require.Equal(tb, wantCorrelationID, notConnectedErr.CorrelationID)
+}
+
+func TestRunControlAwaitLoop_notConnected(t *testing.T) {
+	t.Run("empty_poll_not_connected", func(t *testing.T) {
+		var polls, checks int
+		loop := &notConnectedLoop{}
+		loop.isConnected = func() bool {
+			checks++
+			return checks < 2
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+			return 0
+		})
+		requireControlResponseNotConnected(
+			t,
+			err,
+			ControlResponseAwaitOperation,
+			notConnectedLoopCorrelationID,
+		)
+		require.Equal(t, 2, polls)
+		require.Equal(t, 2, checks)
+	})
+
+	t.Run("busy_poll_skips_check", func(t *testing.T) {
+		var polls, checks int
+		loop := &notConnectedLoop{}
+		loop.isConnected = func() bool {
+			checks++
+			return false
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+
+			if polls <= 3 {
+				return 1
+			}
+			return 0
+		})
+		requireControlResponseNotConnected(
+			t,
+			err,
+			ControlResponseAwaitOperation,
+			notConnectedLoopCorrelationID,
+		)
+		require.Equal(t, 4, polls)
+		require.Equal(t, 1, checks)
+	})
+
+	t.Run("match_wins", func(t *testing.T) {
+		matchErr := errors.New("latched match")
+		var polls, checks, matches int
+		loop := &notConnectedLoop{
+			isConnected: func() bool {
+				checks++
+				return false
+			},
+			matchFn: func() (bool, error) {
+				matches++
+				return matches >= 2, matchErr
+			},
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+			return 0
+		})
+		require.ErrorIs(t, err, matchErr)
+		require.Equal(t, 1, polls)
+		require.Zero(t, checks)
+	})
+
+	t.Run("pre_loop_match_wins", func(t *testing.T) {
+		matchErr := errors.New("latched match")
+		var polls, checks int
+		loop := &notConnectedLoop{
+			isConnected: func() bool {
+				checks++
+				return false
+			},
+			matchFn: func() (bool, error) { return true, matchErr },
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			return 0
+		})
+		require.ErrorIs(t, err, matchErr)
+		require.Zero(t, polls)
+		require.Zero(t, checks)
+	})
+
+	t.Run("disconnect_wins_over_deadline", func(t *testing.T) {
+		loop := &notConnectedLoop{isConnected: func() bool { return false }}
+
+		err := loop.run(t, t.Context(), func() int {
+			loop.nowNs = notConnectedLoopStartNs + notConnectedLoopTimeout.Nanoseconds()
+			return 0
+		})
+		requireControlResponseNotConnected(
+			t,
+			err,
+			ControlResponseAwaitOperation,
+			notConnectedLoopCorrelationID,
+		)
+
+		var timeoutErr *ControlResponseTimeoutError
+		require.NotErrorAs(t, err, &timeoutErr)
+	})
+
+	t.Run("context_error_wins", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		loop := &notConnectedLoop{
+			isConnected: func() bool {
+				cancel()
+				return false
+			},
+		}
+
+		err := loop.run(t, ctx, func() int {
+			loop.nowNs++
+			return 0
+		})
+		require.ErrorIs(t, err, context.Canceled)
+		require.NotErrorIs(t, err, ErrNotConnected)
+	})
+
+	t.Run("connected_times_out", func(t *testing.T) {
+		var polls, emptyPolls, checks int
+		loop := &notConnectedLoop{
+			isConnected: func() bool {
+				checks++
+				return true
+			},
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+
+			if polls%2 == 0 {
+				return 1
+			}
+
+			emptyPolls++
+			return 0
+		})
+		requireControlResponseTimeout(
+			t,
+			err,
+			ControlResponseAwaitOperation,
+			notConnectedLoopCorrelationID,
+			notConnectedLoopTimeout,
+		)
+		require.Positive(t, emptyPolls)
+		require.Equal(t, emptyPolls, checks)
+	})
+
+	t.Run("transport_fault_wins", func(t *testing.T) {
+		faultErr := errors.New("transport fault")
+		var polls, checks int
+		loop := &notConnectedLoop{
+			transportFault: func() error { return faultErr },
+			isConnected: func() bool {
+				checks++
+				return false
+			},
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+			return 0
+		})
+		require.ErrorIs(t, err, faultErr)
+		require.NotErrorIs(t, err, ErrNotConnected)
+		require.Zero(t, polls)
+		require.Zero(t, checks)
+	})
+
+	t.Run("transport_fault_during_poll_wins", func(t *testing.T) {
+		faultErr := errors.New("transport fault")
+		var polls int
+		loop := &notConnectedLoop{
+			transportFault: func() error {
+				if polls == 0 {
+					return nil
+				}
+				return faultErr
+			},
+			isConnected: func() bool { return false },
+		}
+
+		err := loop.run(t, t.Context(), func() int {
+			polls++
+			loop.nowNs++
+			return 0
+		})
+		require.ErrorIs(t, err, faultErr)
+		require.NotErrorIs(t, err, ErrNotConnected)
+		require.Equal(t, 1, polls)
+	})
+}
+
 func TestRunControlAwaitLoop_transportFault(t *testing.T) {
 	faultErr := errors.New("transport fault")
 
@@ -246,13 +517,13 @@ func TestRunControlAwaitLoop_transportFault(t *testing.T) {
 				polls++
 				return 0
 			},
-			func() error {
+			awaitChecks{transportFault: func() error {
 				checks++
 				if checks >= 2 {
 					return faultErr
 				}
 				return nil
-			},
+			}},
 			time.Minute,
 			1,
 			ControlResponseAwaitOperation,
@@ -275,10 +546,10 @@ func TestRunControlAwaitLoop_transportFault(t *testing.T) {
 				polls++
 				return 0
 			},
-			func() error {
+			awaitChecks{transportFault: func() error {
 				checks++
 				return faultErr
-			},
+			}},
 			time.Minute,
 			1,
 			ControlResponseAwaitOperation,
@@ -301,10 +572,10 @@ func TestRunControlAwaitLoop_transportFault(t *testing.T) {
 				polls++
 				return 0
 			},
-			func() error {
+			awaitChecks{transportFault: func() error {
 				cancel()
 				return faultErr
-			},
+			}},
 			time.Minute,
 			1,
 			ControlResponseAwaitOperation,
@@ -418,7 +689,7 @@ func TestOfferAndAwait_offerTimeout(t *testing.T) {
 			h.advanceClock()
 			return 0
 		},
-		nil,
+		awaitChecks{},
 		h.poller,
 		func() (int64, bool) {
 			return h.proxy.TryKeepAlive(controlResponseTestControlSessionID, 1)
@@ -441,7 +712,7 @@ func TestOfferAndAwait_offerAttemptsExhausted(t *testing.T) {
 		h.client,
 		h.cfg,
 		func() int { return 0 },
-		nil,
+		awaitChecks{},
 		h.poller,
 		func() (int64, bool) {
 			return h.proxy.TryKeepAlive(controlResponseTestControlSessionID, 1)

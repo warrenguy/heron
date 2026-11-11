@@ -701,6 +701,96 @@ func TestClientStartRecording_OK(t *testing.T) {
 	}
 }
 
+// clockAdvanceIdleStrategy moves the harness clock on each idle. A blocking
+// client call then reaches its deadline without a real wait.
+type clockAdvanceIdleStrategy struct {
+	h *lifecycleHarness
+}
+
+func (idle clockAdvanceIdleStrategy) Idle(_ int) {
+	idle.h.advanceClock()
+}
+
+func (clockAdvanceIdleStrategy) Reset() {}
+
+// TestClient_blockingAwaitEndsWhenNotConnected asserts that each blocking await
+// shape ends with ErrNotConnected after an empty poll finds no connected image.
+// A connected image keeps the await open until the deadline.
+func TestClient_blockingAwaitEndsWhenNotConnected(t *testing.T) {
+	stopRecording := func(ctx context.Context, client *Client) error {
+		return client.StopRecording(
+			ctx,
+			archiveProxyTestRecordingStreamID,
+			[]byte(lifecycleRecordingChannel),
+		)
+	}
+	cases := []struct {
+		name          string
+		wantOperation string
+		call          func(ctx context.Context, client *Client) error
+	}{
+		{
+			name:          "control_response",
+			wantOperation: ControlResponseAwaitOperation,
+			call:          stopRecording,
+		},
+		{
+			name:          "descriptor",
+			wantOperation: ListRecordingDescriptorAwaitOperation,
+			call: func(ctx context.Context, client *Client) error {
+				_, err := client.ListRecording(ctx, lifecycleRecordingID)
+				return err
+			},
+		},
+		{
+			name:          "recording_signal",
+			wantOperation: StopRecordingAwaitOperation,
+			call: func(ctx context.Context, client *Client) error {
+				return client.StopRecordingAwaitSignal(
+					ctx,
+					archiveProxyTestRecordingStreamID,
+					[]byte(lifecycleRecordingChannel),
+					NewStopSignalTracker(controlResponseTestControlSessionID, lifecycleRecordingID),
+				)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t)
+			client := h.newClient()
+			image, ok := h.sub.ImageAt(0)
+			require.True(t, ok)
+			aeron.ImageInternalCloseForHooks(image)
+
+			err := tc.call(t.Context(), client)
+			requireControlResponseNotConnected(
+				t,
+				err,
+				tc.wantOperation,
+				offeredArchiveCorrelationID(t, h.pub.lastOffer()),
+			)
+			require.False(t, client.IsClosed())
+		})
+	}
+
+	t.Run("connected_image_times_out", func(t *testing.T) {
+		h := newLifecycleHarness(t)
+		client := h.newClient()
+		client.cfg.IdleStrategy = clockAdvanceIdleStrategy{h: h}
+
+		err := stopRecording(t.Context(), client)
+		requireControlResponseTimeout(
+			t,
+			err,
+			ControlResponseAwaitOperation,
+			offeredArchiveCorrelationID(t, h.pub.lastOffer()),
+			lifecycleControlResponseTimeout,
+		)
+	})
+}
+
 // Each blocking call disarms the session filter on return when an ERROR for
 // another id arrives first.
 func TestClientBlockingCalls_errorResponseForOtherID(t *testing.T) {

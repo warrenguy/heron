@@ -69,6 +69,8 @@ func tryMatchControlResponseDiscardStale(
 //   - ControlResponseTimeoutError on timeout
 //   - ErrTransportTerminating when aeronClient reports termination
 //   - ctx.Err() when the context is done
+//
+// The function does not check the subscription connection. Client methods do.
 func AwaitControlResponse(
 	ctx context.Context,
 	aeronClient *aeron.Client,
@@ -83,7 +85,7 @@ func AwaitControlResponse(
 		aeronClient,
 		cfg,
 		pollFn,
-		nil,
+		awaitChecks{},
 		poller,
 		controlSessionID,
 		correlationID,
@@ -95,7 +97,7 @@ func awaitControlResponse(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	poller *ControlResponsePoller,
 	controlSessionID int64,
 	correlationID int64,
@@ -110,7 +112,7 @@ func awaitControlResponse(
 		aeronClient,
 		cfg,
 		pollFn,
-		transportFault,
+		checks,
 		cfg.ControlResponseTimeout,
 		correlationID,
 		ControlResponseAwaitOperation,
@@ -125,7 +127,7 @@ func awaitMatchedControlResponse(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	responseTimeout time.Duration,
 	correlationID int64,
 	operation string,
@@ -141,7 +143,7 @@ func awaitMatchedControlResponse(
 		aeronClient,
 		cfg,
 		pollFn,
-		transportFault,
+		checks,
 		responseTimeout,
 		correlationID,
 		operation,
@@ -159,6 +161,13 @@ func awaitMatchedControlResponse(
 		return codecs.ControlResponseFields{}, err
 	}
 	return matched, matchErr
+}
+
+// awaitChecks holds the session checks a blocking await runs each
+// iteration. A nil isConnected skips the disconnect check.
+type awaitChecks struct {
+	transportFault func() error
+	isConnected    func() bool
 }
 
 // checkTransportFault returns the error from transportFault. A nil
@@ -185,12 +194,21 @@ func checkTransportFault(
 
 // runControlAwaitLoop requires a normalized cfg. It does not replace a nil
 // IdleStrategy.
+//
+// Exit order per iteration:
+//  1. ctx is done
+//  2. the transport fault
+//  3. a match
+//  4. the disconnect check, after an empty poll that did not match. A
+//     transport fault raised during the poll wins.
+//
+// The loop returns ControlResponseTimeoutError once the deadline passes.
 func runControlAwaitLoop(
 	ctx context.Context,
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	responseTimeout time.Duration,
 	correlationID int64,
 	operation string,
@@ -215,13 +233,25 @@ func runControlAwaitLoop(
 
 		aeronClient.DoWork()
 
-		if err := checkTransportFault(ctx, aeronClient, transportFault); err != nil {
+		if err := checkTransportFault(ctx, aeronClient, checks.transportFault); err != nil {
 			return err
 		}
 
 		work := pollFn()
 		if done, err := matchFn(); done {
 			return err
+		}
+
+		isConnected := checks.isConnected
+		if work == 0 && isConnected != nil && !isConnected() {
+			// A fault closes the subscription. The fault is the cause.
+			if err := checkTransportFault(ctx, aeronClient, checks.transportFault); err != nil {
+				return err
+			}
+			return aeron.PreferContextError(ctx, &ControlResponseNotConnectedError{
+				Operation:     operation,
+				CorrelationID: correlationID,
+			})
 		}
 
 		idle.Idle(work)
@@ -245,7 +275,7 @@ func offerAndAwaitControlRequest(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	poller *ControlResponsePoller,
 	offerFn func() (int64, bool),
 	controlSessionID int64,
@@ -256,7 +286,7 @@ func offerAndAwaitControlRequest(
 		defer poller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, aeronClient, cfg, pollFn, transportFault, offerFn,
+		ctx, aeronClient, cfg, pollFn, checks.transportFault, offerFn,
 	); err != nil {
 		return codecs.ControlResponseFields{}, err
 	}
@@ -266,7 +296,7 @@ func offerAndAwaitControlRequest(
 		aeronClient,
 		cfg,
 		pollFn,
-		transportFault,
+		checks,
 		poller,
 		controlSessionID,
 		correlationID,

@@ -83,7 +83,28 @@ func (err *ControlResponseTimeoutError) Error() string {
 	)
 }
 
-// Operation labels for ControlResponseTimeoutError.Operation.
+// ControlResponseNotConnectedError reports a blocking control await that
+// ended because the control response subscription has no connected image.
+// It wraps ErrNotConnected.
+type ControlResponseNotConnectedError struct {
+	Operation     string
+	CorrelationID int64
+}
+
+func (err *ControlResponseNotConnectedError) Error() string {
+	return fmt.Sprintf(
+		"archive: %s: response channel from archive is not connected: correlation_id=%d",
+		err.Operation,
+		err.CorrelationID,
+	)
+}
+
+func (err *ControlResponseNotConnectedError) Unwrap() error {
+	return ErrNotConnected
+}
+
+// Operation labels for ControlResponseTimeoutError.Operation and
+// ControlResponseNotConnectedError.Operation.
 const (
 	ControlResponseAwaitOperation         = "control response"
 	ListRecordingDescriptorAwaitOperation = "list recording descriptor"

@@ -32,6 +32,7 @@ import "context"
 //     LiveDestination or tags
 //   - the response does not arrive within ControlResponseTimeout
 //   - the transport client terminates
+//   - the archive disconnects before the response
 //   - ctx is done before the response
 func (client *Client) Replicate(
 	ctx context.Context,

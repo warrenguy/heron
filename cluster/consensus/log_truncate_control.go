@@ -27,20 +27,26 @@ type LogTruncateControl interface {
 	//
 	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
 	// from other goroutines. Blocks until the reply arrives, the deadline
-	// expires, or the transport client terminates. An implementation must bound
-	// the wait.
+	// expires, the transport client terminates, or the archive disconnects. An
+	// implementation must bound the wait.
 	//
 	// Returns deletedSegmentCount, the number of segment files the archive queued
 	// for deletion, with a nil error on success. Zero is a valid count. A
 	// truncate to the current stop position does not remove a segment file.
 	// deletedSegmentCount is meaningless on error.
 	//
-	// The error is non-nil when the offer fails, the deadline expires, the archive
-	// refuses, or the transport client terminates. The error wraps the archive
-	// cause. A transport fault matches archive.ErrTransportTerminating. On error
-	// the implementation does not store a position for StopPositionFor. Refuse
-	// codes and the data-header partial-update case live on
-	// archive.Client.TruncateRecording.
+	// Returns an error when:
+	//   - the offer fails
+	//   - the deadline expires
+	//   - the archive refuses
+	//   - the transport client terminates. The error matches
+	//     archive.ErrTransportTerminating
+	//   - the archive disconnects after the offer. The error matches
+	//     archive.ErrNotConnected
+	//
+	// The error wraps the archive cause. On error the implementation does not
+	// store a position for StopPositionFor. Refuse codes and the data-header
+	// partial-update case live on archive.Client.TruncateRecording.
 	TruncateLogRecording(
 		recordingID int64,
 		position int64,

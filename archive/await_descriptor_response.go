@@ -25,6 +25,8 @@ var errNilDescriptorPoller = errors.New(
 // when that comes first.
 //
 // Returns ErrTransportTerminating when aeronClient reports termination.
+//
+// The function does not check the subscription connection. Client methods do.
 func AwaitListRecording(
 	ctx context.Context,
 	aeronClient *aeron.Client,
@@ -37,7 +39,7 @@ func AwaitListRecording(
 		aeronClient,
 		cfg,
 		pollFn,
-		nil,
+		awaitChecks{},
 		descriptorPoller,
 	)
 }
@@ -47,7 +49,7 @@ func awaitListRecording(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	descriptorPoller *RecordingDescriptorPoller,
 ) error {
 	if descriptorPoller == nil {
@@ -60,7 +62,7 @@ func awaitListRecording(
 		aeronClient,
 		cfg,
 		pollFn,
-		transportFault,
+		checks,
 		cfg.ControlResponseTimeout,
 		correlationID,
 		ListRecordingDescriptorAwaitOperation,
@@ -81,12 +83,12 @@ func offerAndAwaitListRecording(
 	aeronClient *aeron.Client,
 	cfg Config,
 	pollFn func() int,
-	transportFault func() error,
+	checks awaitChecks,
 	descriptorPoller *RecordingDescriptorPoller,
 	offerFn func() (int64, bool),
 ) (codecs.RecordingDescriptorFields, error) {
 	if err := offerControlRequest(
-		ctx, aeronClient, cfg, pollFn, transportFault, offerFn,
+		ctx, aeronClient, cfg, pollFn, checks.transportFault, offerFn,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err
 	}
@@ -96,7 +98,7 @@ func offerAndAwaitListRecording(
 		aeronClient,
 		cfg,
 		pollFn,
-		transportFault,
+		checks,
 		descriptorPoller,
 	); err != nil {
 		return codecs.RecordingDescriptorFields{}, err

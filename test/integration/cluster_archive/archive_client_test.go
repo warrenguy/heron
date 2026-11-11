@@ -681,6 +681,47 @@ func TestArchiveClient_controlChannelSessionID(t *testing.T) {
 	}
 }
 
+// TestArchiveClient_blockingAwaitEndsOnLostArchive asserts a blocking await
+// returns ErrNotConnected once the stopped Archive's response image closes.
+func TestArchiveClient_blockingAwaitEndsOnLostArchive(t *testing.T) {
+	md := harness.StartParallel(t)
+	node := harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveControlChannel(harness.FreeUDPPort(t)),
+	})
+	aeronClient, _ := harness.ConnectIPCClient(t, md)
+	archiveClient := connectArchiveClientConfig(t, archive.Config{
+		ControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ControlResponseChannel: archive.DefaultLocalControlChannel,
+		ControlResponseTimeout: 30 * time.Second,
+		Aeron:                  aeronClient,
+	})
+
+	// Phase: kill the Archive while the call waits for the START signal.
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		time.Sleep(500 * time.Millisecond)
+		node.Stop()
+	}()
+
+	_, err := archiveClient.StartRecordingAwaitSignal(
+		t.Context(),
+		4711,
+		archivewire.SourceLocation_LOCAL,
+		false,
+		[]byte(archiveClientRecordingChannel),
+		archive.NewStartSignalTracker(archiveClient.ControlSessionID()),
+	)
+	<-stopped
+
+	// Phase: the await ends on the lost response image. The session stays
+	// open.
+	require.ErrorIs(t, err, archive.ErrNotConnected)
+	require.False(t, archiveClient.IsClosed())
+	require.NoError(t, archiveClient.TransportFault())
+}
+
 // connectControlSession runs one AsyncConnect on cfg. It calls
 // aeronClient.DoWork before each poll. Cleanup closes the control publication
 // and subscription.
@@ -753,12 +794,19 @@ func connectArchiveClientOn(
 ) *archive.Client {
 	t.Helper()
 
-	cfg := archive.Config{
+	return connectArchiveClientConfig(t, archive.Config{
 		ControlRequestChannel:  requestChannel,
 		ControlResponseChannel: responseChannel,
 		Aeron:                  aeronClient,
-	}.WithRemoteControl().Normalize()
-	archiveClient, err := archive.Connect(t.Context(), cfg)
+	})
+}
+
+// connectArchiveClientConfig connects an archive client on cfg with remote
+// control. Cleanup closes the client.
+func connectArchiveClientConfig(t testing.TB, cfg archive.Config) *archive.Client {
+	t.Helper()
+
+	archiveClient, err := archive.Connect(t.Context(), cfg.WithRemoteControl().Normalize())
 	require.NoError(t, err)
 	harness.CleanupClose(t, "close archive client", archiveClient.Close)
 	return archiveClient
