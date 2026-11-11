@@ -473,6 +473,9 @@ smoke-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go
 smoke-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
 	./scripts/cluster-mixed-smoke.sh go-leader
 
+smoke-cluster-mixed-go-leader-unicast: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader, unicast log
+	./scripts/cluster-mixed-smoke.sh go-leader-unicast
+
 smoke-cluster-mixed-ex-leader-rejoin: aeronmd-compose-image ## Docker smoke: Go ex-leader rejoins a Java leader
 	./scripts/cluster-mixed-smoke.sh ex-leader-rejoin
 

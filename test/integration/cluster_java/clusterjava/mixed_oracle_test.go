@@ -50,6 +50,16 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: "TestClusterMixedGoLeader",
 		},
 		{
+			name: "MixedComposeGoLeaderUnicastEnvKey",
+			got:  clusterjava.MixedComposeGoLeaderUnicastEnvKey,
+			want: "LUAS_CLUSTER_MIXED_GO_LEADER_UNICAST_COMPOSE",
+		},
+		{
+			name: "MixedSmokeNameGoLeaderUnicast",
+			got:  clusterjava.MixedSmokeNameGoLeaderUnicast,
+			want: "TestClusterMixedGoLeaderUnicast",
+		},
+		{
 			name: "MixedHostnamesEnvKey",
 			got:  clusterjava.MixedHostnamesEnvKey,
 			want: "LUAS_CLUSTER_HOSTNAMES",
@@ -63,6 +73,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "MixedComposeSkipHintGoLeader",
 			got:  clusterjava.MixedComposeSkipHintGoLeader,
 			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader",
+		},
+		{
+			name: "MixedComposeSkipHintGoLeaderUnicast",
+			got:  clusterjava.MixedComposeSkipHintGoLeaderUnicast,
+			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader-unicast",
 		},
 		{
 			name: "MixedComposeExLeaderRejoinEnvKey",
@@ -350,6 +365,20 @@ func TestMixedRequiredSmoke(t *testing.T) {
 			wantName: "",
 		},
 		{
+			name: "goUnicastGateOne",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderUnicastEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderUnicast,
+		},
+		{
+			name: "goUnicastGateZero",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderUnicastEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
 			name: "bothGatesOne",
 			env: map[string]string{
 				clusterjava.MixedComposeJavaLeaderEnvKey: "1",
@@ -416,6 +445,14 @@ func TestMixedRequiredSmoke(t *testing.T) {
 				clusterjava.MixedComposeGoLeaderSnapshotEnvKey: "1",
 			},
 			wantName: clusterjava.MixedSmokeNameGoLeaderSnapshot,
+		},
+		{
+			name: "goLeaderUnicastWithBaseZero",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey:        "0",
+				clusterjava.MixedComposeGoLeaderUnicastEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderUnicast,
 		},
 	}
 

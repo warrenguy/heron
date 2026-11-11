@@ -32,13 +32,15 @@ const mixedIdlePollInterval = 50 * time.Millisecond
 
 // mixedMemberFixture holds one Go consensus member on the external aeronmd.
 //
-// Concurrency: invoker-only. Every method runs on the test goroutine.
+// Concurrency: every method runs on the test goroutine. Not safe from other
+// goroutines.
 //
 // Lifetime: Open registers module Close on t.Cleanup.
 //
 // The caller writes the readiness file before the overlay's waiting services
 // start:
-//   - java-leader and go-leader write the file immediately after open.
+//   - java-leader, go-leader, and go-leader-unicast write the file immediately
+//     after open.
 //   - ex-leader-rejoin writes the file only after the Go module closes.
 type mixedMemberFixture struct {
 	module *cluster.ConsensusModule
@@ -70,7 +72,7 @@ func requireMixedCompose(t *testing.T, envKey, skipHint string) {
 // buildMixedJavaLeaderConfig builds the Go member config for a Java-led term.
 // AppointedLeaderID is 0. ClusterMembers uses the compose host list.
 // LogChannel stays empty so Normalize takes DefaultLogChannel (unicast template).
-func buildMixedJavaLeaderConfig(t *testing.T) cluster.Config {
+func buildMixedJavaLeaderConfig(t testing.TB) cluster.Config {
 	t.Helper()
 
 	members, err := clusterjava.MixedComposeClusterMembers("")
@@ -111,6 +113,18 @@ func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 	}
 }
 
+// buildMixedGoLeaderUnicastConfig starts from the Java-leader config, which
+// keeps the per-member log endpoints and the unicast LogChannel default.
+// AppointedLeaderID is 2.
+func buildMixedGoLeaderUnicastConfig(t testing.TB) cluster.Config {
+	t.Helper()
+
+	cfg := buildMixedJavaLeaderConfig(t)
+	appointed := clusterjava.MixedAppointedLeaderIDGoLeader
+	cfg.AppointedLeaderID = &appointed
+	return cfg
+}
+
 // buildMixedExLeaderRejoinConfig starts from the Go-leader config,
 // then clears AppointedLeaderID. ReplicationChannel uses the member-2
 // replay channel. Startup canvass uses MixedRejoinStartupCanvassTimeout.
@@ -131,7 +145,7 @@ func buildMixedExLeaderRejoinConfig(t *testing.T) cluster.Config {
 // requireMixedAeronDirsPresent fatals when any of the three mixed Aeron
 // directories is missing. go-leader requires Java peers up before Go opens, so
 // all three CnC trees exist when the smoke starts.
-func requireMixedAeronDirsPresent(t *testing.T) {
+func requireMixedAeronDirsPresent(t testing.TB) {
 	t.Helper()
 
 	dirs := []string{
@@ -148,7 +162,7 @@ func requireMixedAeronDirsPresent(t *testing.T) {
 
 // openMixedGoMember returns an open Go member on the external driver. The
 // helper does not write the readiness file.
-func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
+func openMixedGoMember(t testing.TB, cfg cluster.Config) *mixedMemberFixture {
 	t.Helper()
 
 	// JoinExternal registers external-driver Stop on t.Cleanup.
@@ -163,7 +177,7 @@ func openMixedGoMember(t *testing.T, cfg cluster.Config) *mixedMemberFixture {
 
 // Returns the member before the first tick.
 func newMixedMemberFixture(
-	t *testing.T,
+	t testing.TB,
 	driver *harness.MediaDriver,
 	module *cluster.ConsensusModule,
 ) *mixedMemberFixture {
@@ -189,14 +203,14 @@ func newMixedMemberFixture(
 }
 
 // writeReady creates the readiness file the Go service healthcheck tests.
-func writeReady(t *testing.T) {
+func writeReady(t testing.TB) {
 	t.Helper()
 
 	writeMarkerFile(t, clusterjava.MixedReadyPath, "ready\n")
 }
 
 // writeMarkerFile creates path and its parent directory with body.
-func writeMarkerFile(t *testing.T, path, body string) {
+func writeMarkerFile(t testing.TB, path, body string) {
 	t.Helper()
 
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -237,7 +251,7 @@ var mixedJavaAeronDirs = [...]string{
 //   - non-nil runs the Go duty cycle on every poll. Canvass continues
 //     while Java starts.
 func awaitJavaModuleState(
-	t *testing.T,
+	t testing.TB,
 	f *mixedMemberFixture,
 	ids []int,
 	budget time.Duration,
@@ -352,7 +366,7 @@ func javaCommitPositions(java []*harness.DriverCounters) ([]int64, bool) {
 // 203) to be allocated and returns the current values. Values may be zero.
 // Call after module state is allocated and before the Go member opens as leader.
 func recordJavaCommitPositions(
-	t *testing.T,
+	t testing.TB,
 	java []*harness.DriverCounters,
 ) []int64 {
 	t.Helper()
@@ -492,9 +506,9 @@ func requireLiveLogImage(t *testing.T, f *mixedMemberFixture) {
 //   - TermRecordingID matches LocalLogRecordingID
 //   - type-100 counter present for that id
 //
-// Concurrency: invoker-only. Runs no duty cycle.
+// Concurrency: runs on the test goroutine. Does not run a duty cycle.
 func requireGoLogRecording(
-	t *testing.T,
+	t testing.TB,
 	f *mixedMemberFixture,
 	wantLogSessionID int32,
 ) (
@@ -586,7 +600,7 @@ type goLogRecording struct {
 // logSessionID. That counter must reach wantPosition. The wait fails the test
 // when budget elapses.
 func awaitLogRecordingsReach(
-	t *testing.T,
+	t testing.TB,
 	tick func(),
 	goRecordings []goLogRecording,
 	java []*harness.DriverCounters,
@@ -929,7 +943,7 @@ func awaitNotifiedCommitAdvance(
 //
 // On failure: dumps probe paths, file content, and dumpMixedState.
 func awaitJavaServiceSawTermStart(
-	t *testing.T,
+	t testing.TB,
 	f *mixedMemberFixture,
 	java []*harness.DriverCounters,
 	budget time.Duration,
@@ -1014,7 +1028,7 @@ func awaitJavaServiceSawTermStart(
 // records the term-start publication. Fatals when no sample appears before
 // the election completes.
 func awaitGoLeaderElection(
-	t *testing.T,
+	t testing.TB,
 	f *mixedMemberFixture,
 	java []*harness.DriverCounters,
 	budget time.Duration,
@@ -1094,7 +1108,7 @@ func awaitGoLeaderElection(
 // 0. The wait does not assert NotifiedCommitPosition. The leader path does
 // not advance NotifiedCommitPosition.
 func awaitJavaCommitAdvance(
-	t *testing.T,
+	t testing.TB,
 	f *mixedMemberFixture,
 	java []*harness.DriverCounters,
 	recorded []int64,

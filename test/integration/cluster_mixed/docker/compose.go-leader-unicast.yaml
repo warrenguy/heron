@@ -1,0 +1,21 @@
+# Overlay: Go appointed leader (member 2) on the unicast log.
+# Use with: docker compose -f compose.yaml -f compose.go-leader.yaml \
+#   -f compose.go-leader-unicast.yaml
+#
+# Every member keeps its own log endpoint from the members string. The Go
+# leader adds one log destination per Java follower.
+
+services:
+  go:
+    command: ["-test.timeout=140s", "-test.run", "^TestClusterMixedGoLeaderUnicast$$"]
+    environment:
+      LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE: "0"
+      LUAS_CLUSTER_MIXED_GO_LEADER_UNICAST_COMPOSE: "1"
+
+  cluster-0:
+    environment:
+      LUAS_CLUSTER_MIXED_LOG_MODE: unicast
+
+  cluster-1:
+    environment:
+      LUAS_CLUSTER_MIXED_LOG_MODE: unicast

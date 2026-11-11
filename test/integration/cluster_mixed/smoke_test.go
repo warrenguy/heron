@@ -103,8 +103,8 @@ func TestClusterMixedJavaLeader(t *testing.T) {
 	markMixedSmokeCompleted(t)
 }
 
-// TestClusterMixedGoLeader elects the Go appointed leader, then shuts down the
-// cluster from that leader. Runs only under
+// TestClusterMixedGoLeader elects the Go appointed leader on the multicast
+// log, then shuts down the cluster from that leader. Runs only under
 // LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE.
 //
 // Do not add t.Parallel. The test is the single owner of compose-fixed
@@ -116,8 +116,34 @@ func TestClusterMixedGoLeader(t *testing.T) {
 		clusterjava.MixedComposeSkipHintGoLeader,
 	)
 
-	// Java peers start first under the go-leader overlay. All three Aeron
-	// directories must already exist when the smoke starts.
+	runMixedGoLeaderSmoke(t, buildMixedGoLeaderConfig(t), false)
+}
+
+// TestClusterMixedGoLeaderUnicast elects the Go appointed leader on the
+// unicast log, then shuts down the cluster from that leader. Runs only under
+// LUAS_CLUSTER_MIXED_GO_LEADER_UNICAST_COMPOSE.
+//
+// Each Java member receives the log only at its own log endpoint. The Java
+// term start and commit asserts therefore cover the leader's per-follower log
+// destinations.
+//
+// Do not add t.Parallel. The test is the single owner of compose-fixed
+// MixedAeronDir*, MixedClusterDir*, and the PortBase 9000 unicast block.
+func TestClusterMixedGoLeaderUnicast(t *testing.T) {
+	requireMixedCompose(
+		t,
+		clusterjava.MixedComposeGoLeaderUnicastEnvKey,
+		clusterjava.MixedComposeSkipHintGoLeaderUnicast,
+	)
+
+	runMixedGoLeaderSmoke(t, buildMixedGoLeaderUnicastConfig(t), true)
+}
+
+// runMixedGoLeaderSmoke opens the Go member as appointed leader 2 on cfg. The
+// helper then asserts the log mode, election, Java term start, commit, and a
+// planned shutdown. wantLogMDC is the expected Topology().IsLogMDC() of the
+// opened module. The final statement marks the calling test completed.
+func runMixedGoLeaderSmoke(t testing.TB, cfg cluster.Config, wantLogMDC bool) {
 	requireMixedAeronDirsPresent(t)
 
 	// Java up before the Go member opens. Compose starts Java first.
@@ -127,16 +153,14 @@ func TestClusterMixedGoLeader(t *testing.T) {
 	// Record commit counters while allocated and before Go opens as leader.
 	recorded := recordJavaCommitPositions(t, java)
 
-	// Open the Go module as appointed leader 2. Multicast log channel.
-	//
 	// ServiceCount is 0, so the shutdown skips the service termination wait. The
 	// leader stops waiting for TerminationAck at the TerminationTimeoutNs
 	// deadline. The default deadline is shorter than MixedCommitBudget. With this
 	// override, a planned return inside MixedCommitBudget needs a TerminationAck
 	// from each Java follower.
-	cfg := buildMixedGoLeaderConfig(t)
 	cfg.TerminationTimeoutNs = int64(2 * clusterjava.MixedCommitBudget)
 	f := openMixedGoMember(t, cfg)
+	require.Equal(t, wantLogMDC, f.module.Topology().IsLogMDC(), "opened module log mode")
 	writeReady(t)
 
 	// Elect: Go leads; both Java members follow; terms agree. Uses the mid-wait
