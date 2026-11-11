@@ -265,12 +265,25 @@ func (r *sigkillRun) quiesce() int64 {
 
 	var commit int64
 
+	// sequenceService retries a failed echo only on AdminAction. Any other
+	// failed echo stays in Pending. Each applied list must hold those too.
 	requireProcessAwait(r.t, r.pc, "quiesce", sigkillWorkBound, func() bool {
 		r.session.Pump()
 
 		var quiesced bool
+
 		commit, quiesced = clusterQuiesced(r.pc)
-		return quiesced
+		if !quiesced {
+			return false
+		}
+
+		lists := appliedLists(r.pc)
+		if !hasEqualLists(lists) {
+			return false
+		}
+
+		return hasSeqs(r.session.Echoed(), lists[0]) &&
+			hasSeqs(r.session.Pending(), lists[0])
 	})
 
 	return commit
