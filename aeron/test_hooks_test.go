@@ -3,6 +3,7 @@
 package aeron
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
@@ -232,4 +233,45 @@ func TestAsyncConnectTestHarness_transmitAvailableImage(t *testing.T) {
 		harness.Client.PollAddExclusivePublication,
 	)
 	require.Positive(t, pub.Offer([]byte{1}))
+}
+
+func TestExclusivePublication_sendDestinationHook(t *testing.T) {
+	const channel = "aeron:udp?endpoint=127.0.0.1:9104"
+	addErr := errors.New("add refused")
+	removeErr := errors.New("remove refused")
+
+	tests := []struct {
+		name string
+		call func(*ExclusivePublication, string) error
+		want error
+		got  func(*RecordingReceiveDestinationHook) []string
+	}{
+		{
+			name: "AddDestination",
+			call: (*ExclusivePublication).AddDestination,
+			want: addErr,
+			got:  func(h *RecordingReceiveDestinationHook) []string { return h.Adds },
+		},
+		{
+			name: "RemoveDestination",
+			call: (*ExclusivePublication).RemoveDestination,
+			want: removeErr,
+			got:  func(h *RecordingReceiveDestinationHook) []string { return h.Removes },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := new(ExclusivePublication)
+			hook := &RecordingReceiveDestinationHook{AddErr: addErr, RemoveErr: removeErr}
+			ExclusivePublicationSetSendDestinationHookForHooks(ep, hook)
+
+			require.ErrorIs(t, tc.call(ep, channel), tc.want)
+			require.Equal(t, []string{channel}, tc.got(hook))
+		})
+		t.Run(tc.name+" unset", func(t *testing.T) {
+			ep := new(ExclusivePublication)
+
+			require.ErrorIs(t, tc.call(ep, channel), ErrClientNotBound)
+		})
+	}
 }

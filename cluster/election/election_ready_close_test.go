@@ -45,6 +45,7 @@ func TestElection_shouldBaseStartupValueOnLeader(t *testing.T) {
 				withPositions(leadershipTermID, logPosition, logPosition),
 			)
 			fx.host.followerLogJoinPosition = logPosition
+			fx.host.liveLogDestination = fixtureLiveLogDestination
 
 			fx.clock.nowNs = 1
 			require.Equal(t, 1, fx.doWork())

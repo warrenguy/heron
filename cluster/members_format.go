@@ -43,17 +43,12 @@ type MembersStringConfig struct {
 	PortBase int
 
 	// SharedLogEndpoint replaces the derived per-member log endpoint on every
-	// row when non-empty. One multicast group address and port for all members
-	// is the delivery scheme this package supports, because the transport client
-	// has no destination-add API for exclusive publications.
+	// row when non-empty. Empty leaves each member its derived log endpoint.
 	//
-	// Empty preserves the per-member unicast log endpoint and reproduces
-	// upstream output exactly.
-	//
-	// Multicast data addresses must have an odd final octet: the media driver
-	// derives the control address by incrementing that octet and rejects an
-	// even group when the publication is added. This package does not check
-	// the constraint; the driver is the sole validator.
+	// Multicast data addresses must have an odd final octet. The media driver
+	// derives the control address by incrementing that octet. The driver
+	// rejects an even group when the publication is added. This package does
+	// not check the constraint.
 	SharedLogEndpoint string
 }
 

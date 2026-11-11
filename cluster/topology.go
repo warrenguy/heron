@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/warrenguy/luas/aeron"
@@ -82,6 +83,9 @@ type Topology struct {
 	consensusSubscriptionChan string
 	ingressSubscriptionChan   string
 	logChannel                string
+	logPublicationChannel     string
+	logMDC                    bool
+	publicationDestinations   []string
 	replayChannel             string
 	serviceControlChannel     string
 	ingressEndpoints          string
@@ -111,7 +115,9 @@ func NewTopology(cfg Config) (*Topology, error) {
 
 	memberPtrs := election.MembersPtrs(members)
 	thisMember := memberPtrs[thisIndex]
+	_, logMDC := classifyLogEndpoints(members)
 	peerChannels := make(map[int32]string, len(memberPtrs)-1)
+	var destinations []string
 	for i, m := range memberPtrs {
 		if i == thisIndex {
 			continue
@@ -121,6 +127,16 @@ func NewTopology(cfg Config) (*Topology, error) {
 			return nil, err
 		}
 		peerChannels[m.ID] = ch
+
+		if !logMDC {
+			continue
+		}
+
+		dest, err := udpEndpointChannel(cfg.LogChannel, m.LogEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		destinations = append(destinations, dest)
 	}
 
 	consensusSub, err := BuildChannelWithEndpoint(cfg.ConsensusChannel, thisMember.ConsensusEndpoint)
@@ -135,6 +151,10 @@ func NewTopology(cfg Config) (*Topology, error) {
 	if err != nil {
 		return nil, err
 	}
+	logPublication := logCh
+	if logMDC {
+		logPublication = manualMDCPublicationChannel(cfg.LogChannel, thisMember.LogEndpoint)
+	}
 
 	return &Topology{
 		memberPtrs:                memberPtrs,
@@ -143,6 +163,9 @@ func NewTopology(cfg Config) (*Topology, error) {
 		consensusSubscriptionChan: consensusSub,
 		ingressSubscriptionChan:   ingressSub,
 		logChannel:                logCh,
+		logPublicationChannel:     logPublication,
+		logMDC:                    logMDC,
+		publicationDestinations:   destinations,
 		replayChannel:             cfg.ReplayChannel,
 		serviceControlChannel:     cfg.ServiceControlChannel,
 		ingressEndpoints:          buildIngressEndpointsString(memberPtrs),
@@ -215,13 +238,64 @@ func (t *Topology) IngressEndpoints() string {
 	return t.ingressEndpoints
 }
 
-// LogChannel returns the local cluster log channel URI, with endpoint set to
-// this member's log endpoint.
+// LogChannel returns this member's log receive channel.
 //
-// With a shared log endpoint (typical multicast setup), every member resolves
-// the same URI; with per-member log endpoints, each Topology differs.
+// The endpoint is this member's log endpoint. The publication channel is
+// [Topology.LogPublicationChannel].
 func (t *Topology) LogChannel() string {
 	return t.logChannel
+}
+
+// IsLogMDC reports whether the log publication is manual multi-destination-cast.
+//
+// True when every member has its own log endpoint. False when all members
+// share one, including a one-member cluster. The check does not test the
+// address for a multicast group.
+func (t *Topology) IsLogMDC() bool {
+	return t.logMDC
+}
+
+// LogPublicationChannel returns the base channel of the exclusive log
+// publication.
+//
+// Shared mode returns [Topology.LogChannel]. Manual multi-destination-cast
+// mode returns the log template with control-mode=manual, control set to
+// this member's log host and port 0, and ssc=false. It does not set endpoint.
+// [OpenLogStreams] adds tags and alias.
+func (t *Topology) LogPublicationChannel() string {
+	return t.logPublicationChannel
+}
+
+// LogPublicationDestinations returns one send-destination URI per other
+// member, in members-string order.
+//
+// Nil in shared mode. The caller receives a copy.
+func (t *Topology) LogPublicationDestinations() []string {
+	return slices.Clone(t.publicationDestinations)
+}
+
+// manualMDCPublicationChannel builds the manual multi-destination-cast
+// publication channel from the log template.
+func manualMDCPublicationChannel(template, logEndpoint string) string {
+	channel := aeron.SetChannelParam(
+		template,
+		aeron.ChannelControlModeParam,
+		logSubscriptionControlMode,
+	)
+	if control := controlEndpointFromLog(logEndpoint); control != "" {
+		channel = aeron.SetChannelParam(channel, channelControlParam, control)
+	}
+	return aeron.SetChannelParam(channel, channelSpiesSimulateConnectionParam, "false")
+}
+
+// controlEndpointFromLog returns endpoint with the port replaced by 0.
+// Empty when endpoint has no port.
+func controlEndpointFromLog(endpoint string) string {
+	colon := strings.LastIndex(endpoint, ":")
+	if colon < 0 {
+		return ""
+	}
+	return endpoint[:colon+1] + "0"
 }
 
 // ConsensusStreamID returns the member-to-member consensus stream id.

@@ -33,17 +33,19 @@ type LogStreamAdder interface {
 
 var _ LogStreamAdder = (*aeron.Client)(nil)
 
-// Manual log subscription URI params. Names match Aeron ChannelUri and
-// CommonContext.
+// Log publication and subscription URI params. Names match Aeron ChannelUri
+// and CommonContext.
 const (
-	channelTagsParam     = "tags="
-	channelAliasParam    = "alias="
-	channelSoRcvbufParam = "so-rcvbuf="
-	channelRcvWndParam   = "rcv-wnd="
+	channelTagsParam                    = "tags="
+	channelAliasParam                   = "alias="
+	channelSoRcvbufParam                = "so-rcvbuf="
+	channelRcvWndParam                  = "rcv-wnd="
+	channelSpiesSimulateConnectionParam = "ssc="
 
 	logSubscriptionControlMode = "manual"
 	logSubscriptionRejoin      = "false"
 	logSubscriptionAlias       = "log-cm"
+	logPublicationAlias        = "log"
 )
 
 // LogPublicationInitialPosition holds recovery geometry for the exclusive log
@@ -52,8 +54,8 @@ const (
 // When non-nil on [LogStreamsDeps], [OpenLogStreams] writes init-term-id,
 // term-id, term-offset, term-length, and mtu so the exclusive publication
 // resumes at Position. Position zero is a valid seed for an empty recoverable
-// log. A nil seed is cold start: the publication uses Topology.LogChannel
-// unchanged.
+// log. A nil seed is cold start: the publication uses
+// [Topology.LogPublicationChannel] with no seed params.
 //
 // Applied at open. [LogStreams.ReseedPublicationAt] takes a fresh seed when a
 // new leader rebuilds the publication at the election append position.
@@ -71,9 +73,9 @@ type LogStreamsDeps struct {
 	// Adder registers the cluster log subscription and publication.
 	Adder LogStreamAdder
 
-	// Topology supplies the cluster log channel and the log stream id. With a
-	// shared log endpoint the channel is identical on every member.
-	// [OpenLogStreams] does not retain it.
+	// Topology supplies the log receive channel, the publication channel, the
+	// publication destinations, and the log stream id. [OpenLogStreams] copies
+	// the mode and the destinations. It does not retain the Topology.
 	Topology *Topology
 
 	// Agent receives the log publisher, the log adapter, the append source, and
@@ -96,17 +98,15 @@ type LogStreamsDeps struct {
 	AppendSource consensus.AppendPositionSource
 
 	// PublicationInitialPosition seeds the exclusive log publication channel at
-	// open when non-nil. Nil is cold start. The subscription opens as
-	// control-mode=manual with live Topology.LogChannel as the first receive
-	// destination. See [LogPublicationInitialPosition].
+	// open when non-nil. See [LogPublicationInitialPosition].
 	PublicationInitialPosition *LogPublicationInitialPosition
 }
 
 // LogStreams owns the member's cluster log transport resources.
 //
-// Open with [OpenLogStreams], which registers the log subscription and the log
-// exclusive publication and binds publisher, adapter, append source, and log
-// join source into the agent before return.
+// Open with [OpenLogStreams]. Open registers the log subscription and the log
+// exclusive publication. Open binds the publisher, adapter, append source,
+// and log join source into the agent before return.
 //
 // Behaviour: the publication must be bound before any election work runs.
 // [consensus.Agent.AddLogPublication] rebuilds an unbound publication through
@@ -114,29 +114,32 @@ type LogStreamsDeps struct {
 // transition that reads that session id also publishes the new leadership term.
 //
 // The subscription opens as control-mode=manual before the publication. Open
-// adds Topology.LogChannel as the first receive destination so the shared
-// multicast group feeds the subscription. On that group the member's own
-// subscription receives its own publication. Opening the subscription first
-// avoids a period with no receiver. Open does not wait for connect.
+// adds this member's log channel as the first receive destination. On a shared
+// log endpoint the member's own subscription receives its own publication.
+// With distinct log endpoints the publication sends to each peer, and this
+// member receives those peers on its own endpoint. Opening the subscription
+// first avoids a period with no receiver. Open does not wait for connect.
 //
-// Concurrency: invoker-only. Every method must run on the same goroutine as
-// [consensus.Agent.DoWork] and the transport client duty cycle.
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork].
+// Not safe from other goroutines.
 //
 // Lifetime: owns the two transport handles and closes them. Does not own the
-// publisher or the adapter; never closes them. Close before closing the
+// publisher or the adapter. Never closes them. Close before closing the
 // transport client when the process owns the client.
 //
-// Do not copy. A value copy shares the same handles; both values look like
+// Do not copy. A value copy shares the same handles. Both values look like
 // owners.
 type LogStreams struct {
-	agent             *consensus.Agent
-	logPublisher      *consensus.LogPublisher
-	publication       *aeron.ExclusivePublication
-	subscription      *aeron.Subscription
-	streamID          int32
-	liveURI           string
-	nextCorrelationID func() int64
-	closed            bool
+	agent                   *consensus.Agent
+	logPublisher            *consensus.LogPublisher
+	publication             *aeron.ExclusivePublication
+	subscription            *aeron.Subscription
+	streamID                int32
+	liveURI                 string
+	nextCorrelationID       func() int64
+	logMDC                  bool
+	publicationDestinations []string
+	closed                  bool
 }
 
 // OpenLogStreams registers the cluster log subscription and publication and
@@ -144,17 +147,23 @@ type LogStreams struct {
 //
 // Both use [Topology.LogStreamID]. The subscription opens as control-mode=manual
 // with unique tags, rejoin=false, and alias=log-cm. so-rcvbuf and rcv-wnd copy
-// from [Topology.LogChannel] when that template carries them. The live multicast
-// URI ([Topology.LogChannel]) is added as the first receive destination. The
-// publication uses that channel, or a channel seeded from
+// from [Topology.LogChannel] when that channel carries them. [Topology.LogChannel]
+// is added as the first receive destination. The publication uses
+// [Topology.LogPublicationChannel], or that channel seeded from
 // [LogStreamsDeps.PublicationInitialPosition] when the seed is non-nil. Seed
-// lifetime is open-only; see [LogPublicationInitialPosition].
+// lifetime is open-only. See [LogPublicationInitialPosition].
+//
+// In manual multi-destination-cast mode the publication also gets fresh tags
+// and alias=log. The leader JoinLog channel names that publication by its
+// channel tag. Shared mode keeps [Topology.LogChannel] as the publication
+// channel.
 //
 // Open order:
 //  1. validate the publication channel seed
 //  2. add the manual-mode subscription
 //  3. add the live log channel as a receive destination
 //  4. add the publication
+//  5. manual multi-destination-cast only: add one publication destination per peer
 //
 // All adds complete before any bind. A failed add leaves the agent untouched.
 //
@@ -167,15 +176,18 @@ type LogStreams struct {
 //   - [consensus.Agent.SetLogJoinSource] with
 //     [consensus.SubscriptionLogJoinSource] over the log subscription
 //   - [consensus.Agent.LiveLogDestinationSet] with the live log channel URI
-//   - [consensus.Agent.SetLocalLogStream] with the resolved publication channel
-//     and [Topology.LogStreamID] so the leader JoinLog can name the log
+//   - [consensus.Agent.SetLocalLogStream] with the leader JoinLog channel
+//     and [Topology.LogStreamID]
+//   - [consensus.Agent.SetLeaderLogRecordingChannel] with that same channel,
+//     or empty in shared mode
 //
 // No Image is bound at open.
 //
 // Returns an error when:
 //   - any required dependency is nil
 //   - the initial-position seed is invalid
-//   - the subscription add, live destination add, or publication add fails
+//   - the subscription add, live destination add, publication add, or a
+//     publication destination add fails
 //
 // On error: every handle added so far is closed. The agent is untouched. The
 // returned value is nil.
@@ -204,17 +216,22 @@ func OpenLogStreams(
 
 	// Validate seed before any driver add. Pure geometry errors must not open a
 	// subscription only to roll it back.
-	pubChannel, err := logChannelWithInitialPosition(liveURI, deps.PublicationInitialPosition)
+	seededChannel, err := logChannelWithInitialPosition(
+		deps.Topology.LogPublicationChannel(),
+		deps.PublicationInitialPosition,
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	ls := &LogStreams{
-		agent:             deps.Agent,
-		logPublisher:      deps.LogPublisher,
-		streamID:          streamID,
-		liveURI:           liveURI,
-		nextCorrelationID: nextCorrelationID,
+		agent:                   deps.Agent,
+		logPublisher:            deps.LogPublisher,
+		streamID:                streamID,
+		liveURI:                 liveURI,
+		nextCorrelationID:       nextCorrelationID,
+		logMDC:                  deps.Topology.IsLogMDC(),
+		publicationDestinations: deps.Topology.LogPublicationDestinations(),
 	}
 
 	sub, err := ls.addManualLogSubscription(deps.Adder, "cluster log subscription")
@@ -231,10 +248,10 @@ func OpenLogStreams(
 		)
 	}
 
-	pub, err := addExclusivePublicationChecked(
+	pub, leaderChannel, err := ls.addLogPublication(
 		deps.Adder,
+		seededChannel,
 		streamID,
-		pubChannel,
 		"cluster log publication",
 	)
 	if err != nil {
@@ -253,7 +270,7 @@ func OpenLogStreams(
 	deps.Agent.SetAppendSource(appendSource)
 	ls.bindLogSubscription(sub)
 	deps.Agent.LiveLogDestinationSet(liveURI)
-	deps.Agent.SetLocalLogStream(pubChannel, streamID)
+	ls.bindLeaderLogChannels(seededChannel, leaderChannel, streamID, true)
 	return ls, nil
 }
 
@@ -272,20 +289,32 @@ func (l *LogStreams) Publication() *aeron.ExclusivePublication {
 // ReseedPublicationAt closes the exclusive log publication, if any, and opens a
 // new one at seed.Position. Rebinds the log publisher.
 //
-// A new leader calls it when the publication is unbound or its position
-// differs from the durable append high-water. The archive extends the LOCAL
-// recording only when the publication join position equals the recording stop
-// position.
+// Pass [Topology.LogPublicationChannel] as channel. A new leader reseeds when
+// the publication is unbound or its position differs from the durable append
+// high-water. The archive extends the LOCAL recording only when the
+// publication join position equals the recording stop position.
 //
-// Concurrency: invoker-only.
+// Manual multi-destination-cast mode draws fresh tags and adds one send
+// destination per peer. On success the leader JoinLog channel and the LOCAL
+// recording channel name the new channel tag.
+//
+// Shared mode does not change the JoinLog channel set at open. It keeps the
+// recording channel empty.
+//
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork].
+// Not safe from other goroutines.
 //
 // Returns an error when:
 //   - the receiver is nil or already closed
+//   - adder is nil
+//   - the correlation id allocator is nil
 //   - seed is invalid
 //   - the new exclusive publication cannot be added
+//   - a publication destination cannot be added
 //
-// On add failure the old publication is closed and the publisher is unbound.
-// The next call retries the add.
+// On add failure the old publication stays closed and the publisher stays
+// unbound. Both agent channels keep the previous tag. The next call retries
+// every add.
 func (l *LogStreams) ReseedPublicationAt(
 	adder ExclusivePublicationAdder,
 	channel string,
@@ -298,7 +327,10 @@ func (l *LogStreams) ReseedPublicationAt(
 	if adder == nil {
 		return errors.New("cluster: log stream adder is required")
 	}
-	pubChannel, err := logChannelWithInitialPosition(channel, seed)
+	if l.nextCorrelationID == nil {
+		return errors.New("cluster: correlation id allocator is required")
+	}
+	seededChannel, err := logChannelWithInitialPosition(channel, seed)
 	if err != nil {
 		return err
 	}
@@ -310,16 +342,17 @@ func (l *LogStreams) ReseedPublicationAt(
 		l.publication = nil
 	}
 
-	pub, err := addExclusivePublicationChecked(
+	pub, leaderChannel, err := l.addLogPublication(
 		adder,
+		seededChannel,
 		streamID,
-		pubChannel,
 		"cluster log publication reseed",
 	)
 	if err != nil {
 		return err
 	}
 	l.bindLogPublication(pub)
+	l.bindLeaderLogChannels(seededChannel, leaderChannel, streamID, false)
 	return nil
 }
 
@@ -327,11 +360,12 @@ func (l *LogStreams) ReseedPublicationAt(
 //
 // Nil after Close, on a nil receiver, and after a failed reseed and recovery.
 //
-// The subscription is control-mode=manual. Receive destinations (live multicast
-// and catchup unicast) feed it. Images arrive per destination and session.
+// The subscription is control-mode=manual. Receive destinations (live and
+// catchup) feed it. Images arrive per destination and session.
 // Order is undefined. Select by log session id. Must not index.
 //
-// Concurrency: invoker-only. See [LogStreams].
+// Concurrency: call from the goroutine that runs [consensus.Agent.DoWork].
+// Not safe from other goroutines. See [LogStreams].
 func (l *LogStreams) Subscription() *aeron.Subscription {
 	if l == nil {
 		return nil
@@ -419,6 +453,71 @@ func (l *LogStreams) bindLogPublication(pub *aeron.ExclusivePublication) {
 	l.logPublisher.SetPublication(pub)
 }
 
+// addLogPublication adds the exclusive log publication on channel, which
+// already carries any initial-position seed.
+//
+// Returns the publication and the leader channel. The leader channel is
+// empty in shared mode. On a destination error the new publication is closed.
+func (l *LogStreams) addLogPublication(
+	adder ExclusivePublicationAdder,
+	channel string,
+	streamID int32,
+	what string,
+) (*aeron.ExclusivePublication, string, error) {
+	pubChannel := channel
+	leaderChannel := ""
+	if l.logMDC {
+		channelTag, tags := drawChannelTags(l.nextCorrelationID)
+		pubChannel = aeron.SetChannelParam(pubChannel, channelTagsParam, tags)
+		pubChannel = aeron.SetChannelParam(pubChannel, channelAliasParam, logPublicationAlias)
+		leaderChannel = aeron.AppendChannelParam(udpChannelPrefix, channelTagsParam, channelTag)
+		leaderChannel = aeron.AppendChannelParam(
+			leaderChannel,
+			channelAliasParam,
+			logPublicationAlias,
+		)
+	}
+
+	pub, err := addExclusivePublicationChecked(adder, streamID, pubChannel, what)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Shared mode holds no destinations.
+	for _, dest := range l.publicationDestinations {
+		if destErr := pub.AddDestination(dest); destErr != nil {
+			_ = pub.Close()
+			return nil, "", fmt.Errorf(
+				"cluster: add log publication destination on %s: %w",
+				dest,
+				destErr,
+			)
+		}
+	}
+	return pub, leaderChannel, nil
+}
+
+// bindLeaderLogChannels records the leader JoinLog channel and the LOCAL
+// recording channel after a successful publication add.
+func (l *LogStreams) bindLeaderLogChannels(
+	pubChannel string,
+	leaderChannel string,
+	streamID int32,
+	atOpen bool,
+) {
+	if l.logMDC {
+		l.agent.SetLocalLogStream(leaderChannel, streamID)
+		l.agent.SetLeaderLogRecordingChannel(leaderChannel)
+		return
+	}
+
+	if atOpen {
+		l.agent.SetLocalLogStream(pubChannel, streamID)
+	}
+
+	l.agent.SetLeaderLogRecordingChannel("")
+}
+
 // bindLogSubscription stores sub and rebinds the agent log join source.
 func (l *LogStreams) bindLogSubscription(sub *aeron.Subscription) {
 	l.subscription = sub
@@ -465,20 +564,22 @@ func manualLogSubscriptionChannel(
 	nextCorrelationID func() int64,
 	liveURI string,
 ) string {
-	t1 := nextCorrelationID()
-	t2 := nextCorrelationID()
+	_, tags := drawChannelTags(nextCorrelationID)
 	ch := "aeron:udp"
 	ch = aeron.AppendChannelParam(ch, aeron.ChannelControlModeParam, logSubscriptionControlMode)
-	ch = aeron.AppendChannelParam(
-		ch,
-		channelTagsParam,
-		strconv.FormatInt(t1, 10)+","+strconv.FormatInt(t2, 10),
-	)
+	ch = aeron.AppendChannelParam(ch, channelTagsParam, tags)
 	ch = aeron.AppendChannelParam(ch, aeron.ChannelRejoinParam, logSubscriptionRejoin)
 	ch = aeron.AppendChannelParam(ch, channelAliasParam, logSubscriptionAlias)
 	ch = copyChannelParamIfPresent(ch, liveURI, channelSoRcvbufParam)
 	ch = copyChannelParamIfPresent(ch, liveURI, channelRcvWndParam)
 	return ch
+}
+
+// drawChannelTags allocates two fresh tags from nextCorrelationID. Returns
+// the first tag and the tags= value "<first>,<second>".
+func drawChannelTags(nextCorrelationID func() int64) (first, tags string) {
+	first = strconv.FormatInt(nextCorrelationID(), 10)
+	return first, first + "," + strconv.FormatInt(nextCorrelationID(), 10)
 }
 
 // copyChannelParamIfPresent appends param from src onto dst when src carries it.
@@ -586,6 +687,7 @@ func logChannelWithInitialPosition(
 //   - live destination
 //   - catchup destination
 //   - local log stream (JoinLog naming)
+//   - leader LOCAL recording channel
 //   - append source
 //   - log adapter
 //   - log publisher
@@ -607,6 +709,7 @@ func (l *LogStreams) Close() error {
 	l.agent.LiveLogDestinationSet("")
 	l.agent.CatchupLogDestinationSet("")
 	l.agent.SetLocalLogStream("", 0)
+	l.agent.SetLeaderLogRecordingChannel("")
 	l.agent.SetAppendSource(nil)
 	l.agent.SetLogAdapter(nil)
 	l.agent.SetLogPublisher(nil)

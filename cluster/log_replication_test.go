@@ -335,7 +335,7 @@ func (fx *replicationFixture) toExtended(t *testing.T, okNs int64) {
 	require.Equal(t, testReplicationStartPosition, fx.r.Position())
 }
 
-func TestArchiveDestinationChannel(t *testing.T) {
+func TestUDPEndpointChannel(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -384,7 +384,7 @@ func TestArchiveDestinationChannel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := archiveDestinationChannel(tc.template, tc.endpoint)
+			got, err := udpEndpointChannel(tc.template, tc.endpoint)
 			if tc.wantErr != "" {
 				require.EqualError(t, err, tc.wantErr)
 				return

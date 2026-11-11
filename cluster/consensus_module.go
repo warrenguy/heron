@@ -606,7 +606,7 @@ func (m *ConsensusModule) reseedLogPublication(position int64) (int32, error) {
 	}
 	if err := m.streams.ReseedPublicationAt(
 		m.client,
-		m.topology.LogChannel(),
+		m.topology.LogPublicationChannel(),
 		m.topology.LogStreamID(),
 		seed,
 	); err != nil {

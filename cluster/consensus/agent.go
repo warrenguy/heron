@@ -323,9 +323,8 @@ type Agent struct {
 	// OnCatchupPosition are silent no-ops.
 	catchupControl CatchupControl
 
-	// liveLogDestination is the live multicast URI added as a receive
-	// destination on the log subscription. Empty when the live feed is not
-	// attached.
+	// liveLogDestination is the live log URI added as a receive destination
+	// on the log subscription. Empty when the live feed is not attached.
 	liveLogDestination string
 
 	// catchupLogDestination is the catchup unicast URI currently added as a
@@ -485,10 +484,12 @@ type Agent struct {
 	servicePublishFailure error
 
 	// localLogChannel and localLogStreamID name the log for the leader JoinLog.
-	// SetLocalLogStream sets both from the resolved log publication channel and
-	// log stream id.
+	// SetLocalLogStream sets both from the leader log channel and log stream id.
 	localLogChannel  string
 	localLogStreamID int32
+
+	// leaderLogRecordingChannel backs [Agent.LeaderLogRecordingChannel].
+	leaderLogRecordingChannel string
 
 	// timers is the member-local wheel plus correlation maps. Always non-nil
 	// after NewAgent.
@@ -1948,8 +1949,8 @@ func (a *Agent) JoinLogAsLeader(
 // Behaviour: an active recording or a nil recordingControl skips the start and
 // returns logSessionID unchanged. With a reseed hook and a known recording id,
 // the start checks the publication against logPosition and logSessionID. The
-// start adopts the LOCAL recording with an empty channel, so control uses the
-// configured live log channel.
+// start adopts the LOCAL recording on [Agent.LeaderLogRecordingChannel]. An
+// empty channel selects the control's configured live log channel.
 //
 // The check never reseeds. A reseed here changes the session id after the
 // NewLeadershipTerm fan-out, so no follower can join.
@@ -1979,7 +1980,12 @@ func (a *Agent) startLeaderLogRecording(
 			)
 		}
 	}
-	if err := a.adoptLogRecording(archivewire.SourceLocation_LOCAL, logSessionID, ""); err != nil {
+
+	if err := a.adoptLogRecording(
+		archivewire.SourceLocation_LOCAL,
+		logSessionID,
+		a.leaderLogRecordingChannel,
+	); err != nil {
 		return 0, err
 	}
 	return logSessionID, nil
@@ -2056,13 +2062,13 @@ func (a *Agent) JoinLogAsFollower(
 }
 
 // startFollowerLogRecording starts the REMOTE cluster log recording for
-// params. Skips the start while a recording is already active (idempotent
-// re-join) or no control is wired. Prepare stops between terms before the
-// next join starts a new one.
+// params. It skips the start while a recording is active (idempotent re-join)
+// or no control is wired. [Agent.PrepareForNewLeadership] stops the recording
+// between terms, so the next join starts a new one.
 //
-// Passes params.LogChannel so catchup joins record the catchup destination
-// (image join at the follower log position), not the live multicast late-join
-// image.
+// It passes params.LogChannel, so a catchup join records the catchup
+// destination (image join at the follower log position), not the live
+// late-join image.
 func (a *Agent) startFollowerLogRecording(params FollowerLogJoinParams) error {
 	if a.IsRecordingActive() || a.recordingControl == nil {
 		return nil

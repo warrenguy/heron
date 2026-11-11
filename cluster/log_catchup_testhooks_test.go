@@ -893,6 +893,29 @@ func TestLogStreams_reseedSubscription_nilCorrelationID(t *testing.T) {
 	require.Same(t, joinBefore, fixture.agent.LogJoinSource())
 }
 
+// Asserts ReseedPublicationAt rejects a nil correlation allocator before
+// closing the current publication.
+func TestLogStreams_reseedPublication_nilCorrelationID(t *testing.T) {
+	t.Parallel()
+
+	fixture := openCatchupTestStreams(t)
+	pubBefore := fixture.streams.Publication()
+	fixture.streams.nextCorrelationID = nil
+
+	require.EqualError(
+		t,
+		fixture.streams.ReseedPublicationAt(
+			fixture.adder,
+			fixture.liveURI,
+			fixture.streamID,
+			nil,
+		),
+		"cluster: correlation id allocator is required",
+	)
+	require.Same(t, pubBefore, fixture.streams.Publication())
+	require.Same(t, pubBefore, fixture.streams.logPublisher.Publication())
+}
+
 // Asserts catchup remove succeeds but live restore AddDestination failure
 // leaves catchup cleared, live field empty, and returns the restore error.
 func TestCatchupControl_removeRestoresLiveAddFailure(t *testing.T) {

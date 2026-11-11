@@ -147,64 +147,103 @@ func TestHandleFollowerReplay_branches(t *testing.T) {
 func TestHandleFollowerLogAwait_branches(t *testing.T) {
 	t.Parallel()
 
+	const liveURI = "aeron:udp?endpoint=live-log"
 	timeoutNs := election.ElectionTestConfig().LeaderHeartbeatTimeoutNs
 	for _, tc := range []struct {
-		name          string
-		joinOK        bool
-		joinPosition  int64
-		joinAccepted  bool
-		deltaNs       int64
-		wantWork      int
-		wantState     election.ElectionState
-		wantJoinCalls int
-		wantLastError string
+		name                  string
+		joinOK                bool
+		joinPosition          int64
+		joinAccepted          bool
+		deltaNs               int64
+		liveLogDestination    string
+		catchupLogDestination string
+		addLiveFailLeft       int
+		wantWork              int
+		wantState             election.ElectionState
+		wantJoinCalls         int
+		wantAddLiveCalls      int
+		wantLive              string
+		wantLastError         string
 	}{
 		{
-			name:         "image not ready before timeout waits",
-			joinPosition: testLogPosition,
-			wantState:    election.ElectionStateFollowerLogAwait,
+			name:               "image not ready before timeout waits",
+			joinPosition:       testLogPosition,
+			liveLogDestination: liveURI,
+			wantState:          election.ElectionStateFollowerLogAwait,
+			wantLive:           liveURI,
 		},
 		{
-			name:          "image not ready at timeout resets to init",
-			joinPosition:  testLogPosition,
-			deltaNs:       timeoutNs,
-			wantWork:      1,
-			wantState:     election.ElectionStateInit,
-			wantLastError: "election: failed to join live log",
+			name:             "missing live destination add succeeds",
+			joinPosition:     testLogPosition,
+			wantWork:         1,
+			wantState:        election.ElectionStateFollowerLogAwait,
+			wantAddLiveCalls: 1,
+			wantLive:         liveURI,
 		},
 		{
-			name:          "join position mismatch resets to init",
-			joinOK:        true,
-			joinPosition:  testLogPosition + 1,
-			wantWork:      1,
-			wantState:     election.ElectionStateInit,
-			wantLastError: "election: log join position mismatch",
+			name:             "missing live destination add fails",
+			joinPosition:     testLogPosition,
+			addLiveFailLeft:  1,
+			wantState:        election.ElectionStateFollowerLogAwait,
+			wantAddLiveCalls: 1,
 		},
 		{
-			name:          "join rejected before timeout waits",
-			joinOK:        true,
-			joinPosition:  testLogPosition,
-			wantState:     election.ElectionStateFollowerLogAwait,
-			wantJoinCalls: 1,
+			name:                  "catchup destination skips the live add",
+			joinPosition:          testLogPosition,
+			catchupLogDestination: "aeron:udp?endpoint=catchup",
+			wantState:             election.ElectionStateFollowerLogAwait,
 		},
 		{
-			name:          "join rejected at timeout resets to init",
-			joinOK:        true,
-			joinPosition:  testLogPosition,
-			deltaNs:       timeoutNs,
-			wantWork:      1,
-			wantState:     election.ElectionStateInit,
-			wantJoinCalls: 1,
-			wantLastError: "election: failed to join live log as follower",
+			name:               "image not ready at timeout resets to init",
+			joinPosition:       testLogPosition,
+			deltaNs:            timeoutNs,
+			liveLogDestination: liveURI,
+			wantWork:           1,
+			wantState:          election.ElectionStateInit,
+			wantLive:           liveURI,
+			wantLastError:      "election: failed to join live log",
 		},
 		{
-			name:          "join accepted enters follower ready",
-			joinOK:        true,
-			joinPosition:  testLogPosition,
-			joinAccepted:  true,
-			wantWork:      1,
-			wantState:     election.ElectionStateFollowerReady,
-			wantJoinCalls: 1,
+			name:               "join position mismatch resets to init",
+			joinOK:             true,
+			joinPosition:       testLogPosition + 1,
+			liveLogDestination: liveURI,
+			wantWork:           1,
+			wantState:          election.ElectionStateInit,
+			wantLive:           liveURI,
+			wantLastError:      "election: log join position mismatch",
+		},
+		{
+			name:               "join rejected before timeout waits",
+			joinOK:             true,
+			joinPosition:       testLogPosition,
+			liveLogDestination: liveURI,
+			wantState:          election.ElectionStateFollowerLogAwait,
+			wantJoinCalls:      1,
+			wantLive:           liveURI,
+		},
+		{
+			name:               "join rejected at timeout resets to init",
+			joinOK:             true,
+			joinPosition:       testLogPosition,
+			deltaNs:            timeoutNs,
+			liveLogDestination: liveURI,
+			wantWork:           1,
+			wantState:          election.ElectionStateInit,
+			wantJoinCalls:      1,
+			wantLive:           liveURI,
+			wantLastError:      "election: failed to join live log as follower",
+		},
+		{
+			name:               "join accepted enters follower ready",
+			joinOK:             true,
+			joinPosition:       testLogPosition,
+			joinAccepted:       true,
+			liveLogDestination: liveURI,
+			wantWork:           1,
+			wantState:          election.ElectionStateFollowerReady,
+			wantJoinCalls:      1,
+			wantLive:           liveURI,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,10 +251,13 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 
 			cfg, deps, clock, _, _ := testElectionDeps(t)
 			host := &recordingElectionHost{
-				clock:                   clock,
-				localLogRecordingID:     int64(election.NullValue),
-				followerLogJoinOK:       tc.joinOK,
-				followerLogJoinPosition: tc.joinPosition,
+				clock:                         clock,
+				localLogRecordingID:           int64(election.NullValue),
+				followerLogJoinOK:             tc.joinOK,
+				followerLogJoinPosition:       tc.joinPosition,
+				liveLogDestination:            tc.liveLogDestination,
+				catchupLogDestination:         tc.catchupLogDestination,
+				addLiveLogDestinationFailLeft: tc.addLiveFailLeft,
 			}
 			deps.Host = host
 			handler := &recordingAgentHandler{joinFollowerReturn: tc.joinAccepted}
@@ -232,6 +274,8 @@ func TestHandleFollowerLogAwait_branches(t *testing.T) {
 			}
 
 			require.Len(t, handler.joinFollowerParams, tc.wantJoinCalls)
+			require.Equal(t, tc.wantAddLiveCalls, host.addLiveLogDestinationCalls)
+			require.Equal(t, tc.wantLive, host.LiveLogDestination())
 			if tc.wantJoinCalls == 0 {
 				return
 			}
@@ -647,6 +691,7 @@ func TestHandleFollowerLogAwait_joinFollowerErrorFailsClosed(t *testing.T) {
 		localLogRecordingID:     int64(election.NullValue),
 		followerLogJoinOK:       true,
 		followerLogJoinPosition: cfg.LogPosition,
+		liveLogDestination:      "aeron:udp?endpoint=live-log",
 	}
 	deps.Host = host
 	spy := &recordingLogCoherencySpy{}
@@ -675,6 +720,7 @@ func TestHandleFollowerLogAwait_notReadyRetriesUntilTimeout(t *testing.T) {
 		clock:                   clock,
 		followerLogJoinOK:       true,
 		followerLogJoinPosition: cfg.LogPosition,
+		liveLogDestination:      "aeron:udp?endpoint=live-log",
 	}
 	deps.Host = host
 	handler := &recordingAgentHandler{joinFollowerReturn: false}

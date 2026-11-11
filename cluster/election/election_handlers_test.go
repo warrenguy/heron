@@ -679,6 +679,7 @@ func TestElection_errorClasses(t *testing.T) {
 				r.deps.Host = &recordingElectionHost{
 					clock:               r.clock,
 					localLogRecordingID: int64(election.NullValue),
+					liveLogDestination:  "aeron:udp?endpoint=live-log",
 				}
 				e := election.NewElection(r.cfg, r.deps)
 				election.SetStateForTest(e, election.ElectionStateFollowerLogAwait)
@@ -695,6 +696,7 @@ func TestElection_errorClasses(t *testing.T) {
 					localLogRecordingID:     int64(election.NullValue),
 					followerLogJoinOK:       true,
 					followerLogJoinPosition: r.cfg.LogPosition,
+					liveLogDestination:      "aeron:udp?endpoint=live-log",
 				}
 				r.deps.Handler = &recordingAgentHandler{}
 				e := election.NewElection(r.cfg, r.deps)

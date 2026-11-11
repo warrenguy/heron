@@ -83,15 +83,16 @@ func NewSubscriptionForHooks(
 }
 
 // RecordingReceiveDestinationHook records AddDestination and RemoveDestination
-// calls for unit tests that do not drive a media driver.
+// calls on a [Subscription] or [ExclusivePublication] for unit tests that do
+// not drive a media driver.
 type RecordingReceiveDestinationHook struct {
 	Adds      []string
 	Removes   []string
 	AddErr    error
 	RemoveErr error
 
-	// FailNextAddErr fails the next AddDestination only. Does not record that
-	// attempt: the destination was not attached. Cleared after the fail.
+	// FailNextAddErr fails the next AddDestination, then clears. That call
+	// does not record its channel: the destination did not attach.
 	FailNextAddErr error
 }
 
@@ -131,6 +132,20 @@ func SubscriptionSetReceiveDestinationHookForHooks(
 		return
 	}
 	sub.receiveDestinationHook = hook
+}
+
+var _ sendDestinationHook = (*RecordingReceiveDestinationHook)(nil)
+
+// ExclusivePublicationSetSendDestinationHookForHooks installs a send
+// destination override on ep. Nil clears the override.
+func ExclusivePublicationSetSendDestinationHookForHooks(
+	ep *ExclusivePublication,
+	hook sendDestinationHook,
+) {
+	if ep == nil {
+		return
+	}
+	ep.sendDestinationHook = hook
 }
 
 // SubscriptionApplyReadyForHooks applies SubscriptionReady channel-status counter wiring.
