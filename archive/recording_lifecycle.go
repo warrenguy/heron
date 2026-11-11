@@ -15,7 +15,7 @@ type archiveControlOps struct {
 	cfg              Config
 	proxy            *Proxy
 	poll             func() int
-	transportFault   func() error
+	checks           awaitChecks
 	responsePoller   *ControlResponsePoller
 	descriptorPoller *RecordingDescriptorPoller
 	controlSessionID int64
@@ -23,11 +23,14 @@ type archiveControlOps struct {
 
 func (client *Client) sessionControlOps(pollFn func() int) archiveControlOps {
 	return archiveControlOps{
-		aeronClient:      client.aeronClient,
-		cfg:              client.cfg,
-		proxy:            client.proxy,
-		poll:             pollFn,
-		transportFault:   client.transportFaultError,
+		aeronClient: client.aeronClient,
+		cfg:         client.cfg,
+		proxy:       client.proxy,
+		poll:        pollFn,
+		checks: awaitChecks{
+			transportFault: client.transportFaultError,
+			isConnected:    client.IsConnected,
+		},
 		responsePoller:   client.controlPoller,
 		descriptorPoller: client.descriptorPoller,
 		controlSessionID: client.controlSessionID,
@@ -44,7 +47,7 @@ func (ops archiveControlOps) offerAndAwait(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
-		ops.transportFault,
+		ops.checks,
 		ops.responsePoller,
 		func() (int64, bool) { return offer(correlationID) },
 		ops.controlSessionID,
@@ -193,7 +196,7 @@ func (ops archiveControlOps) listRecording(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
-		ops.transportFault,
+		ops.checks,
 		ops.descriptorPoller,
 		func() (int64, bool) {
 			return ops.proxy.TryListRecording(
@@ -231,7 +234,7 @@ func (ops archiveControlOps) offerAwaitRecordingSignal(
 		defer targets.ResponsePoller.ArmAwait(0)
 	}
 	if err := offerControlRequest(
-		ctx, ops.aeronClient, ops.cfg, ops.poll, ops.transportFault, func() (int64, bool) {
+		ctx, ops.aeronClient, ops.cfg, ops.poll, ops.checks.transportFault, func() (int64, bool) {
 			return offer(correlationID)
 		},
 	); err != nil {
@@ -244,7 +247,7 @@ func (ops archiveControlOps) offerAwaitRecordingSignal(
 		ops.aeronClient,
 		ops.cfg,
 		ops.poll,
-		ops.transportFault,
+		ops.checks,
 		ops.cfg.ControlResponseTimeout,
 		correlationID,
 		operation,

@@ -44,7 +44,8 @@ type LogRecordingControl interface {
 	//
 	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
 	// from other goroutines. Blocks until the START or EXTEND signal arrives,
-	// the bound expires, or the transport client terminates.
+	// the bound expires, the transport client terminates, or the archive
+	// disconnects.
 	//
 	// Returns an error when:
 	//   - the control cannot drain a prior unstopped recording
@@ -55,6 +56,8 @@ type LogRecordingControl interface {
 	//     bound
 	//   - the transport client terminates. The error matches
 	//     archive.ErrTransportTerminating
+	//   - the archive disconnects after the offer. The error matches
+	//     archive.ErrNotConnected
 	//
 	// On error:
 	//   - the implementation has attempted a bounded stop for the channel and
@@ -80,7 +83,7 @@ type LogRecordingControl interface {
 	//
 	// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
 	// from other goroutines. Blocks until the stop proof arrives, the bound
-	// expires, or the transport client terminates.
+	// expires, the transport client terminates, or the archive disconnects.
 	//
 	// Returns an error when:
 	//   - the control cannot offer the stop request within the offer bound
@@ -89,6 +92,8 @@ type LogRecordingControl interface {
 	//   - known catalog id and the catalog read cannot resolve a stop position
 	//   - the transport client terminates. The error matches
 	//     archive.ErrTransportTerminating
+	//   - the archive disconnects after the offer. The error matches
+	//     archive.ErrNotConnected
 	//
 	// On error the recording may still be running.
 	StopLogRecording() error

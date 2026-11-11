@@ -36,8 +36,12 @@ import (
 // the Connect-owned transport client. The blocking call that observes the
 // fault returns the cause. TransportFault then returns the cause.
 //
-// On a caller-supplied transport client, a blocking call returns
-// ErrTransportTerminating. The session stays open.
+// A blocking call returns:
+//   - ErrTransportTerminating on a fault of a caller-supplied transport client
+//   - ControlResponseNotConnectedError when an empty poll finds no connected
+//     response image
+//
+// The session stays open in both cases.
 //
 // Not safe for concurrent use.
 type Client struct {
@@ -348,16 +352,17 @@ func (client *Client) SetRecordingSignalHandler(handler RecordingSignalHandler) 
 // The error is an *Exception with the archive code, correlation id and
 // message. Match it with ExceptionCode or AsException.
 //
-// Concurrency: invoker-only. The handler runs on the goroutine that called
-// Poll or a blocking method.
+// Concurrency: call from the goroutine that runs [Client.Poll]. Not safe from
+// other goroutines. The handler runs on the goroutine that called Poll or a
+// blocking method.
 //
 // The handler may call Close and the accessors. The handler must not call
 // Poll, a blocking method or a New* request builder. A nested call can drop
 // the reply that a waiting call needs. The waiting call then returns
 // ControlResponseTimeoutError. The client does not check the rule.
 //
-// A Close from the handler can hold a waiting blocking call until the
-// response timeout.
+// A Close from the handler ends a blocking call that has sent its request.
+// The call returns ControlResponseNotConnectedError on its next empty poll.
 func (client *Client) SetErrorResponseHandler(handler func(error)) {
 	client.errorResponseHandler = handler
 }
@@ -408,7 +413,7 @@ func (client *Client) StartRecording(
 //
 // ControlResponseTimeout bounds the whole wait after a successful offer.
 //
-// On timeout:
+// On timeout or on ControlResponseNotConnectedError:
 //   - the recording may still be started
 //   - the caller owns the cleanup
 //
@@ -476,7 +481,7 @@ func (client *Client) StartRecordingAwaitSignal(
 //
 // ControlResponseTimeout bounds the whole wait after a successful offer.
 //
-// On timeout:
+// On timeout or on ControlResponseNotConnectedError:
 //   - the extend may still have taken effect
 //   - the caller owns the cleanup
 //
@@ -491,6 +496,7 @@ func (client *Client) StartRecordingAwaitSignal(
 //     ErrorActiveRecording, ErrorActiveSubscription, and ErrorInvalidExtension
 //   - a correlated EXTEND signal does not arrive within the response bound
 //   - the transport client terminates
+//   - the archive disconnects before the proof arrives
 //   - ctx is done before the proof arrives
 func (client *Client) ExtendRecordingAwaitSignal(
 	ctx context.Context,
@@ -550,10 +556,10 @@ func (client *Client) StopRecording(
 // latched. A matching OK alone does not complete: control OK can race ahead of
 // the STOP signal, and callers need the latched stop position.
 //
-// ControlResponseTimeout bounds the whole wait after a successful offer. Timeout may
-// fire after a matching OK was consumed if STOP is not latched in time; treat that as
-// inconclusive for stop success. Use StopRecording when only an OK ControlResponse proof
-// is required.
+// ControlResponseTimeout bounds the whole wait after a successful offer. Timeout or
+// ControlResponseNotConnectedError may fire after the await consumed a matching OK
+// but STOP did not latch in time. Treat either as inconclusive for stop success.
+// Use StopRecording when an OK ControlResponse proof is enough.
 //
 // tracker must be non-nil: it carries the STOP signal proof and is dereferenced on
 // every proof check. Matching follows NewStopSignalTracker: a negative recordingID
@@ -645,7 +651,7 @@ func (client *Client) StopReplay(ctx context.Context, replaySessionID int64) err
 //
 // Concurrency: call from the goroutine that runs [Client.Poll]. Not safe
 // from other goroutines. Blocks until the reply arrives, the bound expires,
-// or the transport client terminates.
+// the transport client terminates, or the archive disconnects.
 //
 // Returns the deleted segment count from the reply RelevantID on OK. Returns
 // ctx.Err() when the context is done before a response arrives. Returns an
