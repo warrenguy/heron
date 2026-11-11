@@ -64,13 +64,14 @@ func TestPublication_Offer_ZeroAllocs(t *testing.T) {
 			},
 		},
 		{
-			name:  "OfferTwoParts",
+			name:  "OfferVector",
 			setup: setupZeroAllocPublication,
 			fn: func(pub *aeron.Publication) {
 				// payload is a stack copy. The row fails if a part escapes.
 				payload := testOfferPayload
+				parts := [2][]byte{payload[:8], payload[8:]}
 				pubSink = aeron.RetryOnAdminActionForTest(func() int64 {
-					return pub.OfferTwoParts(payload[:8], payload[8:], nil)
+					return pub.OfferVector(parts[:], nil)
 				})
 			},
 		},

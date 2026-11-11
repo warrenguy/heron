@@ -11,7 +11,7 @@ import (
 
 // ExclusivePublication is a single-writer IPC publisher over a driver-mapped log buffer.
 //
-// Offer, OfferWithOffset, OfferWithReservedValue, OfferTwoParts, OfferVector,
+// Offer, OfferWithOffset, OfferWithReservedValue, OfferVector,
 // TryClaim, Commit, and Abort are not thread-safe; concurrent calls from
 // multiple goroutines are undefined (Java ExclusivePublication parity).
 //
@@ -270,25 +270,6 @@ func (ep *ExclusivePublication) OfferWithReservedValue(
 	return ep.offerMessage(&payload, supplier)
 }
 
-// OfferTwoParts publishes first then second as one message. Matches
-// Java Publication.offer with two buffers.
-//
-// Behaviour:
-//   - A closed publication returns Closed and does not call the supplier.
-//   - Frames, length rule and return codes match OfferWithOffset of the
-//     concatenated payload.
-//   - A non-nil supplier sets the reserved value of each DATA frame. See
-//     ReservedValueSupplier.
-func (ep *ExclusivePublication) OfferTwoParts(
-	first []byte,
-	second []byte,
-	supplier ReservedValueSupplier,
-) int64 {
-	parts := [2][]byte{first, second}
-	payload := newOfferPayload(parts[:])
-	return ep.offerMessage(&payload, supplier)
-}
-
 // OfferVector publishes the concatenation of vectors as one message. Matches
 // Java Publication.offer with a DirectBufferVector array.
 //
@@ -311,9 +292,9 @@ func (ep *ExclusivePublication) OfferVector(
 	return ep.offerMessage(&payload, supplier)
 }
 
-// offerMessage publishes payload for OfferWithReservedValue, OfferTwoParts
-// and OfferVector. A closed publication returns Closed and does not call
-// the supplier.
+// offerMessage publishes payload for OfferWithReservedValue and
+// OfferVector. A closed publication returns Closed and does not call the
+// supplier.
 func (ep *ExclusivePublication) offerMessage(
 	payload *offerPayload,
 	supplier ReservedValueSupplier,

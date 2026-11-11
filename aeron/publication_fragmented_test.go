@@ -294,7 +294,6 @@ type offerVariantPublication interface {
 		length int,
 		supplier aeron.ReservedValueSupplier,
 	) int64
-	OfferTwoParts(first, second []byte, supplier aeron.ReservedValueSupplier) int64
 	OfferVector(vectors [][]byte, supplier aeron.ReservedValueSupplier) int64
 	Position() int64
 	MaxPayloadLength() int
@@ -358,23 +357,6 @@ var offerVariantForms = []offerVariantForm{
 			guard := bytes.Repeat([]byte{0xEE}, len(cuts))
 			buffer := slices.Concat(guard, payload, guard)
 			return pub.OfferWithReservedValue(buffer, len(guard), len(payload), supplier)
-		},
-	},
-	{
-		// The first cut splits the parts. With no cut the first part is
-		// empty.
-		name: "OfferTwoParts",
-		offer: func(
-			pub offerVariantPublication,
-			payload []byte,
-			cuts []int,
-			supplier aeron.ReservedValueSupplier,
-		) int64 {
-			cut := 0
-			if len(cuts) > 0 {
-				cut = cuts[0]
-			}
-			return pub.OfferTwoParts(payload[:cut], payload[cut:], supplier)
 		},
 	},
 	{
