@@ -20,11 +20,12 @@ require_aeron_versions "${VERSIONS}" || exit 1
 # Must match the builder stage output path in DOCKERFILE.
 CONTAINER_BIN="/src/aeron/cppbuild/Release/binaries/${AERON_DRIVER_ARTIFACT}"
 
-echo "luas: building aeronmd (ref ${AERON_REF})"
+echo "luas: building aeronmd (ref ${AERON_REF}, commit ${AERON_COMMIT})"
 docker_build_args=(
 	-f "${DOCKERFILE}"
 	--target builder
 	--build-arg "AERON_REF=${AERON_REF}"
+	--build-arg "AERON_COMMIT=${AERON_COMMIT}"
 	--build-arg "AERON_REPOSITORY=${AERON_REPOSITORY}"
 	--build-arg "AERON_DRIVER_ARTIFACT=${AERON_DRIVER_ARTIFACT}"
 	-t "${IMAGE}"

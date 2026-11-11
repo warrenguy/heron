@@ -1,11 +1,10 @@
 # Build pinned C media driver.
 # scripts/build-aeronmd.sh: --target builder, extract to bin/aeronmd
 # make aeronmd-compose-image: --target runtime-bin (COPY bin/aeronmd)
-# runtime: in-image C compile when host bin/aeronmd is absent (manual docker build only)
+# runtime: in-image C compile when host bin/aeronmd is absent (manual docker build).
+# A manual runtime build needs AERON_REF, AERON_COMMIT, and AERON_REPOSITORY.
 FROM debian:bookworm-slim AS builder
 
-ARG AERON_REF=1.53.3
-ARG AERON_REPOSITORY=https://github.com/aeron-io/aeron.git
 ARG AERON_DRIVER_ARTIFACT=aeronmd_s
 
 RUN apt-get update \
@@ -18,8 +17,17 @@ RUN apt-get update \
 		uuid-dev \
 	&& rm -rf /var/lib/apt/lists/*
 
+ARG AERON_REF
+ARG AERON_COMMIT
+ARG AERON_REPOSITORY
+
 WORKDIR /src
-RUN git clone --depth 1 --branch "${AERON_REF}" "${AERON_REPOSITORY}" aeron
+RUN git clone --depth 1 --branch "${AERON_REF}" "${AERON_REPOSITORY}" aeron \
+	&& got="$(git -C aeron rev-parse HEAD)" \
+	&& if [ "${got}" != "${AERON_COMMIT}" ]; then \
+		echo "luas: aeron.ref ${AERON_REF} resolves to ${got}, want ${AERON_COMMIT}" >&2; \
+		exit 1; \
+	fi
 
 WORKDIR /src/aeron
 RUN ./cppbuild/cppbuild --no-tests --skip-archive-api \

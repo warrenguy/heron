@@ -60,7 +60,7 @@ if [[ ! -f "${SBE_TOOL_JAR}" ]]; then
 		exit 1
 	}
 fi
-cache_fetch_if_missing "${SBE_TOOL_JAR}" "${url}"
+cache_fetch_if_missing "${SBE_TOOL_JAR}" "${url}" "${SBE_SHA256}"
 
 mkdir -p "${OUT_DIR}"
 
