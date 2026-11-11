@@ -12,7 +12,7 @@ import (
 
 // Publication is a concurrent IPC publisher over a driver-mapped log buffer.
 //
-// Offer, OfferWithOffset, OfferWithReservedValue, OfferTwoParts, OfferVector,
+// Offer, OfferWithOffset, OfferWithReservedValue, OfferVector,
 // TryClaim, Commit, Abort, and read accessors are safe for concurrent use.
 // Close is idempotent but must not be invoked concurrently from multiple
 // goroutines.
@@ -290,25 +290,6 @@ func (pub *Publication) OfferWithReservedValue(
 	return pub.offerMessage(&payload, supplier)
 }
 
-// OfferTwoParts publishes first then second as one message. Matches
-// Java Publication.offer with two buffers.
-//
-// Behaviour:
-//   - A closed publication returns Closed and does not call the supplier.
-//   - Frames, length rule and return codes match OfferWithOffset of the
-//     concatenated payload.
-//   - A non-nil supplier sets the reserved value of each DATA frame. See
-//     ReservedValueSupplier.
-func (pub *Publication) OfferTwoParts(
-	first []byte,
-	second []byte,
-	supplier ReservedValueSupplier,
-) int64 {
-	parts := [2][]byte{first, second}
-	payload := newOfferPayload(parts[:])
-	return pub.offerMessage(&payload, supplier)
-}
-
 // OfferVector publishes the concatenation of vectors as one message. Matches
 // Java Publication.offer with a DirectBufferVector array.
 //
@@ -328,9 +309,9 @@ func (pub *Publication) OfferVector(vectors [][]byte, supplier ReservedValueSupp
 	return pub.offerMessage(&payload, supplier)
 }
 
-// offerMessage publishes payload for OfferWithReservedValue, OfferTwoParts
-// and OfferVector. A closed publication returns Closed and does not call
-// the supplier.
+// offerMessage publishes payload for OfferWithReservedValue and
+// OfferVector. A closed publication returns Closed and does not call the
+// supplier.
 func (pub *Publication) offerMessage(payload *offerPayload, supplier ReservedValueSupplier) int64 {
 	// Repeats the OfferWithOffset reservation and its volatile read order. A
 	// change to one must change the other.
