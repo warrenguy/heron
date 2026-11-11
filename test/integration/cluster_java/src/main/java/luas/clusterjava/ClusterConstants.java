@@ -118,9 +118,10 @@ public final class ClusterConstants {
     // Hand-sync with clusterjava.SnapshotProbeFilename.
     public static final String SNAPSHOT_PROBE_FILENAME = "snapshot-probe";
 
-    // Log channel when a Java member is appointed. Unicast only. No interface, ttl,
-    // or endpoint. Topology derives per-member log endpoints. Same as Go
-    // MixedLogChannelUnicast / DefaultLogChannel.
+    // Log channel for every member on the unicast log, under a Java or a Go
+    // appointed leader. The members string supplies each member's log endpoint.
+    //
+    // Hand-sync with clusterjava.MixedLogChannelUnicast.
     public static final String MIXED_LOG_CHANNEL_UNICAST = UDP_CHANNEL_64K;
 
     // MIXED_LOG_ENDPOINT is the shared multicast log endpoint for go-leader and

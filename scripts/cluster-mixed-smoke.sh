@@ -19,8 +19,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT}/test/integration/cluster_mixed/docker"
 COMPOSE_BASE="${COMPOSE_DIR}/compose.yaml"
 
+# Overlay order fixes each overlay's third-octet slot. Ranges skip octet 0.
+# A smoke must not use 172.30.0.0/24. OCTET_SPAN follows the overlay count,
+# so every range stays inside 1..254.
+OVERLAYS=(
+	java-leader
+	go-leader
+	go-leader-unicast
+	ex-leader-rejoin
+	java-leader-snapshot
+	go-leader-snapshot
+)
+OCTET_SPAN=$((254 / ${#OVERLAYS[@]}))
+
 usage() {
-	echo "usage: $0 java-leader|go-leader|ex-leader-rejoin|java-leader-snapshot|go-leader-snapshot" >&2
+	local IFS='|'
+	echo "usage: $0 ${OVERLAYS[*]}" >&2
 	exit 1
 }
 
@@ -33,26 +47,34 @@ SUBNET_ATTEMPTS=5
 
 [[ "$#" -eq 1 ]] || usage
 
-# Ranges skip octet 0. A smoke must not use 172.30.0.0/24.
-OCTET_SPAN=50
 OVERLAY_ARG="$1"
-OVERLAY_FILES=()
+OCTET_BASE=
+for slot in "${!OVERLAYS[@]}"; do
+	[[ "${OVERLAYS[slot]}" == "${OVERLAY_ARG}" ]] || continue
+	OCTET_BASE=$((1 + slot * OCTET_SPAN))
+done
+[[ -n "${OCTET_BASE}" ]] || usage
+
+# Layered overlays override below.
+OVERLAY_FILES=("${COMPOSE_DIR}/compose.${OVERLAY_ARG}.yaml")
 case "${OVERLAY_ARG}" in
 java-leader)
-	OVERLAY_FILES=("${COMPOSE_DIR}/compose.java-leader.yaml")
 	SMOKE_NAME="TestClusterMixedJavaLeader"
-	OCTET_BASE=1
 	;;
 go-leader)
-	OVERLAY_FILES=("${COMPOSE_DIR}/compose.go-leader.yaml")
 	SMOKE_NAME="TestClusterMixedGoLeader"
-	OCTET_BASE=51
+	OUTER_TIMEOUT_S=150
+	;;
+go-leader-unicast)
+	OVERLAY_FILES=(
+		"${COMPOSE_DIR}/compose.go-leader.yaml"
+		"${COMPOSE_DIR}/compose.go-leader-unicast.yaml"
+	)
+	SMOKE_NAME="TestClusterMixedGoLeaderUnicast"
 	OUTER_TIMEOUT_S=150
 	;;
 ex-leader-rejoin)
-	OVERLAY_FILES=("${COMPOSE_DIR}/compose.ex-leader-rejoin.yaml")
 	SMOKE_NAME="TestClusterMixedGoExLeaderRejoin"
-	OCTET_BASE=101
 	OUTER_TIMEOUT_S=310
 	;;
 java-leader-snapshot)
@@ -61,7 +83,6 @@ java-leader-snapshot)
 		"${COMPOSE_DIR}/compose.java-leader-snapshot.yaml"
 	)
 	SMOKE_NAME="TestClusterMixedJavaLeaderSnapshotRestart"
-	OCTET_BASE=151
 	OUTER_TIMEOUT_S=310
 	;;
 go-leader-snapshot)
@@ -70,7 +91,6 @@ go-leader-snapshot)
 		"${COMPOSE_DIR}/compose.go-leader-snapshot.yaml"
 	)
 	SMOKE_NAME="TestClusterMixedGoLeaderSnapshotRestart"
-	OCTET_BASE=201
 	OUTER_TIMEOUT_S=310
 	;;
 *)
@@ -202,7 +222,7 @@ SMOKE_LOGS="$(smoke_logs)" || {
 # foreign PASS. Named PASS already rejects top-level skip. TestMain rejects a
 # green exit when the overlay gate was never met.
 require_smoke_ran() {
-	if ! grep -qF -- "--- PASS: ${SMOKE_NAME}" <<<"${SMOKE_LOGS}"; then
+	if ! grep -qE -- "--- PASS: ${SMOKE_NAME} \(" <<<"${SMOKE_LOGS}"; then
 		echo "luas: mixed smoke missing --- PASS: ${SMOKE_NAME}" >&2
 		return 1
 	fi

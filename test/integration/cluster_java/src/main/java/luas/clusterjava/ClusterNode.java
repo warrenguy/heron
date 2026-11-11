@@ -28,6 +28,10 @@ public final class ClusterNode
     static final String ENV_EXTERNAL_SERVICE = "LUAS_CLUSTER_EXTERNAL_SERVICE";
     static final String ENV_STOP_FILE = "LUAS_CLUSTER_STOP_FILE";
     static final String ENV_RESTART_FILE = "LUAS_CLUSTER_RESTART_FILE";
+    static final String ENV_MIXED_LOG_MODE = "LUAS_CLUSTER_MIXED_LOG_MODE";
+
+    // MIXED_LOG_MODE_UNICAST is the one value ENV_MIXED_LOG_MODE accepts.
+    static final String MIXED_LOG_MODE_UNICAST = "unicast";
 
     static final long STOP_FILE_POLL_INTERVAL_MS = 50;
 
@@ -41,6 +45,7 @@ public final class ClusterNode
         final boolean externalService;
         final Path stopFile;
         final Path restartFile;
+        final boolean unicastLog;
 
         LauncherSettings(
             final int memberId,
@@ -50,7 +55,8 @@ public final class ClusterNode
             final int appointedLeaderId,
             final boolean externalService,
             final Path stopFile,
-            final Path restartFile)
+            final Path restartFile,
+            final boolean unicastLog)
         {
             this.memberId = memberId;
             this.memberCount = memberCount;
@@ -60,6 +66,7 @@ public final class ClusterNode
             this.externalService = externalService;
             this.stopFile = stopFile;
             this.restartFile = restartFile;
+            this.unicastLog = unicastLog;
         }
     }
 
@@ -126,18 +133,26 @@ public final class ClusterNode
      * <li>{@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_JAVA}: unicast
      * logChannel. The members string stays unchanged. clusterClock stays unset.</li>
      * <li>{@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_GO} or
-     * {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_NONE}: multicast
-     * logChannel. Every members row uses the shared log endpoint.
-     * clusterClock is {@link NanosecondClusterClock}.</li>
+     * {@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_NONE}, without
+     * {@code unicastLog}: multicast logChannel. Every members row uses the
+     * shared log endpoint. clusterClock is {@link NanosecondClusterClock}.</li>
+     * <li>{@link ClusterConstants#MIXED_APPOINTED_LEADER_ID_GO} with
+     * {@code unicastLog}: unicast logChannel. The members string stays
+     * unchanged, so each member receives the log at its own endpoint.
+     * clusterClock is {@link NanosecondClusterClock}.
+     * {@link #launcherSettingsFromEnv} rejects {@code unicastLog} under any
+     * other id.</li>
      * <li>Any other appointed id throws.</li>
      * </ul>
      *
      * @param clusterConfig     config whose consensus module context is mutated
      * @param appointedLeaderId mixed appointed leader member id (0, 2, or -1)
+     * @param unicastLog        true when {@link #ENV_MIXED_LOG_MODE} is unicast
      */
     static void configureConsensusMixed(
         final ClusterConfig clusterConfig,
-        final int appointedLeaderId)
+        final int appointedLeaderId,
+        final boolean unicastLog)
     {
         if (appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA)
         {
@@ -150,11 +165,19 @@ public final class ClusterNode
             || appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_NONE)
         {
             final ConsensusModule.Context consensus = clusterConfig.consensusModuleContext();
+            if (unicastLog)
+            {
+                consensus.logChannel(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST);
+            }
+            else
+            {
+                consensus
+                    .clusterMembers(ClusterConfig.sharedLogEndpoint(
+                        consensus.clusterMembers(), ClusterConstants.MIXED_LOG_ENDPOINT))
+                    .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST);
+            }
             consensus
-                .clusterMembers(ClusterConfig.sharedLogEndpoint(
-                    consensus.clusterMembers(), ClusterConstants.MIXED_LOG_ENDPOINT))
                 .appointedLeaderId(appointedLeaderId)
-                .logChannel(ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST)
                 .clusterClock(new NanosecondClusterClock());
             return;
         }
@@ -179,7 +202,7 @@ public final class ClusterNode
         configureConsensus(clusterConfig, settings.memberCount);
         if (settings.mixed)
         {
-            configureConsensusMixed(clusterConfig, settings.appointedLeaderId);
+            configureConsensusMixed(clusterConfig, settings.appointedLeaderId, settings.unicastLog);
         }
     }
 
@@ -315,7 +338,8 @@ public final class ClusterNode
             System.getenv(ENV_APPOINTED_LEADER_ID),
             System.getenv(ENV_EXTERNAL_SERVICE),
             System.getenv(ENV_STOP_FILE),
-            System.getenv(ENV_RESTART_FILE));
+            System.getenv(ENV_RESTART_FILE),
+            System.getenv(ENV_MIXED_LOG_MODE));
     }
 
     static LauncherSettings launcherSettingsFromEnv(
@@ -395,6 +419,29 @@ public final class ClusterNode
         final String stopFileEnv,
         final String restartFileEnv)
     {
+        return launcherSettingsFromEnv(
+            memberIdEnv,
+            memberCountEnv,
+            hostnamesEnv,
+            mixedEnv,
+            appointedLeaderIdEnv,
+            externalServiceEnv,
+            stopFileEnv,
+            restartFileEnv,
+            null);
+    }
+
+    static LauncherSettings launcherSettingsFromEnv(
+        final String memberIdEnv,
+        final String memberCountEnv,
+        final String hostnamesEnv,
+        final String mixedEnv,
+        final String appointedLeaderIdEnv,
+        final String externalServiceEnv,
+        final String stopFileEnv,
+        final String restartFileEnv,
+        final String mixedLogModeEnv)
+    {
         final boolean mixed = "1".equals(mixedEnv);
         final boolean externalService = "1".equals(externalServiceEnv);
         final int memberCount = parseIntEnv(
@@ -410,6 +457,15 @@ public final class ClusterNode
             ENV_APPOINTED_LEADER_ID,
             appointedLeaderIdEnv,
             ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA);
+        final boolean unicastLog = parseUnicastLog(mixedLogModeEnv);
+        final boolean goLeader = appointedLeaderId == ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO;
+        if (unicastLog && !(mixed && goLeader))
+        {
+            throw new IllegalArgumentException(
+                ENV_MIXED_LOG_MODE + "=" + MIXED_LOG_MODE_UNICAST + " requires "
+                    + ENV_MIXED + "=1 and " + ENV_APPOINTED_LEADER_ID + "="
+                    + ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO + " (go leader)");
+        }
         return new LauncherSettings(
             memberId,
             memberCount,
@@ -418,7 +474,24 @@ public final class ClusterNode
             appointedLeaderId,
             externalService,
             parseOptionalFile(stopFileEnv),
-            parseOptionalFile(restartFileEnv));
+            parseOptionalFile(restartFileEnv),
+            unicastLog);
+    }
+
+    // Unset or blank keeps the log channel that the appointed leader id selects.
+    static boolean parseUnicastLog(final String mixedLogModeEnv)
+    {
+        if (mixedLogModeEnv == null || mixedLogModeEnv.isBlank())
+        {
+            return false;
+        }
+        if (MIXED_LOG_MODE_UNICAST.equals(mixedLogModeEnv.trim()))
+        {
+            return true;
+        }
+        throw new IllegalArgumentException(
+            ENV_MIXED_LOG_MODE + " must be unset or \"" + MIXED_LOG_MODE_UNICAST
+                + "\" (got \"" + mixedLogModeEnv + "\")");
     }
 
     private static Path parseOptionalFile(final String fileEnv)

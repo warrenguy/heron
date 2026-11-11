@@ -517,6 +517,36 @@ class ClusterNodeTest {
     }
 
     @Test
+    void launcherSettingsFromEnv_rejectsUnknownMixedLogMode() {
+        assertIllegalArgument(
+            () -> mixedLauncherSettings(
+                "1", String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO), "multicast"),
+            "LUAS_CLUSTER_MIXED_LOG_MODE must be unset or \"unicast\" (got \"multicast\")");
+    }
+
+    @Test
+    void launcherSettingsFromEnv_rejectsUnicastLogModeWithoutMixed() {
+        assertIllegalArgument(
+            () -> mixedLauncherSettings(
+                null,
+                String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO),
+                ClusterNode.MIXED_LOG_MODE_UNICAST),
+            "LUAS_CLUSTER_MIXED_LOG_MODE=unicast requires LUAS_CLUSTER_MIXED=1 "
+                + "and LUAS_CLUSTER_APPOINTED_LEADER_ID=2 (go leader)");
+    }
+
+    @Test
+    void launcherSettingsFromEnv_rejectsUnicastLogModeForJavaLeader() {
+        assertIllegalArgument(
+            () -> mixedLauncherSettings(
+                "1",
+                String.valueOf(ClusterConstants.MIXED_APPOINTED_LEADER_ID_JAVA),
+                ClusterNode.MIXED_LOG_MODE_UNICAST),
+            "LUAS_CLUSTER_MIXED_LOG_MODE=unicast requires LUAS_CLUSTER_MIXED=1 "
+                + "and LUAS_CLUSTER_APPOINTED_LEADER_ID=2 (go leader)");
+    }
+
+    @Test
     void mixedClusterConfig_javaLeader_appliesUnicastOnTopOfUdp() {
         final ConsensusModule.Context consensus = configureMixedConsensus();
 
@@ -551,13 +581,26 @@ class ClusterNodeTest {
     }
 
     @Test
+    void mixedClusterConfig_goLeaderUnicast_appliesUnicastClockAndPerMemberLog() {
+        final ConsensusModule.Context consensus = configureMixedConsensusWithAppointed(
+            ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO,
+            ClusterNode.MIXED_LOG_MODE_UNICAST);
+
+        assertConsensusUsesFailoverUdpTransport(consensus);
+        assertEquals(ClusterConstants.MIXED_APPOINTED_LEADER_ID_GO, consensus.appointedLeaderId());
+        assertEquals(ClusterConstants.MIXED_LOG_CHANNEL_UNICAST, consensus.logChannel());
+        assertEquals(ClusterConstants.MIXED_CLUSTER_MEMBERS_JAVA_LEADER, consensus.clusterMembers());
+        assertInstanceOf(NanosecondClusterClock.class, consensus.clusterClock());
+    }
+
+    @Test
     void configureConsensusMixed_rejectsUnsupportedAppointedLeaderId() {
         final ClusterConfig config = createClusterConfig(0, MIXED_HOSTS);
         ClusterNode.configureConsensus(config, ClusterConstants.MIXED_MEMBER_COUNT);
 
         final IllegalArgumentException ex = assertThrows(
             IllegalArgumentException.class,
-            () -> ClusterNode.configureConsensusMixed(config, 1));
+            () -> ClusterNode.configureConsensusMixed(config, 1, false));
         assertEquals(
             "LUAS_CLUSTER_APPOINTED_LEADER_ID in mixed mode must be 0 (java leader), "
                 + "2 (go leader) or -1 (no appointed leader); got 1",
@@ -624,15 +667,35 @@ class ClusterNodeTest {
     }
 
     static ConsensusModule.Context configureMixedConsensusWithAppointed(final int appointedLeaderId) {
-        final ClusterNode.LauncherSettings settings = ClusterNode.launcherSettingsFromEnv(
-            "0",
-            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
-            ClusterConstants.MIXED_HOSTNAMES,
-            "1",
-            String.valueOf(appointedLeaderId));
+        return configureMixedConsensusWithAppointed(appointedLeaderId, null);
+    }
+
+    static ConsensusModule.Context configureMixedConsensusWithAppointed(
+        final int appointedLeaderId,
+        final String logModeEnv) {
+        final ClusterNode.LauncherSettings settings = mixedLauncherSettings(
+            "1", String.valueOf(appointedLeaderId), logModeEnv);
         final ClusterConfig config = createClusterConfig(settings.memberId, settings.hostnames);
         ClusterNode.configureConsensus(config, settings);
         return config.consensusModuleContext();
+    }
+
+    // Member 0 on the mixed topology. Each test passes its own mixed, appointed
+    // leader, and log mode env.
+    static ClusterNode.LauncherSettings mixedLauncherSettings(
+        final String mixedEnv,
+        final String appointedLeaderIdEnv,
+        final String logModeEnv) {
+        return ClusterNode.launcherSettingsFromEnv(
+            "0",
+            String.valueOf(ClusterConstants.MIXED_MEMBER_COUNT),
+            ClusterConstants.MIXED_HOSTNAMES,
+            mixedEnv,
+            appointedLeaderIdEnv,
+            null,
+            null,
+            null,
+            logModeEnv);
     }
 
     // Failover and mixed UDP transport fields shared by multi-node consensus setup.

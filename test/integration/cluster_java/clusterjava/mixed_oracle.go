@@ -35,6 +35,15 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameGoLeader = "TestClusterMixedGoLeader"
 
+	// MixedComposeGoLeaderUnicastEnvKey names the env key that the
+	// go-leader-unicast overlay sets to "1".
+	MixedComposeGoLeaderUnicastEnvKey = "LUAS_CLUSTER_MIXED_GO_LEADER_UNICAST_COMPOSE"
+
+	// MixedSmokeNameGoLeaderUnicast is the TestClusterMixedGoLeaderUnicast function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameGoLeaderUnicast = "TestClusterMixedGoLeaderUnicast"
+
 	// MixedComposeExLeaderRejoinEnvKey names the env key that the
 	// ex-leader-rejoin overlay sets to "1".
 	MixedComposeExLeaderRejoinEnvKey = "LUAS_CLUSTER_MIXED_EX_LEADER_REJOIN_COMPOSE"
@@ -67,6 +76,8 @@ const (
 		"smoke-cluster-mixed-java-leader"
 	MixedComposeSkipHintGoLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-go-leader"
+	MixedComposeSkipHintGoLeaderUnicast = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-go-leader-unicast"
 	MixedComposeSkipHintExLeaderRejoin = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-ex-leader-rejoin"
 	MixedComposeSkipHintJavaLeaderSnapshot = "cluster mixed " + composeSkipRunMake +
@@ -184,9 +195,9 @@ const (
 )
 
 const (
-	// MixedLogChannelUnicast is the Go log channel template when a Java member is the
-	// appointed leader. Topology appends the per-member log endpoint. Unicast
-	// only. No interface or ttl. Same URI as cluster.DefaultLogChannel.
+	// MixedLogChannelUnicast is the Go log channel template for every member
+	// on the unicast log, under a Java or a Go appointed leader. Topology
+	// derives each member's log endpoint from the members string.
 	MixedLogChannelUnicast = cluster.DefaultLogChannel
 
 	// MixedLogEndpoint is the shared multicast log endpoint for the go-leader and
@@ -236,8 +247,8 @@ const (
 	// MixedTestTimeoutJavaLeader bounds the java-leader smoke wall clock.
 	MixedTestTimeoutJavaLeader = 120 * time.Second
 
-	// MixedTestTimeoutGoLeader bounds the go-leader smoke wall clock. The
-	// wait stack inside the test is 130s.
+	// MixedTestTimeoutGoLeader bounds the go-leader and go-leader-unicast
+	// smoke wall clock.
 	MixedTestTimeoutGoLeader = 140 * time.Second
 
 	// MixedRejoinStartupCanvassTimeout shortens the Go member's startup canvass
@@ -270,16 +281,26 @@ const (
 	MixedTestTimeoutGoLeaderSnapshot = 300 * time.Second
 )
 
+// mixedOverlays lists each compose overlay env key with the proof it selects.
+var mixedOverlays = []struct {
+	envKey string
+	smoke  string
+}{
+	{MixedComposeJavaLeaderEnvKey, MixedSmokeNameJavaLeader},
+	{MixedComposeGoLeaderEnvKey, MixedSmokeNameGoLeader},
+	{MixedComposeGoLeaderUnicastEnvKey, MixedSmokeNameGoLeaderUnicast},
+	{MixedComposeExLeaderRejoinEnvKey, MixedSmokeNameExLeaderRejoin},
+	{MixedComposeJavaLeaderSnapshotEnvKey, MixedSmokeNameJavaLeaderSnapshot},
+	{MixedComposeGoLeaderSnapshotEnvKey, MixedSmokeNameGoLeaderSnapshot},
+}
+
 // MixedRequiredSmoke reports which mixed proof the current overlay requires.
 //
-// Behaviour: reads the overlay env keys in a fixed order: java-leader,
-// go-leader, ex-leader-rejoin, java-leader-snapshot, then
-// go-leader-snapshot. A key set to "1" selects that overlay.
-// Any other value, including unset, does not select an overlay. The caller
-// does not require a proof when the keys do not select an overlay. A
-// developer run outside compose leaves the keys unset. Several keys set to
-// "1" is a fixture error. MixedRequiredSmoke returns the first match in that
-// order. MixedRequiredSmoke does not panic.
+// Behaviour: scans mixedOverlays in order. MixedRequiredSmoke does not panic.
+//   - The first env key set to "1" selects its overlay.
+//   - Any other value, including unset, does not select an overlay. A
+//     developer run outside compose leaves every key unset.
+//   - Several keys set to "1" is a fixture error.
 //
 // Concurrency: pure. Reads only through getEnv.
 //
@@ -287,21 +308,12 @@ const (
 //   - name, true: the named proof must run to completion
 //   - "", false: no proof is required
 func MixedRequiredSmoke(getEnv func(string) string) (string, bool) {
-	if getEnv(MixedComposeJavaLeaderEnvKey) == "1" {
-		return MixedSmokeNameJavaLeader, true
+	for _, overlay := range mixedOverlays {
+		if getEnv(overlay.envKey) == "1" {
+			return overlay.smoke, true
+		}
 	}
-	if getEnv(MixedComposeGoLeaderEnvKey) == "1" {
-		return MixedSmokeNameGoLeader, true
-	}
-	if getEnv(MixedComposeExLeaderRejoinEnvKey) == "1" {
-		return MixedSmokeNameExLeaderRejoin, true
-	}
-	if getEnv(MixedComposeJavaLeaderSnapshotEnvKey) == "1" {
-		return MixedSmokeNameJavaLeaderSnapshot, true
-	}
-	if getEnv(MixedComposeGoLeaderSnapshotEnvKey) == "1" {
-		return MixedSmokeNameGoLeaderSnapshot, true
-	}
+
 	return "", false
 }
 
@@ -357,7 +369,8 @@ func MixedComposeHostnames() ([]string, error) {
 // MixedComposeClusterMembers builds the members string for the compose host list.
 //
 // Log endpoints:
-//   - sharedLogEndpoint empty keeps per-member unicast log endpoints (java-leader).
+//   - sharedLogEndpoint empty keeps per-member unicast log endpoints (java-leader
+//     and go-leader-unicast).
 //   - sharedLogEndpoint non-empty replaces every log slot (go-leader and
 //     ex-leader-rejoin multicast).
 //

@@ -48,8 +48,8 @@ func TestMain(m *testing.M) {
 // this call leaves the marker unset, so the marker means completion rather
 // than entry.
 //
-// Concurrency: invoker-only. Runs on the test goroutine.
-func markMixedSmokeCompleted(t *testing.T) {
+// Concurrency: runs on the test goroutine. Not safe from other goroutines.
+func markMixedSmokeCompleted(t testing.TB) {
 	t.Helper()
 	mixedSmokeCompleted = t.Name()
 }
