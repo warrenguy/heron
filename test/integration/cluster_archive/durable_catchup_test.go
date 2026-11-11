@@ -28,15 +28,23 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 		harness.DurableCatchupPortBase,
 		harness.DurableCatchupLogEndpoint,
 	)
+	runFollowerCatchup(t, set, false)
+}
 
+// runFollowerCatchup runs the follower catchup scenario on an open set:
+//  1. stop one follower
+//  2. append while the follower is down
+//  3. restart the follower
+//  4. assert the follower catches up through Archive-backed log replay
+//
+// logMDC is the log mode every member must report before and after.
+func runFollowerCatchup(t testing.TB, set *harness.ClusterMemberSet, logMDC bool) {
 	leader := requireSingleLeader(t, set, "")
 	leaderMemberID := leader.ThisMemberID()
+	requireLogTopology(t, set, leader, logMDC)
 
 	followerIndex := firstNonLeaderIndex(set, leaderMemberID)
 	require.GreaterOrEqual(t, followerIndex, 0, "no follower slot:\n%s", set.State())
-	follower := set.Module(followerIndex)
-	require.NotNil(t, follower)
-	require.False(t, follower.IsLeader(), "chosen member must not be leader:\n%s", set.State())
 
 	// Append on the leader. Recording must capture the bytes before the stop.
 	// Mid-append while the follower is down builds the catchup gap. Do not wait
@@ -83,17 +91,12 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 		set.State(),
 	)
 
+	requireLogEndpointReleased(t, set, followerIndex)
 	require.NoError(t, set.RestartMember(followerIndex))
+	requireWarmRestartOpen(t, set, followerIndex, "returning member")
 	returning := set.Module(followerIndex)
-	require.NotNil(t, returning, "RestartMember left slot empty:\n%s", set.State())
 
 	// Assert the commit gap before catchup closes it.
-	require.False(
-		t,
-		returning.IsColdStart(),
-		"returning member cold start:\n%s",
-		set.State(),
-	)
 	require.Less(
 		t,
 		returning.CommitPosition(),
@@ -113,14 +116,9 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	requireAwaitTick(
 		t, set, "archive catchup to leader publication", durableWorkBound,
 		func() bool {
-			return returnerCaughtUpTo(
-				t, set, set.Module(followerIndex), followerIndex, leaderPublicationPosition,
-			)
+			return returnerCaughtUpTo(t, set, returning, followerIndex, leaderPublicationPosition)
 		},
 	)
-
-	returning = set.Module(followerIndex)
-	require.NotNil(t, returning)
 	require.Empty(
 		t,
 		returning.LogReplayReason(),
@@ -137,6 +135,7 @@ func TestDurableCluster_catchesUpARestartedFollower(t *testing.T) {
 	requireAwaitTick(t, set, "all members reach post-catchup commit", durableWorkBound, func() bool {
 		return membersReachCommit(set, postAppendPos)
 	})
+	requireLogTopology(t, set, leader, logMDC)
 }
 
 // TestDurableCluster_catchesUpConcurrentFollowers asserts two stopped
@@ -447,7 +446,7 @@ func requireRecordingCoversCommit(t *testing.T, set *harness.ClusterMemberSet) {
 // log-replication path. A scenario that calls it expects a catchup or a log
 // join instead.
 func failIfFollowerLogReplication(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	m *cluster.ConsensusModule,
 	memberIndex int,
@@ -477,7 +476,7 @@ func failIfFollowerLogReplication(
 //
 // Fails the test if m is on the follower log-replication path.
 func returnerCaughtUpTo(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	m *cluster.ConsensusModule,
 	memberIndex int,

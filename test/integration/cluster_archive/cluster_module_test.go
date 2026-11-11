@@ -714,7 +714,7 @@ func requireAwait(
 
 // requireAwaitTick runs requireAwait over set.TickUntil with pred.
 func requireAwaitTick(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	label string,
 	bound time.Duration,
@@ -731,7 +731,7 @@ func requireAwaitTick(
 // set does not report exactly one leader. context labels the scenario
 // (for example "after re-elect"); empty is fine.
 func requireSingleLeader(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	context string,
 ) *cluster.ConsensusModule {
@@ -752,7 +752,7 @@ func requireSingleLeader(
 //
 // Retriable offer codes FailNow here. Soft-retry paths must call tryAppend.
 func mustAppend(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	leader *cluster.ConsensusModule,
 	payload string,
@@ -779,7 +779,7 @@ func mustAppend(
 // Returns a positive position on success. Returns a retriable offer code when
 // the caller must pace and retry. Fails the test on terminal offer codes.
 func tryAppend(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	leader *cluster.ConsensusModule,
 	payload string,
@@ -847,7 +847,7 @@ func reElectionReady(set *harness.ClusterMemberSet, stoppedIndex int, preTerm in
 //
 // Returns the new leader.
 func requireReElectedLeader(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	stoppedIndex int,
 	preTerm int64,
@@ -915,10 +915,11 @@ func leaderRecordsNewTerm(
 // Ready when:
 //   - a survivor reports ElectionCount of 2
 //   - the set reports one leader with LeadershipTermID above preTerm
+//   - every survivor reports ElectionComplete
 //
 // Returns the new leader.
 func awaitReElectionAfterStop(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	stoppedIndex int,
 	preTerm int64,
@@ -928,6 +929,12 @@ func awaitReElectionAfterStop(
 	requireAwaitTick(t, set, "re-elect after leader stop", durableReElectBound, func() bool {
 		return reElectionReady(set, stoppedIndex, preTerm)
 	})
+
+	// A survivor follower replaces its subscription in the election. The
+	// follower then adds its live log destination again. The new leader
+	// publication connects only after that add, so wait for every survivor.
+	requireAwait(t, set, "survivor election", durableElectBound, set.AwaitElection)
+
 	return requireReElectedLeader(t, set, stoppedIndex, preTerm)
 }
 
@@ -938,7 +945,7 @@ func awaitReElectionAfterStop(
 // STOP or the closed image can reach the agent first, so either trigger
 // passes.
 func requireLogStopTriggerSeen(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	stoppedIndex int,
 ) {

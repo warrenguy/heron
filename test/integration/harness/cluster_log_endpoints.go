@@ -20,10 +20,11 @@ import (
 
 // Multicast endpoints for live cluster-log tests.
 //
-// Each Test* that opens a member set must own a distinct PortBase and log
-// multicast endpoint. Two tests sharing a group address and port see each
-// other's images: the group is joined per interface and the port is what
-// separates them. Add a constant rather than reusing one.
+// Each Test* that opens a member set must own a distinct PortBase. A set on a
+// multicast log must also own a distinct log multicast endpoint. Two tests
+// on one group address and port see each other's images. The driver joins
+// the group per interface, so only the port separates them. Add a constant
+// rather than reusing one.
 //
 // Port formula: PortBase + memberID*100 + offset (offsets 1..5). Three members
 // reserve base+1 .. base+205. Adjacent three-member bases sit 300 apart so
@@ -39,9 +40,8 @@ const (
 	ClusterLogNLTMulticastPort = 24404
 )
 
-// Unicast PortBase values for test/integration below the cluster_archive floor.
-// Each live Test* that binds unicast owns one block. Two tests must not share a
-// PortBase under t.Parallel.
+// Unicast PortBase values for test/integration. Each live Test* that binds
+// unicast owns one block. Two tests must not share a PortBase under t.Parallel.
 //
 // Member counts:
 //   - ConsensusPublications: three members (base+1 .. base+205)
@@ -53,6 +53,7 @@ const (
 	ConsensusPublicationsPortBase   = 24000
 	ClusterStreamsMulticastPortBase = 23700
 	ClusterStreamsCommitPortBase    = 24500
+	ClusterStreamsUnicastPortBase   = 27800
 )
 
 // ClusterStreamsMulticastLogEndpoint is derived from the cluster-log multicast
@@ -154,6 +155,13 @@ const (
 	DurableReplicateTruncateLogEndpoint = "239.255.12.81:19504"
 	DurableConcurrentCatchupPortBase    = 30400
 	DurableConcurrentCatchupLogEndpoint = "239.255.12.43:30404"
+)
+
+// Durable unicast-log scenario port bases. Each member receives the log at
+// its own log port inside the three-member block.
+const (
+	DurableUnicastCatchupPortBase  = 15000
+	DurableUnicastExLeaderPortBase = 15300
 )
 
 // Process cluster smoke endpoints. The pair reserves one three-member
@@ -347,8 +355,8 @@ const (
 
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package uses under
-// t.Parallel. Sibling packages use 9000-9205 and 23700-24605 and may run in
-// parallel go test processes.
+// t.Parallel. Sibling packages register their blocks in the same ledgers and
+// may run in parallel go test processes.
 //
 // TestClusterPortBlocks_doNotOverlap registers every reservation. New
 // cluster_archive bases must end below linuxEphemeralPortFloor.
@@ -934,6 +942,21 @@ func unicastPortLedger() []portLedgerBlock {
 			name:        "cluster-streams-commit",
 			portBase:    ClusterStreamsCommitPortBase,
 			memberCount: 2,
+		},
+		{
+			name:        "cluster-streams-unicast",
+			portBase:    ClusterStreamsUnicastPortBase,
+			memberCount: 2,
+		},
+		{
+			name:        "durable-unicast-catchup",
+			portBase:    DurableUnicastCatchupPortBase,
+			memberCount: 3,
+		},
+		{
+			name:        "durable-unicast-ex-leader",
+			portBase:    DurableUnicastExLeaderPortBase,
+			memberCount: 3,
 		},
 	}
 }

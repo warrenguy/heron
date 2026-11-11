@@ -212,7 +212,7 @@ func survivorsRecordingAtLeast(
 // requireWarmRestartOpen asserts RestartMember refilled the slot without cold
 // start and with a non-empty recording log.
 func requireWarmRestartOpen(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	index int,
 	label string,
@@ -231,10 +231,20 @@ func requireWarmRestartOpen(
 	)
 }
 
+// requireLogEndpointReleased waits for the driver to release the log endpoint
+// of the stopped member at index, so RestartMember can bind it.
+func requireLogEndpointReleased(t testing.TB, set *harness.ClusterMemberSet, index int) {
+	t.Helper()
+
+	requireAwait(t, set, "log endpoint release", durableWorkBound, func(bound time.Duration) bool {
+		return set.AwaitLogEndpointReleased(index, bound)
+	})
+}
+
 // awaitPostRestartReady waits for log images and ElectionComplete on the
 // returning member after RestartMember.
 func awaitPostRestartReady(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	electionComplete func() bool,
 ) {
@@ -517,17 +527,29 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 		harness.DurableRestartLeaderPortBase,
 		harness.DurableRestartLeaderLogEndpoint,
 	)
+	runOutgoingLeaderRestart(t, set, false)
+}
 
+// runOutgoingLeaderRestart runs the outgoing leader scenario on an open set:
+//  1. stop the leader
+//  2. assert the survivors elect and record a new term
+//  3. restart the ex-leader
+//  4. assert the ex-leader rejoins as a follower and commits under that term
+//
+// logMDC is the log mode every member must report before and after.
+func runOutgoingLeaderRestart(t testing.TB, set *harness.ClusterMemberSet, logMDC bool) {
 	leader := requireSingleLeader(t, set, "")
 	leaderIndex := int(leader.ThisMemberID())
 	preTerm := leader.LeadershipTermID()
 	preRecordingID := leader.RecordingLog().TermRecordingID()
 	require.NotEqual(t, int64(-1), preRecordingID, "leader TermRecordingID:\n%s", set.State())
+	requireLogTopology(t, set, leader, logMDC)
 
 	for i, m := range set.Modules() {
 		if m == nil {
 			continue
 		}
+
 		require.Equal(
 			t,
 			int64(1),
@@ -545,7 +567,6 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 		return membersReachCommit(set, floorPos)
 	})
 
-	down := []int{leaderIndex}
 	require.NoError(t, set.StopMember(leaderIndex))
 	require.Nil(t, set.Module(leaderIndex))
 
@@ -559,7 +580,7 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 	requireAwaitTick(t, set, "new leader records under new term", durableWorkBound, func() bool {
 		return leaderRecordsNewTerm(currentLeader(set), leaderIndex, preTerm)
 	})
-	newLeader := set.Leaders()[0]
+	newLeader := requireSingleLeader(t, set, "after re-elect")
 	newTerm := newLeader.LeadershipTermID()
 	newLeaderID := newLeader.ThisMemberID()
 
@@ -568,11 +589,12 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 
 	requireAwaitTick(t, set, "post-re-elect commit advance", durableWorkBound, func() bool {
 		return survivorsReachCommit(
-			set, down, newLeaderID, newLeader.CommitPosition(), midAppendPos,
+			set, []int{leaderIndex}, newLeaderID, newLeader.CommitPosition(), midAppendPos,
 		)
 	})
 
 	// Restart the stopped leader after survivors settled.
+	requireLogEndpointReleased(t, set, leaderIndex)
 	require.NoError(t, set.RestartMember(leaderIndex))
 	requireWarmRestartOpen(t, set, leaderIndex, "returning ex-leader")
 	returning := set.Module(leaderIndex)
@@ -595,19 +617,8 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 	requireAwaitTick(
 		t, set, "returning follower commits post-restart", durableWorkBound,
 		func() bool {
-			m := set.Module(leaderIndex)
-			if m == nil || m.Role() != consensus.RoleFollower {
-				return false
-			}
-			return membersReachCommit(set, postAppendPos)
+			return returning.Role() == consensus.RoleFollower && membersReachCommit(set, postAppendPos)
 		},
-	)
-	require.Equal(
-		t,
-		consensus.RoleFollower,
-		returning.Role(),
-		"returning member Role after rejoin:\n%s",
-		set.State(),
 	)
 
 	// Recording continuity on the returning member.
@@ -627,4 +638,5 @@ func TestDurableCluster_restartsTheOutgoingLeader(t *testing.T) {
 		"new leader term drifted after return:\n%s",
 		set.State(),
 	)
+	requireLogTopology(t, set, newLeader, logMDC)
 }
