@@ -3,9 +3,16 @@
 package harness
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"testing"
+	"time"
+
+	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/archive"
+	"github.com/warrenguy/luas/archive/codecs"
 )
 
 // RequireArchiveRuntime fails the test when the Archive jar or a Java runtime is
@@ -31,5 +38,54 @@ func RequireArchiveRuntime(t testing.TB) {
 	}
 	if _, err := exec.LookPath("java"); err != nil {
 		t.Fatalf("%s", archiveRuntimeMissing)
+	}
+}
+
+// AwaitRecordingStop polls the Archive on the driver in aeronDir until
+// recordingID holds a stop position at or past stopPosition.
+//
+// Returns the descriptor that met the stop position.
+//
+// Returns an error when:
+//   - the client or Archive connect fails
+//   - ctx ends first; the error wraps the last list error
+func AwaitRecordingStop(
+	ctx context.Context,
+	aeronDir string,
+	recordingID, stopPosition int64,
+) (codecs.RecordingDescriptorFields, error) {
+	transport, err := aeron.Connect(ctx, aeron.Config{AeronDir: aeronDir})
+	if err != nil {
+		return codecs.RecordingDescriptorFields{}, err
+	}
+
+	defer func() { _ = transport.Close() }()
+
+	archiveClient, err := archive.Connect(ctx, archive.Config{Aeron: transport, AeronDir: aeronDir})
+	if err != nil {
+		return codecs.RecordingDescriptorFields{}, err
+	}
+
+	defer func() { _ = archiveClient.Close() }()
+
+	var lastListErr error
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return codecs.RecordingDescriptorFields{}, fmt.Errorf(
+				"list recording %d: %w",
+				recordingID,
+				errors.Join(err, lastListErr),
+			)
+		}
+
+		desc, listErr := archiveClient.ListRecording(ctx, recordingID)
+		lastListErr = listErr
+
+		if listErr == nil && desc.StopPosition >= stopPosition {
+			return desc, nil
+		}
+
+		time.Sleep(time.Millisecond)
 	}
 }

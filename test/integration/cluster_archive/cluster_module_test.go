@@ -690,7 +690,7 @@ func openThreeNodeClusterWithConfig(
 // requireAwait requires await(bound) to return true. Failure reports the set
 // state. Success logs the elapsed time and the set state for calibration.
 func requireAwait(
-	t *testing.T,
+	t testing.TB,
 	set interface{ State() string },
 	label string,
 	bound time.Duration,
