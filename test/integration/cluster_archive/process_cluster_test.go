@@ -143,11 +143,7 @@ func isCaughtUp(statuses []harness.MemberStatus) bool {
 func appliedLists(pc *harness.ProcessCluster) [][]int64 {
 	lists := make([][]int64, processClusterMemberCount)
 	for i := range processClusterMemberCount {
-		applied := pc.Member(i).Applied()
-		lists[i] = make([]int64, 0, len(applied))
-		for _, rec := range applied {
-			lists[i] = append(lists[i], rec.Seq)
-		}
+		lists[i] = appliedSeqs(pc.Member(i))
 	}
 	return lists
 }
@@ -174,7 +170,7 @@ func hasSeqs(seqs, applied []int64) bool {
 }
 
 func requireProcessAwait(
-	t *testing.T,
+	t testing.TB,
 	pc *harness.ProcessCluster,
 	label string,
 	bound time.Duration,

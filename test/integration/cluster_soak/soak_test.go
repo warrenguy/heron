@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/luas/aeron"
-	"github.com/warrenguy/luas/archive"
 	"github.com/warrenguy/luas/cluster/client"
 	"github.com/warrenguy/luas/cluster/consensus"
 	"github.com/warrenguy/luas/cluster/election"
@@ -749,7 +748,7 @@ func (r *soakRunner) mustRecordings(commit int64) {
 	for i := range soakMembers {
 		status, ok := r.pc.Member(i).Status()
 		require.True(r.t, ok, "member %d status", i)
-		err := awaitRecordingStop(ctx, r.pc.DriverDir(i), status.LocalLogRecordingID, commit)
+		_, err := harness.AwaitRecordingStop(ctx, r.pc.DriverDir(i), status.LocalLogRecordingID, commit)
 		require.NoError(r.t, err, "member %d recording stop", i)
 	}
 }
@@ -1103,38 +1102,6 @@ func mutateOne(ops []porcupine.Operation) bool {
 	}
 
 	return false
-}
-
-func awaitRecordingStop(ctx context.Context, dir string, id, commit int64) error {
-	ac, err := aeron.Connect(ctx, aeron.Config{AeronDir: dir})
-	if err != nil {
-		return err
-	}
-
-	defer func() { _ = ac.Close() }()
-	arch, err := archive.Connect(ctx, archive.Config{Aeron: ac, AeronDir: dir})
-	if err != nil {
-		return err
-	}
-
-	defer func() { _ = arch.Close() }()
-
-	var lastListErr error
-
-	for {
-		if err = ctx.Err(); err != nil {
-			return fmt.Errorf("list recording: %w", errors.Join(err, lastListErr))
-		}
-
-		desc, listErr := arch.ListRecording(ctx, id)
-		lastListErr = listErr
-
-		if listErr == nil && desc.StopPosition >= commit {
-			return nil
-		}
-
-		time.Sleep(time.Millisecond)
-	}
 }
 
 func writeSynced(file *os.File, raw []byte) error {

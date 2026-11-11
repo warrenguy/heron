@@ -28,6 +28,8 @@ import (
 // Port formula: PortBase + memberID*100 + offset (offsets 1..5). Three members
 // reserve base+1 .. base+205. Adjacent three-member bases sit 300 apart so
 // ranges never overlap. Unique bases make t.Parallel safe inside the package.
+// Register each block in multicastPortLedger or unicastPortLedger.
+// TestClusterPortBlocks_doNotOverlap asserts the ranges stay disjoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing it and rejects an even address at
@@ -100,12 +102,7 @@ const (
 
 // One-member cluster-log replay restart endpoints. Reserves the consensus port
 // block ClusterReplayPortBase+1 .. ClusterReplayPortBase+(memberCount-1)*100+5.
-// At one member that range is 25701-25705. The shared cluster log uses the
-// multicast endpoint below.
-//
-// Member-restart affordance tests use 25500-25605 at two members and
-// 239.255.12.11:25504. Replay and restart-affordance blocks are disjoint on
-// every axis.
+// The shared cluster log uses the multicast endpoint below.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -128,7 +125,7 @@ const (
 // DurableDivergence and DurableExLeaderReElect are separate for the truncate
 // and ex-leader re-election tests. DurableReplicate and
 // DurableReplicateTruncate are separate for the two ex-leader replication
-// tests. Their bases sit below ClusterServiceEgressPortBase (20100).
+// tests.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -160,8 +157,7 @@ const (
 )
 
 // Process cluster smoke endpoints. The pair reserves one three-member
-// consensus port block (15601-15805) and one shared cluster-log multicast
-// endpoint.
+// consensus port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd.
 const (
@@ -170,7 +166,7 @@ const (
 )
 
 // Live soak endpoints. The pair reserves one three-member consensus port
-// block (base+1 .. base+205) and one shared cluster-log multicast endpoint.
+// block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd.
 const (
@@ -179,8 +175,7 @@ const (
 )
 
 // Cluster termination endpoints. The pair reserves one three-member consensus
-// port block (17101-17305) and one shared cluster-log multicast endpoint. The
-// next block above starts at 18301 (ClusterControlPortBase).
+// port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -189,11 +184,20 @@ const (
 	ClusterTerminationLogEndpoint = "239.255.12.101:17104"
 )
 
+// Crash restart endpoints. Each pair reserves one three-member consensus port
+// block and one shared cluster-log multicast endpoint.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	CrashRestartLeaderPortBase      = 17700
+	CrashRestartLeaderLogEndpoint   = "239.255.12.95:17704"
+	CrashRestartFollowerPortBase    = 18000
+	CrashRestartFollowerLogEndpoint = "239.255.12.93:18004"
+)
+
 // Cluster control endpoints. The pair reserves one three-member consensus
-// port block (base+1 .. base+205) and one shared cluster-log multicast
-// endpoint. The reserved range is 18301-18505. The next block above starts
-// at 18601 (ClusterMultiServiceSnapshotRetentionPortBase). The next block
-// below ends at 17305 (ClusterTerminationPortBase).
+// port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -203,10 +207,8 @@ const (
 )
 
 // Multi-service snapshot retention endpoints. The pair reserves one
-// three-member consensus port block (base+1 .. base+205) and one shared
-// cluster-log multicast endpoint. The reserved range is 18601-18805. The
-// next block above starts at 18901 (ClusterJavaClientPortBase). The next
-// block below ends at 18505 (ClusterControlPortBase).
+// three-member consensus port block and one shared cluster-log multicast
+// endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -216,10 +218,7 @@ const (
 )
 
 // Java cluster client endpoints. The pair reserves one three-member consensus
-// port block (base+1 .. base+205) and one shared cluster-log multicast
-// endpoint. The reserved range is 18901-19105. The next block above starts at
-// 19201 (ClusterSessionReplicateExLeaderPortBase). The next block below ends
-// at 18805 (ClusterMultiServiceSnapshotRetentionPortBase).
+// port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -229,10 +228,7 @@ const (
 )
 
 // Session replication ex-leader endpoints. The pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. The reserved range is 19201-19405. The next block above
-// starts at 19501 (DurableReplicateTruncatePortBase). The next block below
-// ends at 19105 (ClusterJavaClientPortBase).
+// consensus port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -242,9 +238,8 @@ const (
 )
 
 // Session-client endpoints. Each pair owns one three-member consensus port
-// block base+1 .. base+205 and one shared cluster-log multicast endpoint.
-// Smoke and reject are separate so the two session tests may run in
-// parallel. Bases sit above DurableConcurrentCatchup (30400 + 405).
+// block and one shared cluster-log multicast endpoint. Smoke and reject are
+// separate so the two session tests may run in parallel.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -255,9 +250,8 @@ const (
 	ClusterSessionRejectLogEndpoint = "239.255.12.47:31204"
 )
 
-// Stop/restart amplifier endpoints. Two members reserve base+1 .. base+105 and
-// one shared cluster-log multicast endpoint. Bases sit above
-// ClusterSessionRejectPortBase (31200 + 205).
+// Stop/restart amplifier endpoints. Two members reserve one consensus port
+// block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -266,9 +260,8 @@ const (
 	ClusterMemberAmplifierLogEndpoint = "239.255.12.49:31504"
 )
 
-// Live service-ack endpoints. Three members reserve base+1 .. base+205 and
-// one shared cluster-log multicast endpoint. Bases sit above
-// ClusterMemberAmplifierPortBase (31500 + 105).
+// Live service-ack endpoints. Three members reserve one consensus port block
+// and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -278,10 +271,8 @@ const (
 )
 
 // Session-extend live-scenario endpoints. Each pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. Restart and re-elect are separate so the two scenarios
-// may run in parallel. Bases sit above ClusterServiceAckPortBase
-// (31800 + 205).
+// consensus port block and one shared cluster-log multicast endpoint. Restart
+// and re-elect are separate so the two scenarios may run in parallel.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -293,10 +284,9 @@ const (
 )
 
 // Multi-service, session-transfer, and service-transfer live-scenario
-// endpoints. Each pair reserves one three-member consensus port block
-// (base+1 .. base+205) and one shared cluster-log multicast endpoint. The
-// three scenarios are separate so they may run in parallel. Bases sit below
-// linuxEphemeralPortFloor and ClusterStreamsMulticastPortBase (23700).
+// endpoints. Each pair reserves one three-member consensus port block and one
+// shared cluster-log multicast endpoint. The three scenarios are separate so
+// they may run in parallel.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -310,9 +300,8 @@ const (
 )
 
 // Service restart live-scenario endpoints. Each pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. The two scenarios are separate so they may run in
-// parallel. Bases sit below DurableRestartRunningPortBase (22200).
+// consensus port block and one shared cluster-log multicast endpoint. The two
+// scenarios are separate so they may run in parallel.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -324,8 +313,7 @@ const (
 )
 
 // Service egress leader-change endpoints. The pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. The base sits below ClusterModuleImageLossPortBase (21300).
+// consensus port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -335,9 +323,7 @@ const (
 )
 
 // Service snapshot restart endpoints. The pair reserves one three-member
-// consensus port block (base+1 .. base+205) and one shared cluster-log
-// multicast endpoint. The base sits between ClusterServiceEgressPortBase
-// and ClusterModuleImageLossPortBase.
+// consensus port block and one shared cluster-log multicast endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -346,11 +332,9 @@ const (
 	ClusterServiceSnapshotRestartLogEndpoint = "239.255.12.83:20404"
 )
 
-// Multi-service snapshot restart and restored-session egress each
-// reserve one three-member consensus port block (base+1 .. base+205)
-// and one shared cluster-log multicast endpoint. Both bases sit
-// between ClusterServiceSnapshotRestartPortBase and
-// ClusterModuleImageLossPortBase.
+// Multi-service snapshot restart and restored-session egress each reserve one
+// three-member consensus port block and one shared cluster-log multicast
+// endpoint.
 //
 // The final octet of the group address must be odd. The driver derives the
 // multicast control address by incrementing that octet.
@@ -921,6 +905,18 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterTerminationPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterTerminationLogEndpoint,
+		},
+		{
+			name:        "crash-restart-leader",
+			portBase:    CrashRestartLeaderPortBase,
+			memberCount: 3,
+			logEndpoint: CrashRestartLeaderLogEndpoint,
+		},
+		{
+			name:        "crash-restart-follower",
+			portBase:    CrashRestartFollowerPortBase,
+			memberCount: 3,
+			logEndpoint: CrashRestartFollowerLogEndpoint,
 		},
 	}
 }
