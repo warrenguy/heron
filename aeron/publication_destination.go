@@ -154,20 +154,43 @@ func (pub *Publication) AsyncRemoveDestinationByID(
 //
 // See Publication.AddDestination for Behaviour, Concurrency and errors.
 func (ep *ExclusivePublication) AddDestination(channel string) error {
-	return awaitSendDestination(ep.sendDestinationTarget().channelCommand(
+	return ep.blockingSendDestination(
 		channel,
+		sendDestinationHook.AddDestination,
 		(*conductor.DriverProxy).AddDestination,
-	))
+	)
 }
 
 // RemoveDestination removes a send destination by channel.
 //
 // See Publication.RemoveDestination for Behaviour, Concurrency and errors.
 func (ep *ExclusivePublication) RemoveDestination(channel string) error {
-	return awaitSendDestination(ep.sendDestinationTarget().channelCommand(
+	return ep.blockingSendDestination(
 		channel,
+		sendDestinationHook.RemoveDestination,
 		(*conductor.DriverProxy).RemoveDestination,
-	))
+	)
+}
+
+// blockingSendDestination runs the test hook when set. Otherwise it offers
+// once on the to-driver ring and waits for ON_OPERATION_SUCCESS.
+func (ep *ExclusivePublication) blockingSendDestination(
+	channel string,
+	hookCall func(sendDestinationHook, string) error,
+	offer channelOfferFunc,
+) error {
+	target := ep.sendDestinationTarget()
+	if target.closedErr != nil {
+		return target.closedErr
+	}
+
+	if hook := ep.sendDestinationHook; hook != nil {
+		if err := validateChannel(channel); err != nil {
+			return err
+		}
+		return hookCall(hook, channel)
+	}
+	return awaitSendDestination(target.channelCommand(channel, offer))
 }
 
 // RemoveDestinationByID removes a send destination by its registration id.
@@ -265,15 +288,19 @@ type preparedSendDestination struct {
 	err    error
 }
 
+// channelOfferFunc offers a destination command that names a channel.
+// registrationID is the publication's original registration id.
+type channelOfferFunc func(
+	proxy *conductor.DriverProxy,
+	correlationID, registrationID int64,
+	channel string,
+) error
+
 // channelCommand checks the target and channel. Returns the bound client and
 // the offer.
 func (target sendDestinationTarget) channelCommand(
 	channel string,
-	offer func(
-		proxy *conductor.DriverProxy,
-		correlationID, registrationID int64,
-		channel string,
-	) error,
+	offer channelOfferFunc,
 ) preparedSendDestination {
 	client, err := target.boundClient()
 	if err != nil {

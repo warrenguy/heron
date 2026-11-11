@@ -59,9 +59,13 @@ type Config struct {
 	ConsensusChannel string
 
 	// LogChannel is the cluster log channel template. Same endpoint rule as
-	// ConsensusChannel: the log endpoint comes from the members string, which for
-	// cross-member delivery carries one shared multicast group on every row. Zero
-	// value takes DefaultLogChannel.
+	// ConsensusChannel: every log endpoint comes from the members string. The
+	// log endpoints select the mode:
+	//   - equal on every row: one shared channel
+	//   - distinct on every row: a manual multi-destination-cast log
+	//   - partly shared: validation rejects the config
+	//
+	// Zero value takes DefaultLogChannel.
 	LogChannel string
 
 	// IngressChannel is the client ingress channel template. Must be a udp
@@ -370,6 +374,10 @@ func (cfg Config) validateMembers() ([]election.Member, int, error) {
 		}
 	}
 
+	if err := validateLogEndpointSharing(members); err != nil {
+		return nil, 0, err
+	}
+
 	if err := validateChannelTemplate(cfg.ConsensusChannel, "ConsensusChannel"); err != nil {
 		return nil, 0, err
 	}
@@ -585,6 +593,39 @@ type memberEndpoint struct {
 	name      string
 	value     string
 	checkPort bool
+}
+
+// validateLogEndpointSharing refuses a members string that shares some log
+// endpoints and not others.
+func validateLogEndpointSharing(members []election.Member) error {
+	equal, distinct := classifyLogEndpoints(members)
+	if equal || distinct {
+		return nil
+	}
+	return errors.New(
+		"cluster: ClusterMembers log endpoints must be all equal or all distinct",
+	)
+}
+
+// classifyLogEndpoints reports whether log endpoints are all equal or all
+// distinct. One member is equal, not distinct.
+func classifyLogEndpoints(members []election.Member) (equal, distinct bool) {
+	if len(members) < 2 {
+		return true, false
+	}
+
+	equal, distinct = true, true
+
+	for i := 1; i < len(members); i++ {
+		endpoint := members[i].LogEndpoint
+		equal = equal && endpoint == members[0].LogEndpoint
+
+		for j := 0; distinct && j < i; j++ {
+			distinct = endpoint != members[j].LogEndpoint
+		}
+	}
+
+	return equal, distinct
 }
 
 func validateMemberEndpoints(m election.Member) error {

@@ -14,6 +14,7 @@ import (
 	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/cluster"
 	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/internal/testutil"
 )
 
 func TestTopology_memberPointerIdentity_rapid(t *testing.T) {
@@ -124,4 +125,98 @@ func TestBuildChannelWithEndpoint_idempotent_rapid(t *testing.T) {
 			require.Contains(t, once, p)
 		}
 	})
+}
+
+// TestNewTopology_logMode_rapid asserts the log channels for shared and
+// distinct log endpoints, and the error for partly shared ones.
+func TestNewTopology_logMode_rapid(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		memberCount, startID, portBase := drawValidMembersPorts(rt)
+		thisIdx := rapid.IntRange(0, memberCount-1).Draw(rt, "thisIdx")
+		hosts := drawHostnames(rt, memberCount)
+
+		modeRoll := rapid.IntRange(0, 99).Draw(rt, "modeRoll")
+		mode := "mdc"
+		switch {
+		case memberCount < 2 || modeRoll < 35:
+			mode = "shared"
+		case memberCount >= 3 && modeRoll < 50:
+			mode = "partial"
+		}
+
+		logs := make([]string, memberCount)
+		for i := range logs {
+			logs[i] = expectedEndpoint(hosts[i], startID+int32(i), portBase, cluster.LogPortOffset)
+		}
+		switch mode {
+		case "shared":
+			for i := range logs {
+				logs[i] = logs[0]
+			}
+		case "partial":
+			logs[1] = logs[0]
+		}
+
+		var members string
+		for i, host := range hosts {
+			id := startID + int32(i)
+			members += memberSpec(id, [endpointSlotCount]string{
+				expectedEndpoint(host, id, portBase, cluster.ClientFacingPortOffset),
+				expectedEndpoint(host, id, portBase, cluster.MemberFacingPortOffset),
+				logs[i],
+				expectedEndpoint(host, id, portBase, cluster.TransferPortOffset),
+				expectedEndpoint(host, id, portBase, cluster.ArchiveControlPortOffset),
+			})
+		}
+
+		tp, err := cluster.NewTopology(topologyConfigMembers(startID+int32(thisIdx), members))
+		if mode == "partial" {
+			require.EqualError(
+				rt,
+				err,
+				"cluster: ClusterMembers log endpoints must be all equal or all distinct",
+			)
+			return
+		}
+		require.NoError(rt, err)
+		require.Equal(rt, mode == "mdc", tp.IsLogMDC())
+
+		if mode == "shared" {
+			require.Equal(rt, tp.LogChannel(), tp.LogPublicationChannel())
+			require.Nil(rt, tp.LogPublicationDestinations())
+			return
+		}
+
+		endpoint := tp.ThisMember().LogEndpoint
+		control := wantControlEndpoint(testutil.IterationTB(t, rt), endpoint)
+		require.Equal(
+			rt,
+			"aeron:udp?term-length=64k|control-mode=manual|control="+control+"|ssc=false",
+			tp.LogPublicationChannel(),
+		)
+
+		want := make([]string, 0, memberCount-1)
+		for _, member := range tp.Members() {
+			if member == tp.ThisMember() {
+				continue
+			}
+			want = append(want, "aeron:udp?endpoint="+member.LogEndpoint)
+			require.NotEqual(rt, endpoint, member.LogEndpoint)
+		}
+		require.Len(rt, want, memberCount-1)
+		got := tp.LogPublicationDestinations()
+		require.Equal(rt, want, got)
+		got[0] = "mutated"
+		require.Equal(rt, want, tp.LogPublicationDestinations())
+	})
+}
+
+// wantControlEndpoint returns endpoint with port 0. A manual
+// multi-destination-cast log publication uses it as its control endpoint.
+func wantControlEndpoint(tb testing.TB, endpoint string) string {
+	tb.Helper()
+	colon := strings.LastIndex(endpoint, ":")
+	require.GreaterOrEqual(tb, colon, 0)
+	return endpoint[:colon+1] + "0"
 }

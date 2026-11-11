@@ -108,12 +108,12 @@ type recordingPositionSource interface {
 
 var _ recordingPositionSource = (*cnc.RecordingPositionCache)(nil)
 
-// archiveDestinationChannel returns the control request channel of the
-// archive at endpoint. The channel keeps the interface of template and drops
-// every other template parameter.
+// udpEndpointChannel returns an aeron:udp channel with endpoint=endpoint. The
+// channel keeps the interface of template and drops every other template
+// parameter.
 //
 // Returns an error when checkChannelEndpoint rejects template or endpoint.
-func archiveDestinationChannel(template, endpoint string) (string, error) {
+func udpEndpointChannel(template, endpoint string) (string, error) {
 	if err := checkChannelEndpoint(template, endpoint); err != nil {
 		return "", err
 	}
@@ -303,7 +303,7 @@ func newLogReplication(
 		counterPosition: archive.NullPosition,
 	}
 
-	sourceControlChannel, err := archiveDestinationChannel(
+	sourceControlChannel, err := udpEndpointChannel(
 		deps.LeaderArchiveControlChannel,
 		leaderArchiveEndpoint,
 	)

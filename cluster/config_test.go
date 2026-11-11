@@ -407,6 +407,20 @@ func TestValidate_errors(t *testing.T) {
 			want: "cluster: duplicate cluster member id 0",
 		},
 		{
+			name: "partly shared log endpoints",
+			mutate: func(cfg *cluster.Config) {
+				other := testMemberEndpoints
+				other[ingressSlot] = "127.0.0.1:9202"
+				other[consensusSlot] = "127.0.0.1:9203"
+				other[logSlot] = "127.0.0.1:9204"
+				other[catchupSlot] = "127.0.0.1:9205"
+				other[archiveSlot] = "127.0.0.1:9201"
+				cfg.ClusterMembers = memberSpec(0, testMemberEndpoints) + memberSpec(1, dupEndpoints) +
+					memberSpec(2, other)
+			},
+			want: "cluster: ClusterMembers log endpoints must be all equal or all distinct",
+		},
+		{
 			name: "MemberID absent",
 			mutate: func(cfg *cluster.Config) {
 				cfg.MemberID = 99

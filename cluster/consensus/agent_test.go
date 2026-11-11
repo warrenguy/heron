@@ -1626,6 +1626,34 @@ func TestAgent_logRecording_leaderJoinChecksPublication(t *testing.T) {
 	}
 }
 
+func TestAgent_logRecording_leaderUsesRecordingChannel(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		channel string
+	}{
+		{name: "unset", channel: ""},
+		{name: "set", channel: "aeron:udp?tags=3|alias=log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			lp, _ := boundLogPublisher(t)
+			control := &fakeLogRecordingControl{nextRecordingID: 7}
+			a := NewAgent(AgentConfig{LogPublisher: lp})
+			a.SetLogRecordingControl(control)
+			if tc.channel != "" {
+				a.SetLeaderLogRecordingChannel(tc.channel)
+			}
+
+			require.NoError(t, a.JoinLogAsLeader(1, 0, lp.SessionID(), false))
+			require.Len(t, control.startCalls, 1)
+			require.Equal(t, tc.channel, control.startCalls[0].recordingChannel)
+		})
+	}
+}
+
 func TestAgent_SetLogRecordingID_whileInactive(t *testing.T) {
 	t.Parallel()
 

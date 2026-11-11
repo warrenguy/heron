@@ -1,6 +1,7 @@
 package cluster_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -398,4 +399,124 @@ func TestNewTopology_singleMember(t *testing.T) {
 		tp.LogChannel(),
 	)
 	require.Equal(t, wantIngressEndpointsSingle, tp.IngressEndpoints())
+}
+
+func TestNewTopology_logMode(t *testing.T) {
+	t.Parallel()
+
+	sharedLog := []struct {
+		name    string
+		members string
+	}{
+		{name: "shared multicast golden", members: goldenClusterMembersSharedLog},
+		{name: "single member", members: goldenClusterMembersSingle},
+	}
+
+	for _, tc := range sharedLog {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tp, err := cluster.NewTopology(topologyConfigMembers(0, tc.members))
+			require.NoError(t, err)
+			require.False(t, tp.IsLogMDC())
+			require.Equal(t, tp.LogChannel(), tp.LogPublicationChannel())
+			require.Nil(t, tp.LogPublicationDestinations())
+		})
+	}
+
+	failover := [3]struct {
+		control string
+		dests   []string
+	}{
+		{
+			control: "cluster-0:0",
+			dests:   unicastPeerDestinations,
+		},
+		{
+			control: "cluster-1:0",
+			dests: []string{
+				"aeron:udp?endpoint=cluster-0:9004",
+				"aeron:udp?endpoint=cluster-2:9204",
+			},
+		},
+		{
+			control: "cluster-2:0",
+			dests: []string{
+				"aeron:udp?endpoint=cluster-0:9004",
+				"aeron:udp?endpoint=cluster-1:9104",
+			},
+		},
+	}
+
+	for id, tc := range failover {
+		t.Run("failover member "+strconv.Itoa(id), func(t *testing.T) {
+			t.Parallel()
+			tp, err := cluster.NewTopology(topologyConfigMembers(int32(id), goldenClusterMembersFailover))
+			require.NoError(t, err)
+			require.True(t, tp.IsLogMDC())
+			require.Equal(
+				t,
+				"aeron:udp?term-length=64k|endpoint="+tp.ThisMember().LogEndpoint,
+				tp.LogChannel(),
+			)
+			require.Equal(
+				t,
+				"aeron:udp?term-length=64k|control-mode=manual|control="+tc.control+"|ssc=false",
+				tp.LogPublicationChannel(),
+			)
+			requireLogDestinationsCopy(t, tp, tc.dests)
+		})
+	}
+
+	t.Run("ipv6 control wildcard", func(t *testing.T) {
+		t.Parallel()
+		members := memberSpec(0, [endpointSlotCount]string{
+			"[::1]:9002", "[::1]:9003", "[::1]:9004", "[::1]:9005", "[::1]:9001",
+		}) + memberSpec(1, [endpointSlotCount]string{
+			"[::1]:9102", "[::1]:9103", "[::1]:9104", "[::1]:9105", "[::1]:9101",
+		})
+		tp, err := cluster.NewTopology(topologyConfigMembers(0, members))
+		require.NoError(t, err)
+		require.True(t, tp.IsLogMDC())
+		require.Equal(
+			t,
+			"aeron:udp?term-length=64k|control-mode=manual|control=[::1]:0|ssc=false",
+			tp.LogPublicationChannel(),
+		)
+		requireLogDestinationsCopy(t, tp, []string{"aeron:udp?endpoint=[::1]:9104"})
+	})
+
+	t.Run("interface on destinations", func(t *testing.T) {
+		t.Parallel()
+		cfg := topologyConfigMembers(0, goldenClusterMembersFailover)
+		cfg.LogChannel = "aeron:udp?term-length=64k|interface=127.0.0.1"
+		tp, err := cluster.NewTopology(cfg)
+		require.NoError(t, err)
+		require.True(t, tp.IsLogMDC())
+		require.Contains(t, tp.LogPublicationChannel(), "interface=127.0.0.1")
+		requireLogDestinationsCopy(t, tp, []string{
+			"aeron:udp?endpoint=cluster-1:9104|interface=127.0.0.1",
+			"aeron:udp?endpoint=cluster-2:9204|interface=127.0.0.1",
+		})
+	})
+
+	t.Run("control-mode replaced", func(t *testing.T) {
+		t.Parallel()
+		cfg := topologyConfigMembers(0, goldenClusterMembersFailover)
+		cfg.LogChannel = "aeron:udp?term-length=64k|control-mode=dynamic"
+		tp, err := cluster.NewTopology(cfg)
+		require.NoError(t, err)
+		require.Equal(
+			t,
+			"aeron:udp?term-length=64k|control-mode=manual|control=cluster-0:0|ssc=false",
+			tp.LogPublicationChannel(),
+		)
+	})
+}
+
+func requireLogDestinationsCopy(t testing.TB, tp *cluster.Topology, want []string) {
+	t.Helper()
+	got := tp.LogPublicationDestinations()
+	require.Equal(t, want, got)
+	got[0] = "mutated"
+	require.Equal(t, want, tp.LogPublicationDestinations())
 }

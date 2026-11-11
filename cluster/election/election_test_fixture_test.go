@@ -14,6 +14,9 @@ import (
 
 const fixtureLogSessionID int32 = 777
 
+// fixtureLiveLogDestination is the fake live log URI the host stores.
+const fixtureLiveLogDestination = "aeron:udp?endpoint=live-log"
+
 type fixtureParams struct {
 	singleNode        bool
 	memberID          int32
@@ -497,7 +500,7 @@ func (h *recordingElectionHost) AddLiveLogDestination() {
 		return
 	}
 	if h.liveLogDestination == "" {
-		h.liveLogDestination = "aeron:udp?endpoint=live-log"
+		h.liveLogDestination = fixtureLiveLogDestination
 	}
 }
 
@@ -668,6 +671,7 @@ func driveFollowerLogJoinToReady(
 		localLogRecordingID:     testRecordingID,
 		followerLogJoinOK:       true,
 		followerLogJoinPosition: cfg.LogPosition,
+		liveLogDestination:      fixtureLiveLogDestination,
 	}
 	deps.Handler = &recordingAgentHandler{joinFollowerReturn: true}
 	e := election.NewElection(cfg, deps)

@@ -74,12 +74,29 @@ func (a *Agent) ServiceProxy() *ServiceProxy {
 // SetLocalLogStream sets the channel and stream id the leader JoinLog
 // advertises.
 //
-// OpenLogStreams calls it with the resolved log publication channel.
-//
-// Concurrency: invoker-only. Do not call while [Agent.DoWork] runs.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines.
 func (a *Agent) SetLocalLogStream(channel string, streamID int32) {
 	a.localLogChannel = channel
 	a.localLogStreamID = streamID
+}
+
+// SetLeaderLogRecordingChannel sets the channel the leader LOCAL recording
+// start uses. Empty selects the control's configured live log channel.
+//
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines.
+func (a *Agent) SetLeaderLogRecordingChannel(channel string) {
+	a.leaderLogRecordingChannel = channel
+}
+
+// LeaderLogRecordingChannel returns the channel the leader LOCAL recording
+// start uses.
+//
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines.
+func (a *Agent) LeaderLogRecordingChannel() string {
+	return a.leaderLogRecordingChannel
 }
 
 // PendingServiceAckWaits returns the queued coordination wait count.

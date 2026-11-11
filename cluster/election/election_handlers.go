@@ -556,8 +556,8 @@ func (e *Election) handleFollowerCatchupAwait(nowNs int64) int {
 // back to catchupJoinPosition.
 //
 // During catchup the log subscription carries only the catchup destination until
-// the image is near live. Near live attaches the live destination so multicast
-// and replay frames merge into one image. StopCatchup removes the catchup
+// the image is near live. Near live attaches the live destination so live
+// frames and replay frames merge into one image. StopCatchup removes the catchup
 // destination. RemoveCatchupLogDestination re-attaches live when the near-live
 // attach has not run.
 //
@@ -658,23 +658,44 @@ func (e *Election) handleFollowerLogInit(nowNs int64) int {
 }
 
 func (e *Election) handleFollowerLogAwait(nowNs int64) int {
+	// PrepareForNewLeadership closes the subscription and re-adds the live
+	// destination. A unicast bind can fail while the old socket remains, so
+	// retry the add here.
+	workCount := e.retryLiveLogDestination()
+
 	params, ok := e.deps.Host.FollowerLogJoinReady(e.logSessionID)
 	if !ok {
-		return e.heartbeatTimeoutWork(nowNs, errLiveLogJoin)
+		return workCount + e.heartbeatTimeoutWork(nowNs, errLiveLogJoin)
 	}
 	if params.LogJoinPosition != e.logPosition {
 		e.HandleError(nowNs, ErrLogJoinPositionMismatch)
-		return 1
+		return workCount + 1
 	}
 
 	joined, failed := e.joinLogAsFollower(params, nowNs)
 	if failed {
-		return 1
+		return workCount + 1
 	}
 	if joined {
-		return e.commitOpenTerm(ElectionStateFollowerReady, nowNs)
+		return workCount + e.commitOpenTerm(ElectionStateFollowerReady, nowNs)
 	}
-	return e.heartbeatTimeoutWork(nowNs, errLiveLogJoinAsFollower)
+	return workCount + e.heartbeatTimeoutWork(nowNs, errLiveLogJoinAsFollower)
+}
+
+// retryLiveLogDestination re-adds the live destination when both the live
+// and catchup destinations are absent. A failed add does not count as work.
+func (e *Election) retryLiveLogDestination() int {
+	host := e.deps.Host
+	if host.LiveLogDestination() != "" || host.CatchupLogDestination() != "" {
+		return 0
+	}
+
+	host.AddLiveLogDestination()
+
+	if host.LiveLogDestination() == "" {
+		return 0
+	}
+	return 1
 }
 
 func (e *Election) handleFollowerReady(nowNs int64) int {

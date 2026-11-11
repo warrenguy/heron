@@ -62,6 +62,15 @@ type ExclusivePublication struct {
 	closed    atomic.Uint32
 	conductor *conductor.Conductor
 	client    *Client
+
+	sendDestinationHook sendDestinationHook
+}
+
+// sendDestinationHook replaces the driver send destination commands on
+// [ExclusivePublication]. It is nil in production. Only tests set it.
+type sendDestinationHook interface {
+	AddDestination(channel string) error
+	RemoveDestination(channel string) error
 }
 
 // RegistrationID returns the correlation id of the add command for this

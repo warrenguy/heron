@@ -29,14 +29,19 @@ type fakeLogStreamAdder struct {
 	lastPub      *aeron.ExclusivePublication
 	lastConcPub  *aeron.Publication
 	lastDestHook *aeron.RecordingReceiveDestinationHook
+	lastSendHook *aeron.RecordingReceiveDestinationHook
 	// failSubLeft is remaining subscription adds that return failSubErr. Negative
 	// means permanent (every subscription add fails). Zero means no scripted
 	// failure (unset or countdown exhausted).
-	failSubLeft      int
-	failSubErr       error
-	failPubErr       error
-	failConcPubErr   error
-	failDestErr      error
+	failSubLeft    int
+	failSubErr     error
+	failPubErr     error
+	failConcPubErr error
+	failDestErr    error
+	// failSendAt is the 1-based AddDestination call on each new publication
+	// that returns failSendErr. Zero means no call fails.
+	failSendAt       int
+	failSendErr      error
 	returnNilSub     bool
 	returnNilPub     bool
 	returnNilConcPub bool
@@ -123,8 +128,37 @@ func (f *fakeLogStreamAdder) AddExclusivePublication(
 		return nil, f.failPubErr
 	}
 	pub := new(aeron.ExclusivePublication)
+	hook := &aeron.RecordingReceiveDestinationHook{}
+	aeron.ExclusivePublicationSetSendDestinationHookForHooks(pub, &scriptedSendDestinationHook{
+		inner:   hook,
+		failAt:  f.failSendAt,
+		failErr: f.failSendErr,
+	})
 	f.lastPub = pub
+	f.lastSendHook = hook
 	return pub, nil
+}
+
+// scriptedSendDestinationHook returns failErr from AddDestination call
+// failAt, counted from 1, and does not record that call. Other calls record
+// on inner. A zero failAt never fails.
+type scriptedSendDestinationHook struct {
+	inner   *aeron.RecordingReceiveDestinationHook
+	failAt  int
+	failErr error
+	adds    int
+}
+
+func (s *scriptedSendDestinationHook) AddDestination(channel string) error {
+	s.adds++
+	if s.adds == s.failAt {
+		return s.failErr
+	}
+	return s.inner.AddDestination(channel)
+}
+
+func (s *scriptedSendDestinationHook) RemoveDestination(channel string) error {
+	return s.inner.RemoveDestination(channel)
 }
 
 // requireManualLogSubscriptionChannel asserts the control-mode=manual channel
@@ -241,6 +275,147 @@ func openLogStreamsOK(
 	require.NotNil(t, ls)
 	t.Cleanup(func() { _ = ls.Close() })
 	return ls, agent, logPublisher, logAdapter
+}
+
+// unicastPeerDestinations lists the send destinations member 0 adds for its
+// failover peers on a unicast log.
+var unicastPeerDestinations = []string{
+	"aeron:udp?endpoint=cluster-1:9104",
+	"aeron:udp?endpoint=cluster-2:9204",
+}
+
+func failoverTopology(t testing.TB) *cluster.Topology {
+	t.Helper()
+
+	topology, err := cluster.NewTopology(
+		topologyConfigMembers(0, goldenClusterMembersFailover),
+	)
+	require.NoError(t, err)
+
+	return topology
+}
+
+func TestOpenLogStreams_unicastAddsPeerDestinations(t *testing.T) {
+	t.Parallel()
+
+	topology := failoverTopology(t)
+	adder := &fakeLogStreamAdder{}
+	openLogStreamsOK(t, topology, adder)
+
+	const wantPub = "aeron:udp?term-length=64k|control-mode=manual|" +
+		"control=cluster-0:0|ssc=false|tags=3,4|alias=log"
+	require.Equal(t, wantPub, adder.calls[1].channel)
+	require.Equal(t, unicastPeerDestinations, adder.lastSendHook.Adds)
+}
+
+func TestOpenLogStreams_unicastDestinationFailureRollsBack(t *testing.T) {
+	t.Parallel()
+
+	topology := failoverTopology(t)
+	cause := errors.New("dest refused")
+	adder := &fakeLogStreamAdder{failSendAt: 2, failSendErr: cause}
+	agent, logPublisher, _, deps := openLogStreamsDeps(t, topology, adder)
+
+	ls, err := cluster.OpenLogStreams(deps)
+	require.Nil(t, ls)
+	require.EqualError(
+		t,
+		err,
+		"cluster: add log publication destination on aeron:udp?endpoint=cluster-2:9204: dest refused",
+	)
+	require.ErrorIs(t, err, cause)
+	require.True(t, adder.lastPub.IsClosed())
+	require.True(t, adder.lastSub.IsClosed())
+	require.Equal(t, []string{"aeron:udp?endpoint=cluster-1:9104"}, adder.lastSendHook.Adds)
+	requireAgentLogUnbound(t, agent, logPublisher)
+	require.Empty(t, agent.LeaderLogRecordingChannel())
+}
+
+func TestOpenLogStreams_sharedLogChannelsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	topology := sharedLogTopology(t, 0, "")
+	adder := &fakeLogStreamAdder{}
+	_, agent, _, _ := openLogStreamsOK(t, topology, adder)
+
+	require.False(t, topology.IsLogMDC())
+	require.Equal(t, topology.LogChannel(), adder.calls[1].channel)
+	require.Empty(t, adder.lastSendHook.Adds)
+	require.Empty(t, agent.LeaderLogRecordingChannel())
+}
+
+func TestLogStreams_reseedPublication_unicastAddsPeerDestinations(t *testing.T) {
+	t.Parallel()
+
+	topology := failoverTopology(t)
+	adder := &fakeLogStreamAdder{}
+	ls, agent, _, _ := openLogStreamsOK(t, topology, adder)
+	oldPub := ls.Publication()
+	seed := logPublicationSeedAt(128)
+
+	err := ls.ReseedPublicationAt(
+		adder,
+		topology.LogPublicationChannel(),
+		topology.LogStreamID(),
+		seed,
+	)
+	require.NoError(t, err)
+	require.True(t, oldPub.IsClosed())
+	require.NotSame(t, oldPub, ls.Publication())
+
+	const wantPub = "aeron:udp?term-length=131072|control-mode=manual|" +
+		"control=cluster-0:0|ssc=false|init-term-id=7|term-id=7|" +
+		"term-offset=128|mtu=1408|tags=5,6|alias=log"
+	gotPub := adder.calls[len(adder.calls)-1].channel
+	require.Equal(t, wantPub, gotPub)
+	require.NotContains(t, gotPub, "endpoint=")
+	require.Equal(t, unicastPeerDestinations, adder.lastSendHook.Adds)
+	require.Equal(t, "aeron:udp?tags=5|alias=log", agent.LeaderLogRecordingChannel())
+}
+
+func TestLogStreams_reseedPublication_unicastDestinationFailureRetries(t *testing.T) {
+	t.Parallel()
+
+	topology := failoverTopology(t)
+	adder := &fakeLogStreamAdder{}
+	ls, agent, logPublisher, _ := openLogStreamsOK(t, topology, adder)
+	require.Equal(t, "aeron:udp?tags=3|alias=log", agent.LeaderLogRecordingChannel())
+
+	cause := errors.New("dest refused")
+	adder.failSendAt = 1
+	adder.failSendErr = cause
+	err := ls.ReseedPublicationAt(
+		adder,
+		topology.LogPublicationChannel(),
+		topology.LogStreamID(),
+		logPublicationSeedAt(0),
+	)
+	require.EqualError(
+		t,
+		err,
+		"cluster: add log publication destination on aeron:udp?endpoint=cluster-1:9104: dest refused",
+	)
+	require.ErrorIs(t, err, cause)
+	require.Nil(t, ls.Publication())
+	require.Nil(t, logPublisher.Publication())
+	require.True(t, adder.lastPub.IsClosed())
+	require.Empty(t, adder.lastSendHook.Adds)
+	require.Equal(t, "aeron:udp?tags=3|alias=log", agent.LeaderLogRecordingChannel())
+
+	adder.failSendAt = 0
+	adder.failSendErr = nil
+	err = ls.ReseedPublicationAt(
+		adder,
+		topology.LogPublicationChannel(),
+		topology.LogStreamID(),
+		logPublicationSeedAt(0),
+	)
+	require.NoError(t, err)
+	require.Same(t, adder.lastPub, ls.Publication())
+	require.Same(t, adder.lastPub, logPublisher.Publication())
+	require.Contains(t, adder.calls[len(adder.calls)-1].channel, "tags=7,8")
+	require.Equal(t, unicastPeerDestinations, adder.lastSendHook.Adds)
+	require.Equal(t, "aeron:udp?tags=7|alias=log", agent.LeaderLogRecordingChannel())
 }
 
 func TestOpenLogStreams_nilDeps(t *testing.T) {
@@ -890,11 +1065,14 @@ func TestLogStreams_close(t *testing.T) {
 	require.NotNil(t, sub)
 	require.False(t, pub.IsClosed())
 	require.False(t, sub.IsClosed())
+	agent.SetLeaderLogRecordingChannel("aeron:udp?tags=3|alias=log")
+	require.Equal(t, "aeron:udp?tags=3|alias=log", agent.LeaderLogRecordingChannel())
 
 	require.NoError(t, ls.Close())
 
 	// Clear then close: binds cleared; both handles closed; accessors nil.
 	requireAgentLogUnbound(t, agent, logPublisher)
+	require.Empty(t, agent.LeaderLogRecordingChannel())
 	require.Empty(t, agent.CatchupLogDestination())
 	require.True(t, pub.IsClosed())
 	require.True(t, sub.IsClosed())
