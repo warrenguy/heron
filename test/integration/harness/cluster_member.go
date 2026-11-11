@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -60,7 +61,8 @@ func IntegrationElectionConfig() election.ElectionConfig {
 // places one Archive per member. No member shares an Archive with another
 // member.
 //
-// Concurrency: invoker-only. Every method runs on the test goroutine.
+// Concurrency: the test goroutine owns the set. Not safe from other
+// goroutines.
 //
 // Lifetime:
 //   - StartClusterMemberSet registers driver Stop and Archive Stop on the
@@ -75,8 +77,9 @@ func IntegrationElectionConfig() election.ElectionConfig {
 //     earlier ones.
 //   - Close is public and idempotent. Callers may call Close early.
 //   - Invoker must not call Tick, PumpTransportUntil, TickUntil,
-//     AwaitLogImages, AwaitElection, or LogSessionIDs after Close. Close
-//     clears the transport client, archive control client, and LogStreams.
+//     AwaitLogImages, AwaitLogEndpointReleased, AwaitElection, or
+//     LogSessionIDs after Close. Close clears the transport client, archive
+//     control client, and LogStreams.
 //   - State stays readable after Close for failure dumps. Nil handles report
 //     as sentinel values.
 //   - modules, nodes, configs, and serviceInvokers share length MemberCount.
@@ -96,12 +99,15 @@ type ClusterMemberSet struct {
 	membersString   string
 	portBase        int
 
+	// sharedLogEndpoint holds ClusterMemberSetConfig.LogMulticastEndpoint.
+	sharedLogEndpoint string
+
 	// heldAgents marks the slots whose agent Tick skips.
 	heldAgents map[int]bool
 }
 
-// ClusterMemberSetConfig holds the port block and multicast log endpoint the
-// caller owns. PortBase and LogMulticastEndpoint must be unique per test.
+// ClusterMemberSetConfig holds the port block and log endpoint the caller
+// owns. PortBase and a non-empty LogMulticastEndpoint must be unique per test.
 // See cluster_log_endpoints.go for the block each constant reserves.
 type ClusterMemberSetConfig struct {
 	MemberCount int
@@ -114,7 +120,9 @@ type ClusterMemberSetConfig struct {
 	PortBase int
 
 	// LogMulticastEndpoint is the shared cluster log group and port, host:port,
-	// with an odd final octet in the group address. Must be non-empty.
+	// with an odd final octet in the group address. Empty gives each member its
+	// own log endpoint in its port block. The leader then sends the log to
+	// each follower endpoint.
 	LogMulticastEndpoint string
 
 	// StartMediaDriver overrides ephemeral media driver start. Nil means
@@ -151,8 +159,7 @@ type ClusterMemberSetConfig struct {
 }
 
 // StartClusterMemberSet starts MemberCount media drivers, one Archive server
-// per driver, and one ConsensusModule per driver against a shared multicast
-// cluster log.
+// per driver, and one ConsensusModule per driver.
 //
 // Open order uses two steps so every Archive is ready before any member opens:
 //  1. Per member in parallel: start media driver and Archive server; store
@@ -182,9 +189,6 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 	}
 	if cfg.PortBase <= 0 {
 		require.FailNow(t, "ClusterMemberSet: PortBase must be positive")
-	}
-	if cfg.LogMulticastEndpoint == "" {
-		require.FailNow(t, "ClusterMemberSet: LogMulticastEndpoint must be non-empty")
 	}
 
 	// CaptureFailTB does not stop the goroutine. Return before any driver starts.
@@ -266,12 +270,13 @@ func StartClusterMemberSet(t testing.TB, cfg ClusterMemberSetConfig) *ClusterMem
 	// Register cleanups for every started resource before failing. Order matches
 	// sequential loop 1: driver then Archive per member index, low to high.
 	set := &ClusterMemberSet{
-		membersString:   membersString,
-		nodes:           make([]*ArchiveNode, cfg.MemberCount),
-		configs:         make([]cluster.Config, cfg.MemberCount),
-		modules:         make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
-		serviceInvokers: make([][]ServiceInvoker, cfg.MemberCount),
-		portBase:        cfg.PortBase,
+		membersString:     membersString,
+		nodes:             make([]*ArchiveNode, cfg.MemberCount),
+		configs:           make([]cluster.Config, cfg.MemberCount),
+		modules:           make([]*cluster.ConsensusModule, 0, cfg.MemberCount),
+		serviceInvokers:   make([][]ServiceInvoker, cfg.MemberCount),
+		portBase:          cfg.PortBase,
+		sharedLogEndpoint: cfg.LogMulticastEndpoint,
 	}
 	var bootErrs []error
 	for i, r := range results {
@@ -817,13 +822,14 @@ func (s *ClusterMemberSet) TickUntil(bound time.Duration, ok func() bool) bool {
 	})
 }
 
-// AwaitLogImages pumps transport until every non-empty member's log
-// subscription holds an image for every non-empty member's log publication
-// session. Does not call any agent.
+// AwaitLogImages pumps transport until every non-empty member images every
+// other non-empty member's log publication session. On a multicast log a
+// member also images its own session. Does not call any agent.
 //
-// Walks images by session id, not bare ImageCount. ImageCount can pass on
-// foreign images while a peer session is still missing. Empty slots are
-// skipped; a stopped member has no publication session for peers to image.
+// ImageCount can pass on foreign images while a peer session is still
+// missing, so the walk goes by session id. A member whose topology reports
+// [cluster.Topology.IsLogMDC] skips its own session: an MDC publication does
+// not send to its own log endpoint.
 //
 // Returns:
 //   - true when every image is present before the bound
@@ -835,7 +841,15 @@ func (s *ClusterMemberSet) AwaitLogImages(bound time.Duration) bool {
 	return s.PumpTransportUntil(bound, func() bool {
 		for m := range s.live() {
 			sub := m.LogStreams().Subscription()
+			logMDC := m.Topology().IsLogMDC()
+			own := m.LogStreams().Publication().SessionID()
+
 			for _, session := range sessions {
+				isOwnSession := logMDC && session == own
+				if isOwnSession {
+					continue
+				}
+
 				if _, ok := sub.ImageBySessionID(session); !ok {
 					return false
 				}
@@ -860,6 +874,39 @@ func (s *ClusterMemberSet) AwaitElection(bound time.Duration) bool {
 				return false
 			}
 		}
+		return true
+	})
+}
+
+// AwaitLogEndpointReleased runs the full duty cycle until the log port of the
+// empty slot at index binds on loopback. The media driver closes a stopped
+// member's log receive endpoint on a later resource check. A RestartMember
+// before that close fails its own log bind with EADDRINUSE.
+//
+// Returns false at once when index is out of range or the slot holds a
+// module. Otherwise returns true at once on a multicast log: members share
+// the group port. Returns false on timeout.
+//
+// Invoker must not call AwaitLogEndpointReleased after Close.
+func (s *ClusterMemberSet) AwaitLogEndpointReleased(index int, bound time.Duration) bool {
+	if index < 0 || index >= len(s.modules) || s.modules[index] != nil {
+		return false
+	}
+
+	if s.sharedLogEndpoint != "" {
+		return true
+	}
+
+	port := cluster.CalculatePort(int32(index), s.portBase, cluster.LogPortOffset)
+	endpoint := LoopbackUDPEndpoint(port)
+
+	return s.TickUntil(bound, func() bool {
+		conn, err := net.ListenPacket("udp4", endpoint)
+		if err != nil {
+			return false
+		}
+
+		_ = conn.Close()
 		return true
 	})
 }

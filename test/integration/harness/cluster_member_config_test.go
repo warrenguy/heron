@@ -17,7 +17,7 @@ import (
 )
 
 // TestClusterMemberSet_rejectsInvalidConfig asserts StartClusterMemberSet
-// rejects zero MemberCount, zero PortBase, or empty LogMulticastEndpoint.
+// rejects zero MemberCount or zero PortBase.
 // Start fails before any media driver or Archive process starts.
 func TestClusterMemberSet_rejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
@@ -30,29 +30,18 @@ func TestClusterMemberSet_rejectsInvalidConfig(t *testing.T) {
 		{
 			name: "MemberCount zero",
 			cfg: ClusterMemberSetConfig{
-				MemberCount:          0,
-				PortBase:             ClusterModuleElectPortBase,
-				LogMulticastEndpoint: "239.255.12.7:1",
+				MemberCount: 0,
+				PortBase:    ClusterModuleElectPortBase,
 			},
 			wantMsg: "ClusterMemberSet: MemberCount must be >= 1",
 		},
 		{
 			name: "PortBase zero",
 			cfg: ClusterMemberSetConfig{
-				MemberCount:          1,
-				PortBase:             0,
-				LogMulticastEndpoint: "239.255.12.7:1",
+				MemberCount: 1,
+				PortBase:    0,
 			},
 			wantMsg: "ClusterMemberSet: PortBase must be positive",
-		},
-		{
-			name: "empty LogMulticastEndpoint",
-			cfg: ClusterMemberSetConfig{
-				MemberCount:          1,
-				PortBase:             ClusterModuleElectPortBase,
-				LogMulticastEndpoint: "",
-			},
-			wantMsg: "ClusterMemberSet: LogMulticastEndpoint must be non-empty",
 		},
 	}
 

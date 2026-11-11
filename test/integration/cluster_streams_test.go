@@ -21,7 +21,7 @@ import (
 
 // twoMemberMembersString builds a 2-member cluster members string at portBase.
 func twoMemberMembersString(
-	t *testing.T,
+	t testing.TB,
 	portBase int,
 	sharedLogEndpoint string,
 ) string {
@@ -40,7 +40,7 @@ func twoMemberMembersString(
 
 // topologyForMember resolves a Topology for memberID over members.
 func topologyForMember(
-	t *testing.T,
+	t testing.TB,
 	memberID int32,
 	members string,
 	aeronDir string,
@@ -68,7 +68,6 @@ func TestConsensusIngress_commitPositionOverLiveDriver(t *testing.T) {
 	md0 := harness.StartParallel(t)
 	md1 := harness.Start(t)
 
-	// Distinct PortBase under StartParallel. The multicast test uses another block.
 	members := twoMemberMembersString(t, harness.ClusterStreamsCommitPortBase, "")
 
 	topology0 := topologyForMember(t, 0, members, md0.Dir, "")
@@ -154,16 +153,37 @@ func TestConsensusIngress_commitPositionOverLiveDriver(t *testing.T) {
 // TestClusterStreams_multicastLeadershipTerm delivers a leadership-term frame
 // over a shared multicast log between two members.
 func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
-	md0 := harness.StartParallel(t)
-	md1 := harness.Start(t)
+	t.Parallel()
 
-	// Distinct from ClusterStreamsCommitPortBase so both StartParallel tests may
-	// bind unicast without collision.
-	members := twoMemberMembersString(
+	requireLeadershipTermOverLog(
 		t,
 		harness.ClusterStreamsMulticastPortBase,
 		harness.ClusterStreamsMulticastLogEndpoint,
 	)
+}
+
+// TestClusterStreams_unicastLeadershipTerm delivers a leadership-term frame
+// from member 0's publication to member 1's own log endpoint.
+func TestClusterStreams_unicastLeadershipTerm(t *testing.T) {
+	t.Parallel()
+
+	requireLeadershipTermOverLog(t, harness.ClusterStreamsUnicastPortBase, "")
+}
+
+// requireLeadershipTermOverLog opens log streams for two members at portBase,
+// each on its own media driver. Member 0 appends a NewLeadershipTermEvent.
+// Member 1's image of member 0's session delivers it.
+func requireLeadershipTermOverLog(
+	t testing.TB,
+	portBase int,
+	sharedLogEndpoint string,
+) {
+	t.Helper()
+
+	md0 := harness.Start(t)
+	md1 := harness.Start(t)
+
+	members := twoMemberMembersString(t, portBase, sharedLogEndpoint)
 
 	topology0 := topologyForMember(
 		t, 0, members, md0.Dir, harness.ClusterLogChannelTemplate,
@@ -172,7 +192,10 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 		t, 1, members, md1.Dir, harness.ClusterLogChannelTemplate,
 	)
 
-	require.Equal(t, topology0.LogChannel(), topology1.LogChannel())
+	shared := sharedLogEndpoint != ""
+	require.Equal(t, !shared, topology0.IsLogMDC())
+	require.Equal(t, !shared, topology1.IsLogMDC())
+	require.Equal(t, shared, topology0.LogChannel() == topology1.LogChannel())
 	require.Equal(t, topology0.LogStreamID(), topology1.LogStreamID())
 
 	client0, _ := harness.ConnectIPCClient(t, md0)
@@ -216,9 +239,9 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 		streams1.Subscription().StreamID(),
 	)
 
-	logChannel := topology0.LogChannel()
+	logChannel := topology1.LogChannel()
 	connectFailMsg := fmt.Sprintf(
-		"cluster log multicast not connected: channel=%s md0=%s md1=%s",
+		"cluster log not connected: channel=%s md0=%s md1=%s",
 		logChannel,
 		md0.Dir,
 		md1.Dir,
@@ -239,15 +262,15 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 	require.NotEqual(t, election.NullSessionID, sessionID)
 	require.Equal(t, streams0.Publication().SessionID(), sessionID)
 
-	// Both members publish on the shared group; each subscription holds one
-	// image per publisher. Select the leader by session id, never by index.
+	// Select the leader by session id, never by index. A shared channel also
+	// images member 1's own session, so wait for both.
 	var leaderImage *aeron.Image
 	harness.PollSplitClientsUntil(
 		t,
 		client0,
 		client1,
 		func() bool {
-			if streams1.Subscription().ImageCount() < 2 {
+			if shared && streams1.Subscription().ImageCount() < 2 {
 				return false
 			}
 			img, found := streams1.Subscription().ImageBySessionID(sessionID)
@@ -266,7 +289,10 @@ func TestClusterStreams_multicastLeadershipTerm(t *testing.T) {
 		),
 	)
 	require.NotNil(t, leaderImage)
-	require.GreaterOrEqual(t, streams1.Subscription().ImageCount(), 2)
+
+	if !shared {
+		require.Equal(t, 1, streams1.Subscription().ImageCount())
+	}
 
 	spy := &recordingLogHandler{}
 	adapter1.SetImage(leaderImage)
