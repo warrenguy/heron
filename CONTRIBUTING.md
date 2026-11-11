@@ -43,6 +43,9 @@ included in `make check`; `package main` entrypoints use the `example` build tag
 
 SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/versions.yaml).
 
+`aeron.commit` is the commit the `aeron.ref` tag resolves to.
+`sbe_tool.sha256` is the sha256 of the sbe-all JAR; a fetch with a stale pin prints the actual hash.
+
 ## Tests
 
 `make help` lists every target with a one-line description, including the
@@ -124,7 +127,7 @@ Java golden fixture layout:
 
 **Pin-bump workflow**
 
-1. Bump `aeron.ref` in `specs/versions.yaml`.
+1. Bump `aeron.ref` and `aeron.commit` in `specs/versions.yaml`.
 2. Diff each upstream XML against the matching Spec XML row above; update per Port notes.
 3. Generate flyweights:
    - `make sbe-generate`

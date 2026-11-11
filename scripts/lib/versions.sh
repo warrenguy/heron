@@ -38,10 +38,15 @@ load_aeron_versions() {
 				strip_field()
 				driver_artifact = $0
 			}
+			in_aeron && $0 ~ /^[[:space:]]+commit:/ {
+				strip_field()
+				commit = $0
+			}
 			END {
 				print repository
 				print ref
 				print driver_artifact
+				print commit
 			}
 		' "${versions}"
 	)
@@ -49,6 +54,7 @@ load_aeron_versions() {
 	AERON_REPOSITORY="${_pins[0]:-}"
 	AERON_REF="${_pins[1]:-}"
 	AERON_DRIVER_ARTIFACT="${_pins[2]:-}"
+	AERON_COMMIT="${_pins[3]:-}"
 }
 
 require_aeron_versions() {
@@ -64,6 +70,11 @@ require_aeron_versions() {
 
 	if [[ ! "${AERON_REF}" =~ ^[A-Za-z0-9._-]+$ ]]; then
 		echo "luas: aeron.ref must match ^[A-Za-z0-9._-]+$ (got ${AERON_REF})" >&2
+		return 1
+	fi
+
+	if [[ ! "${AERON_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+		echo "luas: aeron.commit must be 40 lowercase hex characters (got ${AERON_COMMIT})" >&2
 		return 1
 	fi
 }
@@ -83,13 +94,19 @@ load_sbe_versions() {
 				strip_field()
 				maven_coordinates = $0
 			}
+			in_sbe && $0 ~ /^[[:space:]]+sha256:/ {
+				strip_field()
+				sha256 = $0
+			}
 			END {
 				print maven_coordinates
+				print sha256
 			}
 		' "${versions}"
 	)
 
 	export SBE_MAVEN_COORDINATES="${_pins[0]:-}"
+	export SBE_SHA256="${_pins[1]:-}"
 }
 
 require_sbe_versions() {
@@ -105,6 +122,11 @@ require_sbe_versions() {
 	if [[ ! "${SBE_MAVEN_COORDINATES}" =~ ^[^:]+:sbe-all:[^:]+$ ]]; then
 		echo "luas: sbe_tool.maven_coordinates must match *:sbe-all:*" \
 			"(got ${SBE_MAVEN_COORDINATES})" >&2
+		return 1
+	fi
+
+	if [[ ! "${SBE_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "luas: sbe_tool.sha256 must be 64 lowercase hex characters (got ${SBE_SHA256})" >&2
 		return 1
 	fi
 }
