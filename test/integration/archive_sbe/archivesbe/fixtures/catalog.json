@@ -1,0 +1,641 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "authConnectRequest_current",
+      "template": "authConnectRequest",
+      "actingVersion": 14,
+      "hex": "10003a0065000e00b104000000000000b2040000000c01001e0000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a30030000000a0b0c0b0000006e616d653d636c69656e74",
+      "fields": {
+        "correlationId": 1201,
+        "responseStreamId": 1202,
+        "version": 68608,
+        "responseChannel": "aeron:udp?endpoint=localhost:0",
+        "encodedCredentials": {
+          "hex": "0a0b0c"
+        },
+        "clientInfo": "name=client"
+      }
+    },
+    {
+      "name": "authConnectRequest_nullVersion",
+      "template": "authConnectRequest",
+      "actingVersion": 14,
+      "hex": "10003a0065000e00bb04000000000000bc04000000000000000000000000000000000000",
+      "fields": {
+        "correlationId": 1211,
+        "responseStreamId": 1212,
+        "version": 0
+      }
+    },
+    {
+      "name": "authConnectRequest_preClientInfo",
+      "template": "authConnectRequest",
+      "actingVersion": 11,
+      "hex": "10003a0065000b00c504000000000000c6040000c7040000090000006165726f6e3a6970630001000033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "fields": {
+        "correlationId": 1221,
+        "responseStreamId": 1222,
+        "version": 1223,
+        "responseChannel": "aeron:ipc",
+        "encodedCredentials": {
+          "hex": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+        }
+      }
+    },
+    {
+      "name": "challengeResponse_credentials",
+      "template": "challengeResponse",
+      "actingVersion": 14,
+      "hex": "10003c0065000e00150500000000000016050000000000000001000033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "fields": {
+        "controlSessionId": 1301,
+        "correlationId": 1302,
+        "encodedCredentials": {
+          "hex": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+        }
+      }
+    },
+    {
+      "name": "challengeResponse_empty",
+      "template": "challengeResponse",
+      "actingVersion": 14,
+      "hex": "10003c0065000e001f05000000000000200500000000000000000000",
+      "fields": {
+        "controlSessionId": 1311,
+        "correlationId": 1312
+      }
+    },
+    {
+      "name": "closeSessionRequest_maxInt64",
+      "template": "closeSessionRequest",
+      "actingVersion": 14,
+      "hex": "0800030065000e00ffffffffffffff7f",
+      "fields": {
+        "controlSessionId": 9223372036854775807
+      }
+    },
+    {
+      "name": "keepAliveRequest_ids",
+      "template": "keepAliveRequest",
+      "actingVersion": 14,
+      "hex": "10003d0065000e0065000000000000006600000000000000",
+      "fields": {
+        "controlSessionId": 101,
+        "correlationId": 102
+      }
+    },
+    {
+      "name": "archiveIdRequest_ids",
+      "template": "archiveIdRequest",
+      "actingVersion": 14,
+      "hex": "1000440065000e00c900000000000000ca00000000000000",
+      "fields": {
+        "controlSessionId": 201,
+        "correlationId": 202
+      }
+    },
+    {
+      "name": "startRecordingRequest_local",
+      "template": "startRecordingRequest",
+      "actingVersion": 14,
+      "hex": "1800040065000e002d010000000000002e010000000000002f01000000000000090000006165726f6e3a697063",
+      "fields": {
+        "controlSessionId": 301,
+        "correlationId": 302,
+        "streamId": 303,
+        "sourceLocation": "LOCAL",
+        "channel": "aeron:ipc"
+      }
+    },
+    {
+      "name": "startRecordingRequest_remote",
+      "template": "startRecordingRequest",
+      "actingVersion": 14,
+      "hex": "1800040065000e00410100000000000042010000000000004301000001000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3230313237",
+      "fields": {
+        "controlSessionId": 321,
+        "correlationId": 322,
+        "streamId": 323,
+        "sourceLocation": "REMOTE",
+        "channel": "aeron:udp?endpoint=localhost:20127"
+      }
+    },
+    {
+      "name": "startRecordingRequest2_localNoAutoStop",
+      "template": "startRecordingRequest2",
+      "actingVersion": 14,
+      "hex": "1c003f0065000e0091010000000000009201000000000000930100000000000000000000090000006165726f6e3a697063",
+      "fields": {
+        "controlSessionId": 401,
+        "correlationId": 402,
+        "streamId": 403,
+        "sourceLocation": "LOCAL",
+        "autoStop": "FALSE",
+        "channel": "aeron:ipc"
+      }
+    },
+    {
+      "name": "startRecordingRequest2_remoteAutoStop",
+      "template": "startRecordingRequest2",
+      "actingVersion": 14,
+      "hex": "1c003f0065000e009b010000000000009c010000000000009d0100000100000001000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3230313231",
+      "fields": {
+        "controlSessionId": 411,
+        "correlationId": 412,
+        "streamId": 413,
+        "sourceLocation": "REMOTE",
+        "autoStop": "TRUE",
+        "channel": "aeron:udp?endpoint=localhost:20121"
+      }
+    },
+    {
+      "name": "extendRecordingRequest2_remoteAutoStop",
+      "template": "extendRecordingRequest2",
+      "actingVersion": 14,
+      "hex": "2400400065000e00f501000000000000f601000000000000f701000000000000f80100000100000001000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3230313232",
+      "fields": {
+        "controlSessionId": 501,
+        "correlationId": 502,
+        "recordingId": 503,
+        "streamId": 504,
+        "sourceLocation": "REMOTE",
+        "autoStop": "TRUE",
+        "channel": "aeron:udp?endpoint=localhost:20122"
+      }
+    },
+    {
+      "name": "extendRecordingRequest2_localNoAutoStop",
+      "template": "extendRecordingRequest2",
+      "actingVersion": 14,
+      "hex": "2400400065000e0009020000000000000a020000000000000b020000000000000c0200000000000000000000090000006165726f6e3a697063",
+      "fields": {
+        "controlSessionId": 521,
+        "correlationId": 522,
+        "recordingId": 523,
+        "streamId": 524,
+        "sourceLocation": "LOCAL",
+        "autoStop": "FALSE",
+        "channel": "aeron:ipc"
+      }
+    },
+    {
+      "name": "stopRecordingRequest_channel",
+      "template": "stopRecordingRequest",
+      "actingVersion": 14,
+      "hex": "1400050065000e0059020000000000005a020000000000005b020000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3230313233",
+      "fields": {
+        "controlSessionId": 601,
+        "correlationId": 602,
+        "streamId": 603,
+        "channel": "aeron:udp?endpoint=localhost:20123"
+      }
+    },
+    {
+      "name": "stopRecordingByIdentityRequest_ids",
+      "template": "stopRecordingByIdentityRequest",
+      "actingVersion": 14,
+      "hex": "1800410065000e00bd02000000000000be02000000000000bf02000000000000",
+      "fields": {
+        "controlSessionId": 701,
+        "correlationId": 702,
+        "recordingId": 703
+      }
+    },
+    {
+      "name": "listRecordingRequest_ids",
+      "template": "listRecordingRequest",
+      "actingVersion": 14,
+      "hex": "18000a0065000e00210300000000000022030000000000002303000000000000",
+      "fields": {
+        "controlSessionId": 801,
+        "correlationId": 802,
+        "recordingId": 803
+      }
+    },
+    {
+      "name": "replayRequest_current",
+      "template": "replayRequest",
+      "actingVersion": 14,
+      "hex": "3800060065000e008503000000000000860300000000000087030000000000008803000000000000ffffffffffffff7f89030000001000004d00000000000000220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a3230313234",
+      "fields": {
+        "controlSessionId": 901,
+        "correlationId": 902,
+        "recordingId": 903,
+        "position": 904,
+        "length": 9223372036854775807,
+        "replayStreamId": 905,
+        "fileIoMaxLength": 4096,
+        "replayToken": 77,
+        "replayChannel": "aeron:udp?endpoint=localhost:20124"
+      }
+    },
+    {
+      "name": "replayRequest_nullParams",
+      "template": "replayRequest",
+      "actingVersion": 14,
+      "hex": "3800060065000e008f0300000000000090030000000000009103000000000000ffffffffffffffff920300000000000093030000ffffffffffffffffffffffff090000006165726f6e3a697063",
+      "fields": {
+        "controlSessionId": 911,
+        "correlationId": 912,
+        "recordingId": 913,
+        "position": -1,
+        "length": 914,
+        "replayStreamId": 915,
+        "fileIoMaxLength": -1,
+        "replayToken": -1,
+        "replayChannel": "aeron:ipc"
+      }
+    },
+    {
+      "name": "replayRequest_preReplayToken",
+      "template": "replayRequest",
+      "actingVersion": 9,
+      "hex": "300006006500090099030000000000009a030000000000009b030000000000009c030000000000009d030000000000009e0300009f030000090000006165726f6e3a697063",
+      "fields": {
+        "controlSessionId": 921,
+        "correlationId": 922,
+        "recordingId": 923,
+        "position": 924,
+        "length": 925,
+        "replayStreamId": 926,
+        "fileIoMaxLength": 927,
+        "replayChannel": "aeron:ipc"
+      }
+    },
+    {
+      "name": "replayRequest_preFileIoMaxLength",
+      "template": "replayRequest",
+      "actingVersion": 6,
+      "hex": "2c00060065000600a303000000000000a403000000000000a503000000000000a603000000000000a703000000000000a803000000000000",
+      "fields": {
+        "controlSessionId": 931,
+        "correlationId": 932,
+        "recordingId": 933,
+        "position": 934,
+        "length": 935,
+        "replayStreamId": 936
+      }
+    },
+    {
+      "name": "stopReplayRequest_ids",
+      "template": "stopReplayRequest",
+      "actingVersion": 14,
+      "hex": "1800070065000e00e903000000000000ea03000000000000eb03000000000000",
+      "fields": {
+        "controlSessionId": 1001,
+        "correlationId": 1002,
+        "replaySessionId": 1003
+      }
+    },
+    {
+      "name": "truncateRecordingRequest_position",
+      "template": "truncateRecordingRequest",
+      "actingVersion": 14,
+      "hex": "20000d0065000e004d040000000000004e040000000000004f040000000000000004000000000000",
+      "fields": {
+        "controlSessionId": 1101,
+        "correlationId": 1102,
+        "recordingId": 1103,
+        "position": 1024
+      }
+    },
+    {
+      "name": "stopReplicationRequest_ids",
+      "template": "stopReplicationRequest",
+      "actingVersion": 14,
+      "hex": "1800330065000e0079050000000000007a050000000000007b05000000000000",
+      "fields": {
+        "controlSessionId": 1401,
+        "correlationId": 1402,
+        "replicationId": 1403
+      }
+    },
+    {
+      "name": "replicateRequest2_current",
+      "template": "replicateRequest2",
+      "actingVersion": 14,
+      "hex": "4400420065000e00dd05000000000000de05000000000000df05000000000000e005000000000000e105000000000000e205000000000000e305000000000000e405000000200000e5050000210000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a38303130090000006165726f6e3a6970631e0000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a31040000000102030408000000726573706f6e7365",
+      "fields": {
+        "controlSessionId": 1501,
+        "correlationId": 1502,
+        "srcRecordingId": 1503,
+        "dstRecordingId": 1504,
+        "stopPosition": 1505,
+        "channelTagId": 1506,
+        "subscriptionTagId": 1507,
+        "srcControlStreamId": 1508,
+        "fileIoMaxLength": 8192,
+        "replicationSessionId": 1509,
+        "srcControlChannel": "aeron:udp?endpoint=localhost:8010",
+        "liveDestination": "aeron:ipc",
+        "replicationChannel": "aeron:udp?endpoint=localhost:1",
+        "encodedCredentials": {
+          "hex": "01020304"
+        },
+        "srcResponseChannel": "response"
+      }
+    },
+    {
+      "name": "replicateRequest2_preSrcResponseChannel",
+      "template": "replicateRequest2",
+      "actingVersion": 9,
+      "hex": "4400420065000900e705000000000000e805000000000000e905000000000000ea05000000000000eb05000000000000ec05000000000000ed05000000000000ee050000ef050000f0050000080000007372632d6374726c040000006c6976650c0000007265706c2d6368616e6e656c01000000aa",
+      "fields": {
+        "controlSessionId": 1511,
+        "correlationId": 1512,
+        "srcRecordingId": 1513,
+        "dstRecordingId": 1514,
+        "stopPosition": 1515,
+        "channelTagId": 1516,
+        "subscriptionTagId": 1517,
+        "srcControlStreamId": 1518,
+        "fileIoMaxLength": 1519,
+        "replicationSessionId": 1520,
+        "srcControlChannel": "src-ctrl",
+        "liveDestination": "live",
+        "replicationChannel": "repl-channel",
+        "encodedCredentials": {
+          "hex": "aa"
+        }
+      }
+    },
+    {
+      "name": "replicateRequest2_preSessionCredentials",
+      "template": "replicateRequest2",
+      "actingVersion": 7,
+      "hex": "4000420065000700fb05000000000000fc05000000000000fd05000000000000fe05000000000000ff0500000000000000060000000000000106000000000000020600000306000003000000737263100000006c6976652d64657374696e6174696f6e040000007265706c",
+      "fields": {
+        "controlSessionId": 1531,
+        "correlationId": 1532,
+        "srcRecordingId": 1533,
+        "dstRecordingId": 1534,
+        "stopPosition": 1535,
+        "channelTagId": 1536,
+        "subscriptionTagId": 1537,
+        "srcControlStreamId": 1538,
+        "fileIoMaxLength": 1539,
+        "srcControlChannel": "src",
+        "liveDestination": "live-destination",
+        "replicationChannel": "repl"
+      }
+    },
+    {
+      "name": "replicateRequest2_preFileIoMaxLength",
+      "template": "replicateRequest2",
+      "actingVersion": 6,
+      "hex": "3c00420065000600050600000000000006060000000000000706000000000000080600000000000009060000000000000a060000000000000b060000000000000c06000007000000636f6e74726f6c04000000646573740c0000006368616e6e656c2d6e696e65",
+      "fields": {
+        "controlSessionId": 1541,
+        "correlationId": 1542,
+        "srcRecordingId": 1543,
+        "dstRecordingId": 1544,
+        "stopPosition": 1545,
+        "channelTagId": 1546,
+        "subscriptionTagId": 1547,
+        "srcControlStreamId": 1548,
+        "srcControlChannel": "control",
+        "liveDestination": "dest",
+        "replicationChannel": "channel-nine"
+      }
+    },
+    {
+      "name": "controlResponse_ok",
+      "template": "controlResponse",
+      "actingVersion": 14,
+      "hex": "2000010065000e0041060000000000004206000000000000430600000000000000000000000c010000000000",
+      "fields": {
+        "controlSessionId": 1601,
+        "correlationId": 1602,
+        "relevantId": 1603,
+        "code": "OK",
+        "version": 68608
+      }
+    },
+    {
+      "name": "controlResponse_error",
+      "template": "controlResponse",
+      "actingVersion": 14,
+      "hex": "2000010065000e004b060000000000004c060000000000000500000000000000010000004d0600000f000000696e76616c69642072657175657374",
+      "fields": {
+        "controlSessionId": 1611,
+        "correlationId": 1612,
+        "relevantId": 5,
+        "code": "ERROR",
+        "version": 1613,
+        "errorMessage": "invalid request"
+      }
+    },
+    {
+      "name": "controlResponse_recordingUnknown",
+      "template": "controlResponse",
+      "actingVersion": 14,
+      "hex": "2000010065000e00550600000000000056060000000000005706000000000000020000005806000000000000",
+      "fields": {
+        "controlSessionId": 1621,
+        "correlationId": 1622,
+        "relevantId": 1623,
+        "code": "RECORDING_UNKNOWN",
+        "version": 1624
+      }
+    },
+    {
+      "name": "controlResponse_subscriptionUnknown",
+      "template": "controlResponse",
+      "actingVersion": 14,
+      "hex": "2000010065000e005f0600000000000060060000000000006106000000000000030000006206000000000000",
+      "fields": {
+        "controlSessionId": 1631,
+        "correlationId": 1632,
+        "relevantId": 1633,
+        "code": "SUBSCRIPTION_UNKNOWN",
+        "version": 1634
+      }
+    },
+    {
+      "name": "controlResponse_preVersion",
+      "template": "controlResponse",
+      "actingVersion": 3,
+      "hex": "1c0001006500030069060000000000006a060000000000006b060000000000000000000000000000",
+      "fields": {
+        "controlSessionId": 1641,
+        "correlationId": 1642,
+        "relevantId": 1643,
+        "code": "OK"
+      }
+    },
+    {
+      "name": "challenge_bytes",
+      "template": "challenge",
+      "actingVersion": 14,
+      "hex": "14003b0065000e00a506000000000000a606000000000000000c010020000000abababababababababababababababababababababababababababababababab",
+      "fields": {
+        "controlSessionId": 1701,
+        "correlationId": 1702,
+        "version": 68608,
+        "encodedChallenge": {
+          "hex": "abababababababababababababababababababababababababababababababab"
+        }
+      }
+    },
+    {
+      "name": "recordingDescriptor_stopped",
+      "template": "recordingDescriptor",
+      "actingVersion": 14,
+      "hex": "5000160065000e0009070000000000000a070000000000000b070000000000000c070000000000000d070000000000000e070000000000000f07000000000000100700001107000012070000130700001407000015070000090000006165726f6e3a697063220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a32303132350f0000003132372e302e302e313a3430313233",
+      "fields": {
+        "controlSessionId": 1801,
+        "correlationId": 1802,
+        "recordingId": 1803,
+        "startTimestamp": 1804,
+        "stopTimestamp": 1805,
+        "startPosition": 1806,
+        "stopPosition": 1807,
+        "initialTermId": 1808,
+        "segmentFileLength": 1809,
+        "termBufferLength": 1810,
+        "mtuLength": 1811,
+        "sessionId": 1812,
+        "streamId": 1813,
+        "strippedChannel": "aeron:ipc",
+        "originalChannel": "aeron:udp?endpoint=localhost:20125",
+        "sourceIdentity": "127.0.0.1:40123"
+      }
+    },
+    {
+      "name": "recordingDescriptor_active",
+      "template": "recordingDescriptor",
+      "actingVersion": 14,
+      "hex": "5000160065000e001d070000000000001e070000000000001f070000000000002007000000000000ffffffffffffffff2207000000000000ffffffffffffffff230700002407000025070000260700002707000028070000090000006165726f6e3a697063220000006165726f6e3a7564703f656e64706f696e743d6c6f63616c686f73743a323031323600000000",
+      "fields": {
+        "controlSessionId": 1821,
+        "correlationId": 1822,
+        "recordingId": 1823,
+        "startTimestamp": 1824,
+        "stopTimestamp": -1,
+        "startPosition": 1826,
+        "stopPosition": -1,
+        "initialTermId": 1827,
+        "segmentFileLength": 1828,
+        "termBufferLength": 1829,
+        "mtuLength": 1830,
+        "sessionId": 1831,
+        "streamId": 1832,
+        "strippedChannel": "aeron:ipc",
+        "originalChannel": "aeron:udp?endpoint=localhost:20126"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_START",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e006d07000000000000770700000000000081070000000000008b07000000000000950700000000000000000000",
+      "fields": {
+        "controlSessionId": 1901,
+        "correlationId": 1911,
+        "recordingId": 1921,
+        "subscriptionId": 1931,
+        "position": 1941,
+        "signal": "START"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_STOP",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e006e07000000000000780700000000000082070000000000008c07000000000000960700000000000001000000",
+      "fields": {
+        "controlSessionId": 1902,
+        "correlationId": 1912,
+        "recordingId": 1922,
+        "subscriptionId": 1932,
+        "position": 1942,
+        "signal": "STOP"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_EXTEND",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e006f07000000000000790700000000000083070000000000008d07000000000000970700000000000002000000",
+      "fields": {
+        "controlSessionId": 1903,
+        "correlationId": 1913,
+        "recordingId": 1923,
+        "subscriptionId": 1933,
+        "position": 1943,
+        "signal": "EXTEND"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_REPLICATE",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e0070070000000000007a0700000000000084070000000000008e07000000000000980700000000000003000000",
+      "fields": {
+        "controlSessionId": 1904,
+        "correlationId": 1914,
+        "recordingId": 1924,
+        "subscriptionId": 1934,
+        "position": 1944,
+        "signal": "REPLICATE"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_MERGE",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e0071070000000000007b0700000000000085070000000000008f07000000000000990700000000000004000000",
+      "fields": {
+        "controlSessionId": 1905,
+        "correlationId": 1915,
+        "recordingId": 1925,
+        "subscriptionId": 1935,
+        "position": 1945,
+        "signal": "MERGE"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_SYNC",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e0072070000000000007c07000000000000860700000000000090070000000000009a0700000000000005000000",
+      "fields": {
+        "controlSessionId": 1906,
+        "correlationId": 1916,
+        "recordingId": 1926,
+        "subscriptionId": 1936,
+        "position": 1946,
+        "signal": "SYNC"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_DELETE",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e0073070000000000007d07000000000000870700000000000091070000000000009b0700000000000006000000",
+      "fields": {
+        "controlSessionId": 1907,
+        "correlationId": 1917,
+        "recordingId": 1927,
+        "subscriptionId": 1937,
+        "position": 1947,
+        "signal": "DELETE"
+      }
+    },
+    {
+      "name": "recordingSignalEvent_REPLICATE_END",
+      "template": "recordingSignalEvent",
+      "actingVersion": 14,
+      "hex": "2c00180065000e0074070000000000007e07000000000000880700000000000092070000000000009c0700000000000007000000",
+      "fields": {
+        "controlSessionId": 1908,
+        "correlationId": 1918,
+        "recordingId": 1928,
+        "subscriptionId": 1938,
+        "position": 1948,
+        "signal": "REPLICATE_END"
+      }
+    }
+  ]
+}

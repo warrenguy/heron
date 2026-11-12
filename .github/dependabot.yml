@@ -23,6 +23,7 @@ updates:
   - package-ecosystem: maven
     directories:
       - /test/integration/archive_java
+      - /test/integration/archive_sbe
       - /test/integration/cluster_java
       - /test/integration/cluster_sbe
       - /test/integration/golden_fixtures
