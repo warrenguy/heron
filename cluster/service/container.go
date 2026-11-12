@@ -188,13 +188,14 @@ type Config struct {
 	// ErrorHandler receives service-path errors. [AgentConfig.ErrorHandler]
 	// states the contract.
 	//
-	// cluster.Runner does not tick the service agent. A fatal error does not
-	// end Runner.Run. A fatal error only makes Agent.DoWork return 0. The
-	// caller of DoWork reads [Agent.ServiceFailure], or watches ErrorHandler
-	// for ErrFailed.
+	// After consensus.Agent.SetServiceLiveness takes the agent, a fatal error,
+	// a termination stop, or [Agent.Close] ends the member. The module does
+	// not read the agent before it takes the start ack, or in module state
+	// TERMINATING or CLOSED.
 	//
-	// A stop at the termination position also makes Agent.DoWork return 0.
-	// The caller reads [Agent.IsTerminated].
+	// Without SetServiceLiveness, a fatal error does not end Runner.Run.
+	// Agent.DoWork returns 0 after a fatal error or a termination stop. The
+	// caller of DoWork reads [Agent.ServiceFailure] and [Agent.IsTerminated].
 	ErrorHandler func(error)
 }
 

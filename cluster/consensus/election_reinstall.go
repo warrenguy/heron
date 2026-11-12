@@ -244,8 +244,10 @@ func (a *Agent) enterElection(trigger ElectionTrigger, isLogEndOfStream bool) in
 	return 1
 }
 
-// slowTickIfDue paces settled-state timeout checks and runs slowTickWork when
-// due. A disconnected archive connection ends the member instead.
+// slowTickIfDue paces settled-state timeout checks.
+//
+// A due tick ends the member on a disconnected archive connection first,
+// then on a stopped service.
 func (a *Agent) slowTickIfDue(nowNs int64) int {
 	if nowNs < a.slowTickDeadlineNs {
 		return 0
@@ -255,6 +257,12 @@ func (a *Agent) slowTickIfDue(nowNs int64) int {
 		a.failMember(ErrLocalArchiveDisconnected)
 		return 1
 	}
+
+	if cause := a.stoppedServiceCause(); cause != nil {
+		a.failMember(cause)
+		return 1
+	}
+
 	work := a.slowTickWork(nowNs)
 	if work > 0 {
 		a.slowTickDeadlineNs = nowNs + 1
@@ -262,6 +270,44 @@ func (a *Agent) slowTickIfDue(nowNs int64) int {
 		a.slowTickDeadlineNs = nowNs + slowTickIntervalNs
 	}
 	return work
+}
+
+// stoppedServiceCause returns the cause of the first stopped service in id
+// order, or nil.
+func (a *Agent) stoppedServiceCause() error {
+	state := a.moduleState
+	if state == ModuleStateTerminating || state == ModuleStateClosed {
+		return nil
+	}
+
+	if a.serviceStartHandler != nil {
+		return nil
+	}
+
+	for serviceID, source := range a.serviceLiveness {
+		if source == nil {
+			continue
+		}
+
+		failure := source.ServiceFailure()
+		if failure != nil {
+			return fmt.Errorf("%w: service %d: %w", ErrServiceStopped, serviceID, failure)
+		}
+
+		if source.IsTerminated() {
+			return fmt.Errorf(
+				"%w: service %d stopped at its termination position",
+				ErrServiceStopped,
+				serviceID,
+			)
+		}
+
+		if source.IsClosed() {
+			return fmt.Errorf("%w: service %d closed", ErrServiceStopped, serviceID)
+		}
+	}
+
+	return nil
 }
 
 // slowTickWork runs the settled timeout triggers when no election is live.

@@ -656,6 +656,11 @@ func (a *Agent) Close() {
 	a.closeLogSubscription()
 }
 
+// IsClosed reports whether Close has run. DoWork returns 0 after Close.
+func (a *Agent) IsClosed() bool {
+	return a.closed
+}
+
 // Role returns the role adopted from the last bound JoinLog, or
 // [codecs.RoleFollower] after unbind or before the first bind.
 func (a *Agent) Role() codecs.Role {

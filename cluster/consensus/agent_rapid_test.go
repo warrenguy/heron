@@ -797,13 +797,15 @@ const (
 	terminationOpRefusedTimer
 	terminationOpPlannedTerminate
 	terminationOpLostArchive
+	terminationOpServiceStop
 	terminationOpTerminateOnError
 	terminationOpDoWork
 )
 
 // TestAgent_terminationKeepsFirstCause_rapid draws termination causes and
-// DoWork calls. The agent reports a fatal mark or a lost archive first cause,
-// at most once. The agent does not report a planned or TerminateOnError cause.
+// DoWork calls. The agent keeps the first cause. The agent reports a fatal
+// mark, a lost archive, or a stopped service, at most once. The agent does
+// not report a planned termination or a TerminateOnError cause.
 func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 	t.Parallel()
 	errPlanned := errors.New("planned")
@@ -817,6 +819,8 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 		a.timers = newSmallTimerService(testWheelCapacity)
 		connection := &fakeArchiveConnection{connected: true}
 		a.SetArchiveConnection(connection)
+		service := &fakeServiceLiveness{}
+		require.NoError(rt, a.SetServiceLiveness(0, service))
 
 		const startPosition int64 = 64
 		var want *TerminationError
@@ -835,6 +839,14 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 			}
 		}
 
+		doWork := func(advanceNs int64) {
+			nowNs += advanceNs
+			work := a.DoWork(nowNs)
+			if want != nil {
+				require.Equal(rt, 0, work, "DoWork after the end")
+			}
+		}
+
 		ops := rapid.SampledFrom([]terminationOp{
 			terminationOpOutOfSequenceAck,
 			terminationOpNullStartAck,
@@ -842,6 +854,7 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 			terminationOpRefusedTimer,
 			terminationOpPlannedTerminate,
 			terminationOpLostArchive,
+			terminationOpServiceStop,
 			terminationOpTerminateOnError,
 			terminationOpDoWork,
 		})
@@ -878,21 +891,17 @@ func TestAgent_terminationKeepsFirstCause_rapid(t *testing.T) {
 				end(errPlanned, true)
 			case terminationOpLostArchive:
 				connection.connected = false
-				nowNs += slowTickIntervalNs
-				work := a.DoWork(nowNs)
-				if want != nil {
-					require.Equal(rt, 0, work, "DoWork after the end")
-				}
+				doWork(slowTickIntervalNs)
 				end(ErrLocalArchiveDisconnected, false)
+			case terminationOpServiceStop:
+				service.failure = errTerminationFirst
+				doWork(slowTickIntervalNs)
+				end(ErrServiceStopped, false)
 			case terminationOpTerminateOnError:
 				a.TerminateOnError(errTerminateOnError)
 				end(errTerminateOnError, false)
 			case terminationOpDoWork:
-				nowNs++
-				work := a.DoWork(nowNs)
-				if want != nil {
-					require.Equal(rt, 0, work, "DoWork after the end")
-				}
+				doWork(1)
 			}
 
 			require.Len(rt, *reported, wantReports)

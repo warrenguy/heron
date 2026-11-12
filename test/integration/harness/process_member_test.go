@@ -219,19 +219,16 @@ func TestChooseDutyLoopExit(t *testing.T) {
 	termination := errors.New(
 		"consensus: member terminated: consensus: local archive is not connected",
 	)
-	failure := errors.New("service: boom")
 	decode := errors.New("short payload")
 
 	transportExit := &MemberExit{Error: cluster.ErrTransportTerminating.Error()}
 	terminationExit := &MemberExit{Error: termination.Error(), Terminated: true}
-	failureExit := &MemberExit{Error: failure.Error()}
 	decodeExit := &MemberExit{Error: ExitTextDecodeRequest + ": " + decode.Error()}
 
 	tests := []struct {
 		name        string
 		transport   bool
 		termination error
-		failure     error
 		decode      error
 		want        *MemberExit
 	}{
@@ -245,14 +242,11 @@ func TestChooseDutyLoopExit(t *testing.T) {
 		},
 		{name: "termination alone", termination: termination, want: terminationExit},
 		{
-			name:        "termination beside failure and decode",
+			name:        "termination beside decode",
 			termination: termination,
-			failure:     failure,
 			decode:      decode,
 			want:        terminationExit,
 		},
-		{name: "service failure alone", failure: failure, want: failureExit},
-		{name: "service failure beside decode", failure: failure, decode: decode, want: failureExit},
 		{name: "decode alone", decode: decode, want: decodeExit},
 	}
 
@@ -260,12 +254,7 @@ func TestChooseDutyLoopExit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := chooseDutyLoopExit(
-				test.transport,
-				test.termination,
-				test.failure,
-				test.decode,
-			)
+			got := chooseDutyLoopExit(test.transport, test.termination, test.decode)
 			require.Equal(t, test.want, got)
 		})
 	}

@@ -293,14 +293,16 @@ func TestAgent_TimerPublish_failurePaths(t *testing.T) {
 	}
 }
 
-// Asserts a closed Agent sends no module request. Each request returns
-// false, the session stays open with IsClosing false, and no failure marks.
+// TestAgent_Close_rejectsModuleRequests asserts a closed Agent rejects
+// each module request. A rejected request does not close the session,
+// publish, or mark a failure.
 func TestAgent_Close_rejectsModuleRequests(t *testing.T) {
 	const openID int64 = 7
 	log, _, pub := bindCloseAgent(t, nil, codecs.RoleLeader)
 	agent := log.agent
 	log.open(openID, 1)
 	agent.Close()
+	require.True(t, agent.IsClosed())
 	sent := pub.Position()
 
 	require.False(t, agent.ScheduleTimer(1, 1))
@@ -358,7 +360,9 @@ func TestAgent_Close_idempotent(t *testing.T) {
 	})
 	log.write(t, payload)
 
+	require.False(t, agent.IsClosed())
 	agent.Close()
+	require.True(t, agent.IsClosed())
 	require.False(t, agent.IsLogBound())
 	require.True(t, agent.logSubscription == nil || agent.logSubscription.IsClosed())
 	require.True(t, pub.IsClosed())
@@ -372,6 +376,7 @@ func TestAgent_Close_idempotent(t *testing.T) {
 
 	// Idempotent.
 	agent.Close()
+	require.True(t, agent.IsClosed())
 	require.Equal(t, []int64{2}, adder.cancels)
 
 	// Inert after close.

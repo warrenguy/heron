@@ -92,8 +92,8 @@ type RunnerDeps struct {
 
 // Runner drives one consensus member's duty cycle on the calling goroutine.
 //
-// Build with [NewRunner]. Drive with [Runner.DoWork] for one tick, or with
-// [Runner.Run] for the loop.
+// Build with [NewRunner]. Drive one tick with [Runner.DoWork]. Drive the
+// loop with [Runner.Run].
 //
 //	module, err := cluster.OpenConsensusModule(ctx, deps)
 //	if err != nil {
@@ -112,16 +112,22 @@ type RunnerDeps struct {
 //	}
 //	return runner.Run(ctx)
 //
+// A co-hosted service opens after the module. Pass its id and agent to
+// [consensus.Agent.SetServiceLiveness]. Each tick, call [Runner.DoWork], then
+// the service agent's DoWork, on one goroutine. [Runner.Run] does not tick the
+// service.
+//
 // Behaviour: [ConsensusModule.Close] does not stop [Runner.Run]. With a closed
-// transport client, Run calls Idle(0) until the context is done. Run returns
-// [consensus.TerminationError] after one tick when the member ended before
+// transport client, Run calls Idle(0) until the context ends. Run returns
+// [consensus.TerminationError] after one tick when the member ends before
 // Close.
 //
 // Stop the duty cycle before closing the module. Do not reuse a Runner across a
 // close.
 //
-// Concurrency: invoker-only. One Runner per goroutine. Other goroutines must not
-// call non-atomic agent accessors.
+// Concurrency: call from the goroutine that runs [Runner.DoWork]. Not safe
+// from other goroutines. Other goroutines must not call non-atomic agent
+// accessors.
 //
 // Lifetime: Runner remains a usable Go value after [ConsensusModule.Close].
 // [Runner.DoWork] then reports zero work from each closed handle: the transport
@@ -210,23 +216,23 @@ func (r *Runner) DoWork() int {
 	return r.client.DoWork() + r.archive.Poll() + r.agent.DoWork(r.clock())
 }
 
-// Run pumps [Runner.DoWork] and paces it with the idle strategy.
+// Run pumps [Runner.DoWork]. Run paces the loop with the idle strategy.
 //
 // Returns:
 //   - ctx.Err when ctx is done
 //   - [ErrTransportTerminating] when the transport client enters termination,
 //     even when the member terminates in the same tick
-//   - the agent's [consensus.TerminationError] when the member terminates. A
-//     planned termination has cause [consensus.ErrClusterTerminated] and
-//     Expected true
+//   - the agent's [consensus.TerminationError] when the member terminates.
+//     A planned termination has cause [consensus.ErrClusterTerminated]. A
+//     service stop matches [consensus.ErrServiceStopped] under errors.Is.
 //
 // A caller that drives [Runner.DoWork] reads [consensus.Agent.TerminationError]
 // itself.
 //
-// Run does not run a tick when ctx is already done.
+// Run does not run a tick after ctx ends.
 //
-// Run resets the idle strategy when it returns. Run does not close or drain
-// anything. Close the module after Run returns.
+// Run resets the idle strategy on return. Run does not close or drain any
+// collaborator. Close the module after Run returns.
 func (r *Runner) Run(ctx context.Context) error {
 	defer r.idle.Reset()
 

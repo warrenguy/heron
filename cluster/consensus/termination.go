@@ -1,6 +1,9 @@
 package consensus
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrTerminated matches every *TerminationError with errors.Is.
 var ErrTerminated = errors.New("consensus: member terminated")
@@ -9,10 +12,32 @@ var ErrTerminated = errors.New("consensus: member terminated")
 // session is not connected.
 var ErrLocalArchiveDisconnected = errors.New("consensus: local archive is not connected")
 
+// ErrServiceStopped reports a clustered service that stopped while the
+// member still ran.
+var ErrServiceStopped = errors.New("consensus: service stopped unexpectedly")
+
 // ArchiveConnection reports whether the member's local archive control
 // response subscription is connected. *archive.Client satisfies it.
 type ArchiveConnection interface {
 	IsConnected() bool
+}
+
+// ServiceLiveness reports whether one clustered service duty cycle still
+// runs. *service.Agent satisfies ServiceLiveness when the goroutine that runs
+// [Agent.DoWork] ticks it.
+//
+// Concurrency: [Agent.DoWork] calls every method. A source that another
+// goroutine ticks must publish its state with atomics.
+type ServiceLiveness interface {
+	// ServiceFailure returns the first fatal service error, or nil.
+	ServiceFailure() error
+
+	// IsTerminated reports that the service stopped at its termination
+	// position.
+	IsTerminated() bool
+
+	// IsClosed reports that the service closed.
+	IsClosed() bool
 }
 
 // TerminationError reports why the member ended.
@@ -96,4 +121,27 @@ func (a *Agent) TerminateOnError(cause error) {
 // other goroutines.
 func (a *Agent) SetArchiveConnection(connection ArchiveConnection) {
 	a.archiveConnection = connection
+}
+
+// SetServiceLiveness sets the liveness source for serviceID. A nil source
+// clears the slot.
+//
+// Behaviour: each slow tick reads every set source. A source that reports a
+// failure, a termination stop, or a close ends the member with
+// [ErrServiceStopped]. The lowest stopped serviceID wins. The slow tick skips
+// the read:
+//   - while the service start wait leads the coordination FIFO
+//   - in module state TERMINATING or CLOSED
+//
+// Returns an error when serviceID is outside [0, [AgentConfig.ServiceCount]).
+//
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe
+// from other goroutines.
+func (a *Agent) SetServiceLiveness(serviceID int32, source ServiceLiveness) error {
+	if serviceID < 0 || int(serviceID) >= len(a.serviceLiveness) {
+		return fmt.Errorf("consensus: service id %d out of range", serviceID)
+	}
+
+	a.serviceLiveness[serviceID] = source
+	return nil
 }

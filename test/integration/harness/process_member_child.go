@@ -130,16 +130,23 @@ func openChildMember(
 		return nil, fmt.Errorf("open consensus module: %w", err)
 	}
 
-	m.container, err = service.Open(service.Config{
+	serviceCfg := service.Config{
 		Aeron:             m.module.Client(),
 		Service:           m.svc,
 		CommittedPosition: m.module.CommitPosition,
 		Archive:           &archive.Config{},
 		Recovery:          &service.RecoveryConfig{},
-	})
+	}
+	m.container, err = service.Open(serviceCfg)
 	if err != nil {
 		_ = m.close()
 		return nil, fmt.Errorf("open service: %w", err)
+	}
+
+	err = m.module.Agent().SetServiceLiveness(serviceCfg.ServiceID, m.container.Agent())
+	if err != nil {
+		_ = m.close()
+		return nil, fmt.Errorf("set service liveness: %w", err)
 	}
 
 	m.runner, err = cluster.NewRunner(cluster.RunnerDeps{
@@ -206,7 +213,6 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 		exit := chooseDutyLoopExit(
 			client.IsTerminating(),
 			agent.TerminationError(),
-			serviceAgent.ServiceFailure(),
 			m.svc.DecodeError(),
 		)
 		if exit != nil {
@@ -229,11 +235,11 @@ func (m *childMember) dutyLoop(ctx context.Context) int {
 	}
 }
 
-// chooseDutyLoopExit returns the exit record for one cycle's conditions. It
-// returns nil when the loop continues.
+// chooseDutyLoopExit returns the exit record for one cycle's conditions, or
+// nil when the loop continues.
 func chooseDutyLoopExit(
 	transportTerminating bool,
-	terminationError, serviceFailure, decodeError error,
+	terminationError, decodeError error,
 ) *MemberExit {
 	switch {
 	case transportTerminating:
@@ -241,9 +247,6 @@ func chooseDutyLoopExit(
 
 	case terminationError != nil:
 		return &MemberExit{Error: terminationError.Error(), Terminated: true}
-
-	case serviceFailure != nil:
-		return &MemberExit{Error: serviceFailure.Error()}
 
 	case decodeError != nil:
 		return &MemberExit{Error: ExitTextDecodeRequest + ": " + decodeError.Error()}
