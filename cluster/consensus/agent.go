@@ -362,6 +362,10 @@ type Agent struct {
 
 	archiveConnection ArchiveConnection
 
+	// serviceLiveness holds the [Agent.SetServiceLiveness] source for each
+	// service id.
+	serviceLiveness []ServiceLiveness
+
 	// slowTickDeadlineNs is the next nowNs at which slowTickIfDue evaluates.
 	// Zero means the first tick always evaluates.
 	slowTickDeadlineNs int64
@@ -656,14 +660,14 @@ type AgentConfig struct {
 	// ErrorHandler receives each error the agent reports. Nil drops each
 	// report.
 	//
-	// Behaviour:
-	//   - the agent reports a failed take before SNAPSHOT ends, and a Force
-	//     error after the take resolves
-	//   - the agent reports the first fatal mark or
-	//     [ErrLocalArchiveDisconnected], then ends the member
-	//   - the agent also reports a failed TerminationPosition send, a
-	//     TerminationAck it skips after a term change, and a failed
-	//     termination commit
+	// Behaviour: the agent reports:
+	//   - a failed take before SNAPSHOT ends
+	//   - a Force error after the take resolves
+	//   - the first fatal mark, [ErrLocalArchiveDisconnected], or
+	//     [ErrServiceStopped]. The agent then ends the member.
+	//   - a failed TerminationPosition send
+	//   - a TerminationAck that the agent skips after a term change
+	//   - a failed termination commit
 	//
 	// Concurrency: ErrorHandler runs inside [Agent.DoWork].
 	//
@@ -763,6 +767,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		authenticator:               auth,
 		authoriser:                  authoriser,
 		serviceAcks:                 newServiceAckTracker(cfg.ServiceCount),
+		serviceLiveness:             make([]ServiceLiveness, cfg.ServiceCount),
 		timers:                      newTimerService(),
 		errorHandler:                cfg.ErrorHandler,
 

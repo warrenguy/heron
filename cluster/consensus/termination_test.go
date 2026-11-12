@@ -281,6 +281,25 @@ func TestAgent_doWorkStopsAtTermination(t *testing.T) {
 			},
 		},
 		{
+			name: "service stop skips the JoinLog retry",
+			run: func(t *testing.T) {
+				a, reported := agentWithReports(AgentConfig{ServiceCount: 1})
+				queueRetriableJoinLog(t, a)
+				failure := errors.New("service: boom")
+				require.NoError(t, a.SetServiceLiveness(0, &fakeServiceLiveness{failure: failure}))
+
+				// Phase 1: the due slow tick ends the member. The retry does not run.
+				require.Equal(t, 1, a.DoWork(0))
+				require.True(t, a.HasPendingJoinLog())
+				requireServiceStopped(t, a, *reported, failure)
+
+				// Phase 2: DoWork returns 0 after the end.
+				require.Equal(t, 0, a.DoWork(slowTickIntervalNs))
+				require.True(t, a.HasPendingJoinLog())
+				require.Len(t, *reported, 1)
+			},
+		},
+		{
 			name: "consensus work skips the JoinLog retry",
 			run: func(t *testing.T) {
 				a, reported := agentWithReports(AgentConfig{})
@@ -496,6 +515,330 @@ func TestAgent_TerminateOnError(t *testing.T) {
 			t.Parallel()
 			a, reported := agentWithReports(AgentConfig{})
 			tt.run(t, a, reported)
+		})
+	}
+}
+
+// fakeServiceLiveness stubs one service for the slow tick. reads counts
+// ServiceFailure calls.
+type fakeServiceLiveness struct {
+	failure    error
+	terminated bool
+	closed     bool
+	reads      int
+}
+
+func (f *fakeServiceLiveness) ServiceFailure() error {
+	f.reads++
+	return f.failure
+}
+
+func (f *fakeServiceLiveness) IsTerminated() bool { return f.terminated }
+
+func (f *fakeServiceLiveness) IsClosed() bool { return f.closed }
+
+// requireServiceStopped requires one ErrServiceStopped report. The report must
+// end the member unexpectedly. A non-nil cause must sit in its chain.
+func requireServiceStopped(t testing.TB, a *Agent, reported []error, cause error) {
+	t.Helper()
+	require.Len(t, reported, 1)
+	require.ErrorIs(t, reported[0], ErrServiceStopped)
+
+	if cause != nil {
+		require.ErrorIs(t, reported[0], cause)
+	}
+
+	requireTerminated(t, a, reported[0], false)
+}
+
+// requireServiceUnread requires that the slow tick did not read source. The
+// member must not end.
+func requireServiceUnread(t testing.TB, a *Agent, reported []error, source *fakeServiceLiveness) {
+	t.Helper()
+	require.Zero(t, source.reads)
+	require.Empty(t, reported)
+	require.NoError(t, a.TerminationError())
+}
+
+func TestAgent_SetServiceLiveness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "negative id",
+			run: func(t *testing.T) {
+				a, _ := agentWithReports(AgentConfig{ServiceCount: 1})
+				err := a.SetServiceLiveness(-1, &fakeServiceLiveness{})
+				require.EqualError(t, err, "consensus: service id -1 out of range")
+			},
+		},
+		{
+			name: "id at ServiceCount",
+			run: func(t *testing.T) {
+				a, _ := agentWithReports(AgentConfig{ServiceCount: 1})
+				err := a.SetServiceLiveness(1, &fakeServiceLiveness{})
+				require.EqualError(t, err, "consensus: service id 1 out of range")
+			},
+		},
+		{
+			name: "any id when ServiceCount is 0",
+			run: func(t *testing.T) {
+				a, _ := agentWithReports(AgentConfig{})
+				err := a.SetServiceLiveness(0, &fakeServiceLiveness{})
+				require.EqualError(t, err, "consensus: service id 0 out of range")
+			},
+		},
+		{
+			name: "valid id",
+			run: func(t *testing.T) {
+				a, _ := agentWithReports(AgentConfig{ServiceCount: 1})
+				source := &fakeServiceLiveness{}
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				require.Same(t, source, a.serviceLiveness[0])
+			},
+		},
+		{
+			name: "nil clears the slot",
+			run: func(t *testing.T) {
+				a, _ := agentWithReports(AgentConfig{ServiceCount: 1})
+				source := &fakeServiceLiveness{}
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				require.NoError(t, a.SetServiceLiveness(0, nil))
+				require.Nil(t, a.serviceLiveness[0])
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
+		})
+	}
+}
+
+func TestAgent_serviceStop(t *testing.T) {
+	t.Parallel()
+
+	const deadlineNs int64 = 100
+	failure := errors.New("service: boom")
+
+	newAgent := func(t testing.TB, serviceCount int) (*Agent, *[]error, *fakeServiceLiveness) {
+		t.Helper()
+		a, reported := agentWithReports(AgentConfig{ServiceCount: serviceCount})
+		a.slowTickDeadlineNs = deadlineNs
+		source := &fakeServiceLiveness{failure: failure}
+		return a, reported, source
+	}
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			name: "failure at a due slow tick ends the member",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				armLeaderQuietElection(a)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				requireServiceStopped(t, a, *reported, failure)
+				require.Zero(t, a.ElectionCount(), "the tick skips slowTickWork")
+				require.Equal(t, ElectionTriggerNone, a.LastElectionTrigger())
+			},
+		},
+		{
+			name: "termination stop outside TERMINATING ends the member",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				source.failure = nil
+				source.terminated = true
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				requireServiceStopped(t, a, *reported, nil)
+				require.ErrorContains(t, (*reported)[0], "service 0 stopped at its termination position")
+			},
+		},
+		{
+			name: "close ends the member",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				source.failure = nil
+				source.closed = true
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				requireServiceStopped(t, a, *reported, nil)
+				require.ErrorContains(t, (*reported)[0], "service 0 closed")
+			},
+		},
+		{
+			name: "failure wins over a close",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				source.closed = true
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				requireServiceStopped(t, a, *reported, failure)
+			},
+		},
+		{
+			name: "running source does nothing",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				source.failure = nil
+				armLeaderQuietElection(a)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				require.Empty(t, *reported)
+				require.NoError(t, a.TerminationError())
+				require.Equal(t, 1, source.reads)
+				require.Equal(t, int64(1), a.ElectionCount())
+				require.Equal(t, ElectionTriggerLeaderHeartbeatTimeout, a.LastElectionTrigger())
+			},
+		},
+		{
+			name: "TERMINATING skips the read",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				a.setModuleState(ModuleStateTerminating, "test")
+
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs))
+				requireServiceUnread(t, a, *reported, source)
+				require.Equal(t, ModuleStateTerminating, a.ModuleState())
+			},
+		},
+		{
+			name: "CLOSED skips the read",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				a.MarkClosed()
+
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs))
+				requireServiceUnread(t, a, *reported, source)
+				require.Equal(t, ModuleStateClosed, a.ModuleState())
+			},
+		},
+		{
+			name: "start wait queued skips the read",
+			run: func(t *testing.T) {
+				const startPos int64 = 64
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				require.NoError(t, a.AwaitServiceStart(startPos, func() {}))
+
+				// Phase 1: a due tick skips the read while the start wait leads.
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs))
+				requireServiceUnread(t, a, *reported, source)
+
+				// Phase 2: the ack arrives on a due tick. The slow tick runs before the
+				// ack clears the start wait.
+				a.slowTickDeadlineNs = deadlineNs
+				q := attachQueueServiceIngress(a)
+				enqueueServiceAck(t, q, startPos, 0, 0)
+				a.DoWork(deadlineNs)
+				requireServiceUnread(t, a, *reported, source)
+				require.Nil(t, a.serviceStartHandler)
+
+				// Phase 3: the next due slow tick ends the member.
+				require.Equal(t, 1, a.DoWork(deadlineNs+slowTickIntervalNs))
+				requireServiceStopped(t, a, *reported, failure)
+				require.NotErrorIs(t, a.TerminationError(), ErrServiceStartFailed)
+			},
+		},
+		{
+			name: "before the deadline does nothing",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs-1))
+				requireServiceUnread(t, a, *reported, source)
+			},
+		},
+		{
+			name: "nil slot does nothing",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				require.NoError(t, a.SetServiceLiveness(0, nil))
+
+				require.Equal(t, 0, a.slowTickIfDue(deadlineNs))
+				requireServiceUnread(t, a, *reported, source)
+			},
+		},
+		{
+			name: "second slot stops first",
+			run: func(t *testing.T) {
+				a, reported, stopped := newAgent(t, 2)
+				running := &fakeServiceLiveness{}
+				require.NoError(t, a.SetServiceLiveness(0, running))
+				require.NoError(t, a.SetServiceLiveness(1, stopped))
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				requireServiceStopped(t, a, *reported, failure)
+				require.ErrorContains(t, (*reported)[0], "service 1")
+				require.Equal(t, 1, running.reads)
+				require.Equal(t, 1, stopped.reads)
+			},
+		},
+		{
+			name: "lost archive wins in the same tick",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+				a.SetArchiveConnection(&fakeArchiveConnection{})
+
+				require.Equal(t, 1, a.slowTickIfDue(deadlineNs))
+				require.Equal(t, []error{ErrLocalArchiveDisconnected}, *reported)
+				requireTerminated(t, a, ErrLocalArchiveDisconnected, false)
+				require.Zero(t, source.reads)
+			},
+		},
+		{
+			name: "during a live election ends the member through DoWork",
+			run: func(t *testing.T) {
+				a, reported, source := newAgent(t, 1)
+				source.failure = nil
+				election := &orderRunner{n: 5}
+				a.SetElection(election)
+				ingress := &countingConsensusIngress{}
+				a.SetIngress(ingress)
+				require.NoError(t, a.SetServiceLiveness(0, source))
+
+				// Phase 1: a running service lets the ingress poll and the election run.
+				require.Equal(t, 5, a.DoWork(deadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+				require.Equal(t, 1, source.reads)
+
+				// Phase 2: the slow tick ends the member. DoWork skips every later step.
+				source.failure = failure
+				require.Equal(t, 1, a.DoWork(a.slowTickDeadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+				requireServiceStopped(t, a, *reported, failure)
+
+				// Phase 3: DoWork returns 0 after the end.
+				require.Equal(t, 0, a.DoWork(a.slowTickDeadlineNs))
+				require.Equal(t, 1, ingress.polls)
+				require.Equal(t, 1, election.calls)
+				require.Len(t, *reported, 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t)
 		})
 	}
 }

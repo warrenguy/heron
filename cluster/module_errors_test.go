@@ -13,8 +13,11 @@ import (
 	"github.com/warrenguy/luas/atomicbuffer"
 	"github.com/warrenguy/luas/cluster/consensus"
 	"github.com/warrenguy/luas/cluster/election"
+	"github.com/warrenguy/luas/cluster/service"
 	"github.com/warrenguy/luas/internal/testutil"
 )
+
+var _ consensus.ServiceLiveness = (*service.Agent)(nil)
 
 const testModuleErrorCounterID int32 = 2
 
@@ -286,6 +289,41 @@ func (s *fakeArchiveFailureSource) IsConnected() bool { return s.connected }
 
 func (s *fakeArchiveFailureSource) SetErrorResponseHandler(handler func(error)) {
 	s.handler = handler
+}
+
+type fakeStoppedService struct {
+	failure error
+}
+
+func (f *fakeStoppedService) ServiceFailure() error { return f.failure }
+
+func (f *fakeStoppedService) IsTerminated() bool { return false }
+
+func (f *fakeStoppedService) IsClosed() bool { return false }
+
+func TestModuleErrorHandler_countsServiceStopOnce(t *testing.T) {
+	t.Parallel()
+
+	var recorder errorRecorder
+	h, buffer := newTestModuleErrorHandler(t, recorder.record)
+	agent := consensus.NewAgent(moduleAgentConfig(
+		Config{ServiceCount: 1},
+		election.ElectionConfig{},
+		new(atomic.Int64),
+		h.handleError,
+	))
+	failure := errors.New("service: boom")
+	require.NoError(t, agent.SetServiceLiveness(0, &fakeStoppedService{failure: failure}))
+
+	require.Equal(t, 1, agent.DoWork(1))
+	require.Equal(t, int64(1), moduleErrorCount(buffer))
+	require.Len(t, recorder.reported, 1)
+	require.ErrorIs(t, recorder.reported[0], consensus.ErrServiceStopped)
+	require.ErrorIs(t, recorder.reported[0], failure)
+
+	require.Equal(t, 0, agent.DoWork(1))
+	require.Equal(t, int64(1), moduleErrorCount(buffer))
+	require.Len(t, recorder.reported, 1)
 }
 
 func TestWireArchiveFailure(t *testing.T) {

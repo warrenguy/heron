@@ -243,16 +243,19 @@ type Config struct {
 	// Behaviour:
 	//   - The Cluster Errors counter (type 212) counts each report, even a
 	//     dropped one.
-	//   - After ConsensusModule.Close the module does not count or report.
-	//   - A fatal cause, an archive STORAGE_SPACE code, or
-	//     [ErrReplayHoldExpired] ends the member after its report.
+	//   - After ConsensusModule.Close the module does not count a report.
+	//     The module does not call ErrorHandler.
+	//   - A fatal cause, an archive STORAGE_SPACE code,
+	//     [ErrReplayHoldExpired], or a stopped service ends the member after
+	//     its report.
 	//
 	// Match an election event with errors.Is(err, [election.ErrEvent]). Every
 	// other error is a fault.
 	//
 	// Concurrency: ErrorHandler runs inside a duty cycle tick or a blocking
 	// archive.Client method. ErrorHandler must not:
-	//   - panic or block the duty cycle
+	//   - panic
+	//   - block the duty cycle
 	//   - call a Runner, ConsensusModule, or consensus.Agent method that ticks,
 	//     sends, or changes state, except [consensus.Agent.TerminateOnError]
 	//   - call archive.Client.Poll, a blocking archive.Client method, or a New*
@@ -260,10 +263,10 @@ type Config struct {
 	//
 	// ErrorHandler may call the ConsensusModule read accessors, except
 	// LogRecordingStopPosition, which can block. For a failed step, the module
-	// stores the result before it calls ErrorHandler.
+	// stores the result before the module calls ErrorHandler.
 	//
-	// The error text may hold archive remote text and channel URIs. Sanitize it
-	// before an untrusted sink.
+	// The error text may hold archive remote text and channel URIs. Sanitize
+	// the text before an untrusted sink.
 	ErrorHandler func(error)
 }
 
