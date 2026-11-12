@@ -124,21 +124,19 @@ public final class ClusterConstants {
     // Hand-sync with clusterjava.MixedLogChannelUnicast.
     public static final String MIXED_LOG_CHANNEL_UNICAST = UDP_CHANNEL_64K;
 
-    // MIXED_LOG_ENDPOINT is the shared multicast log endpoint for go-leader and
-    // ex-leader-rejoin. The final octet is odd. Aeron derives the control
+    // MIXED_LOG_ENDPOINT is the shared multicast log endpoint of every
+    // multicast overlay. The final octet is odd. Aeron derives the control
     // address from the next even octet. Publication add rejects an even group.
     //
     // Hand-sync with clusterjava.MixedLogEndpoint.
     public static final String MIXED_LOG_ENDPOINT = "239.255.12.15:9004";
 
-    // MIXED_LOG_CHANNEL_MULTICAST is the log channel when the Go member leads
-    // on go-leader and ex-leader-rejoin. The final URI includes endpoint=.
-    // The consensus module then clears isLogMdc. The module stops
-    // multi-destination fan-out. interface= fixes the compose bridge subnet.
-    // ttl=1 keeps frames on the bridge subnet. Go MixedLogChannelMulticast is
-    // a template. The template must not carry endpoint=. cluster.Config
-    // rejects endpoint on LogChannel. Topology merges the members-string log
-    // endpoint. The two strings differ on purpose.
+    // MIXED_LOG_CHANNEL_MULTICAST is the log channel on MIXED_LOG_ENDPOINT.
+    // endpoint= makes the consensus module clear isLogMdc. The module then
+    // skips multi-destination fan-out. interface= and ttl=1 keep frames on the
+    // compose bridge subnet.
+    //
+    // Hand-sync with clusterjava.MixedLogChannelMulticast, which omits endpoint=.
     public static final String MIXED_LOG_CHANNEL_MULTICAST =
         UDP_CHANNEL_64K
             + "|endpoint=" + MIXED_LOG_ENDPOINT

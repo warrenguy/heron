@@ -158,7 +158,7 @@ func TestClusterMixedGoLeaderSnapshotRestart(t *testing.T) {
 		clusterjava.MixedComposeSkipHintGoLeaderSnapshot,
 	)
 
-	requireMixedAeronDirsPresent(t)
+	requireMixedAeronDirsPresent(t, []int{0, 1}, clusterjava.MixedAeronDirGo)
 	java := awaitJavaModuleState(t, nil, []int{0, 1}, clusterjava.MixedStartupBudget)
 	recorded := recordJavaCommitPositions(t, java)
 	requireJavaSnapshotCount(t, java, 0)

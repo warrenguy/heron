@@ -71,6 +71,26 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameGoLeaderSnapshot = "TestClusterMixedGoLeaderSnapshotRestart"
 
+	// MixedComposeUnappointedJavaMajorityEnvKey names the env key that the
+	// unappointed-java-majority overlay sets to "1".
+	MixedComposeUnappointedJavaMajorityEnvKey = "LUAS_CLUSTER_MIXED_UNAPPOINTED_JAVA_MAJORITY_COMPOSE"
+
+	// MixedComposeUnappointedGoMajorityEnvKey names the env key that the
+	// unappointed-go-majority overlay sets to "1".
+	MixedComposeUnappointedGoMajorityEnvKey = "LUAS_CLUSTER_MIXED_UNAPPOINTED_GO_MAJORITY_COMPOSE"
+
+	// MixedSmokeNameUnappointedJavaMajority is the
+	// TestClusterMixedUnappointedJavaMajority function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameUnappointedJavaMajority = "TestClusterMixedUnappointedJavaMajority"
+
+	// MixedSmokeNameUnappointedGoMajority is the
+	// TestClusterMixedUnappointedGoMajority function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameUnappointedGoMajority = "TestClusterMixedUnappointedGoMajority"
+
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-java-leader"
@@ -84,9 +104,16 @@ const (
 		"smoke-cluster-mixed-java-leader-snapshot"
 	MixedComposeSkipHintGoLeaderSnapshot = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-go-leader-snapshot"
+	MixedComposeSkipHintUnappointedJavaMajority = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-unappointed-java-majority"
+	MixedComposeSkipHintUnappointedGoMajority = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-unappointed-go-majority"
 
 	MixedMemberCount = 3
 	MixedGoMemberID  = int32(2)
+
+	// MixedSecondGoMemberID is the extra Go member id in unappointed-go-majority.
+	MixedSecondGoMemberID = int32(1)
 
 	// MixedAppointedLeaderIDJavaLeader is the appointed leader id for java-leader.
 	MixedAppointedLeaderIDJavaLeader = int32(0)
@@ -161,10 +188,16 @@ const (
 	MixedAeronDirMember0 = "/dev/shm/aeron-j0"
 	MixedAeronDirMember1 = "/dev/shm/aeron-j1"
 	MixedAeronDirGo      = "/dev/shm/aeron-go"
+
+	// MixedAeronDirGoMember1 is Go member 1's media driver directory.
+	// unappointed-go-majority runs aeronmd-1 on this path.
+	MixedAeronDirGoMember1 = "/dev/shm/aeron-go1"
 )
 
 // Per-member baseDirs. Compose mounts each path as a volume root.
-// Paths are baseDirs, not the cluster/ subdirectory. Go uses member id 2.
+// Paths are baseDirs, not the cluster/ subdirectory. Go member 2 uses
+// MixedClusterDirGo. unappointed-go-majority runs Go member 1 on
+// MixedClusterDirMember1.
 const (
 	// MixedBaseDirPrefix matches ClusterConstants.MIXED_BASE_DIR_PREFIX.
 	MixedBaseDirPrefix = "/tmp/luas-cluster-"
@@ -200,21 +233,21 @@ const (
 	// derives each member's log endpoint from the members string.
 	MixedLogChannelUnicast = cluster.DefaultLogChannel
 
-	// MixedLogEndpoint is the shared multicast log endpoint for the go-leader and
-	// ex-leader-rejoin overlays. The final octet is odd. The media driver derives
-	// the control address from the next even octet.
+	// MixedLogEndpoint is the shared multicast log endpoint of every multicast
+	// overlay. The final octet is odd. The media driver derives the control
+	// address from the next even octet.
 	//
 	// Hand-sync with ClusterConstants.MIXED_LOG_ENDPOINT.
 	MixedLogEndpoint = "239.255.12.15:9004"
 
-	// MixedLogChannelMulticast is the Go log channel template when the Go member
-	// leads on the go-leader and ex-leader-rejoin overlays. interface= fixes the
-	// compose bridge subnet. ttl=1 keeps frames on the bridge subnet. The
-	// template must not carry endpoint=. cluster.Config rejects endpoint on
-	// LogChannel. Topology.LogChannel merges MixedLogEndpoint from the members
-	// string. Java MIXED_LOG_CHANNEL_MULTICAST keeps endpoint= in the final URI.
-	// The consensus module then clears isLogMdc. The two strings differ on
-	// purpose.
+	// MixedLogChannelMulticast is the Go log channel template on
+	// MixedLogEndpoint. interface= and ttl=1 keep frames on the compose bridge
+	// subnet. The template must not carry endpoint=, because cluster.Config
+	// rejects it. Topology.LogChannel merges MixedLogEndpoint from the members
+	// string.
+	//
+	// Hand-sync with ClusterConstants.MIXED_LOG_CHANNEL_MULTICAST, which keeps
+	// endpoint=.
 	MixedLogChannelMulticast = MixedLogChannelUnicast +
 		"|interface=172.30.0.0/16|ttl=1"
 )
@@ -279,6 +312,10 @@ const (
 	// MixedTestTimeoutGoLeaderSnapshot bounds the go-leader-snapshot smoke. The
 	// wait stack inside the test is 260s.
 	MixedTestTimeoutGoLeaderSnapshot = 300 * time.Second
+
+	// MixedTestTimeoutUnappointed bounds each unappointed smoke. The wait stack
+	// inside the test is 90s.
+	MixedTestTimeoutUnappointed = 120 * time.Second
 )
 
 // mixedOverlays lists each compose overlay env key with the proof it selects.
@@ -292,15 +329,18 @@ var mixedOverlays = []struct {
 	{MixedComposeExLeaderRejoinEnvKey, MixedSmokeNameExLeaderRejoin},
 	{MixedComposeJavaLeaderSnapshotEnvKey, MixedSmokeNameJavaLeaderSnapshot},
 	{MixedComposeGoLeaderSnapshotEnvKey, MixedSmokeNameGoLeaderSnapshot},
+	{MixedComposeUnappointedJavaMajorityEnvKey, MixedSmokeNameUnappointedJavaMajority},
+	{MixedComposeUnappointedGoMajorityEnvKey, MixedSmokeNameUnappointedGoMajority},
 }
 
 // MixedRequiredSmoke reports which mixed proof the current overlay requires.
 //
 // Behaviour: scans mixedOverlays in order. MixedRequiredSmoke does not panic.
-//   - The first env key set to "1" selects its overlay.
+//   - The first env key set to "1" selects that overlay.
 //   - Any other value, including unset, does not select an overlay. A
 //     developer run outside compose leaves every key unset.
-//   - Several keys set to "1" is a fixture error.
+//   - Several keys set to "1" is a fixture error. The first match in
+//     mixedOverlays still names the smoke.
 //
 // Concurrency: pure. Reads only through getEnv.
 //
@@ -371,8 +411,8 @@ func MixedComposeHostnames() ([]string, error) {
 // Log endpoints:
 //   - sharedLogEndpoint empty keeps per-member unicast log endpoints (java-leader
 //     and go-leader-unicast).
-//   - sharedLogEndpoint non-empty replaces every log slot (go-leader and
-//     ex-leader-rejoin multicast).
+//   - sharedLogEndpoint non-empty replaces every log slot (multicast
+//     overlays).
 //
 // Ownership: the caller owns the returned string.
 //

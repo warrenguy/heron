@@ -29,6 +29,8 @@ OVERLAYS=(
 	ex-leader-rejoin
 	java-leader-snapshot
 	go-leader-snapshot
+	unappointed-java-majority
+	unappointed-go-majority
 )
 OCTET_SPAN=$((254 / ${#OVERLAYS[@]}))
 
@@ -93,6 +95,12 @@ go-leader-snapshot)
 	SMOKE_NAME="TestClusterMixedGoLeaderSnapshotRestart"
 	OUTER_TIMEOUT_S=310
 	;;
+unappointed-java-majority)
+	SMOKE_NAME="TestClusterMixedUnappointedJavaMajority"
+	;;
+unappointed-go-majority)
+	SMOKE_NAME="TestClusterMixedUnappointedGoMajority"
+	;;
 *)
 	usage
 	;;
@@ -156,13 +164,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Build the Java image via cluster-0, the Go member Archive, and the Go service.
-# cluster-1 reuses the cluster-0 image. aeronmd uses the pre-tagged image.
+# Other services reuse these images or the pre-tagged aeronmd image.
 #
 # Build stays outside the outer timeout. Image build wall clock varies.
 compose build cluster-0 archive-go go
 
 smoke_logs() {
-	compose logs --no-color aeronmd archive-go cluster-0 cluster-1 go
+	compose logs --no-color
 }
 
 # True when Docker IPAM refused the subnet because another network holds it.

@@ -30,18 +30,15 @@ import (
 // Nothing local advances between reads. A tighter interval only burns wakeups.
 const mixedIdlePollInterval = 50 * time.Millisecond
 
-// mixedMemberFixture holds one Go consensus member on the external aeronmd.
+// mixedMemberFixture holds one Go consensus member on that member's external
+// media driver. Member 2 joins aeronmd. Member 1 joins aeronmd-1.
 //
 // Concurrency: every method runs on the test goroutine. Not safe from other
 // goroutines.
 //
 // Lifetime: Open registers module Close on t.Cleanup.
 //
-// The caller writes the readiness file before the overlay's waiting services
-// start:
-//   - java-leader, go-leader, and go-leader-unicast write the file immediately
-//     after open.
-//   - ex-leader-rejoin writes the file only after the Go module closes.
+// The caller writes the readiness file before dependent services start.
 type mixedMemberFixture struct {
 	module *cluster.ConsensusModule
 	runner *cluster.Runner
@@ -51,9 +48,9 @@ type mixedMemberFixture struct {
 // requireMixedCompose skips with skipHint when envKey is unset. skipHint names
 // the make target that runs the caller's smoke.
 //
-// When the key is set, AERON_DIR must equal MixedAeronDirGo. JoinExternal
-// polls AERON_DIR for a ready CnC file at open.
-func requireMixedCompose(t *testing.T, envKey, skipHint string) {
+// When the key is set, process AERON_DIR must equal MixedAeronDirGo.
+// JoinExternal polls cfg.AeronDir, so member 1 can use another driver.
+func requireMixedCompose(t testing.TB, envKey, skipHint string) {
 	t.Helper()
 
 	if os.Getenv(envKey) != "1" {
@@ -91,26 +88,19 @@ func buildMixedJavaLeaderConfig(t testing.TB) cluster.Config {
 }
 
 // buildMixedGoLeaderConfig builds the Go member config for a Go-led term.
-// AppointedLeaderID is 2. ClusterMembers uses the shared multicast log endpoint
-// on the compose host list. LogChannel is the multicast template
-// (interface + ttl only; no endpoint=).
+// AppointedLeaderID is 2.
 func buildMixedGoLeaderConfig(t *testing.T) cluster.Config {
 	t.Helper()
 
-	members, err := clusterjava.MixedComposeClusterMembers(clusterjava.MixedLogEndpoint)
-	require.NoError(t, err)
-
+	cfg := buildMixedMulticastConfig(
+		t,
+		clusterjava.MixedGoMemberID,
+		clusterjava.MixedClusterDirGo,
+		clusterjava.MixedAeronDirGo,
+	)
 	appointed := clusterjava.MixedAppointedLeaderIDGoLeader
-	return cluster.Config{
-		MemberID:                      clusterjava.MixedGoMemberID,
-		ClusterMembers:                members,
-		ClusterDir:                    clusterjava.MixedClusterDirGo,
-		AeronDir:                      clusterjava.MixedAeronDirGo,
-		LogChannel:                    clusterjava.MixedLogChannelMulticast,
-		AppointedLeaderID:             &appointed,
-		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
-		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
-	}
+	cfg.AppointedLeaderID = &appointed
+	return cfg
 }
 
 // buildMixedGoLeaderUnicastConfig starts from the Java-leader config, which
@@ -123,6 +113,29 @@ func buildMixedGoLeaderUnicastConfig(t testing.TB) cluster.Config {
 	appointed := clusterjava.MixedAppointedLeaderIDGoLeader
 	cfg.AppointedLeaderID = &appointed
 	return cfg
+}
+
+// buildMixedMulticastConfig builds one Go member on the shared multicast log.
+// AppointedLeaderID stays nil.
+func buildMixedMulticastConfig(
+	t testing.TB,
+	memberID int32,
+	clusterDir, aeronDir string,
+) cluster.Config {
+	t.Helper()
+
+	members, err := clusterjava.MixedComposeClusterMembers(clusterjava.MixedLogEndpoint)
+	require.NoError(t, err)
+
+	return cluster.Config{
+		MemberID:                      memberID,
+		ClusterMembers:                members,
+		ClusterDir:                    clusterDir,
+		AeronDir:                      aeronDir,
+		LogChannel:                    clusterjava.MixedLogChannelMulticast,
+		ArchiveControlRequestChannel:  archive.DefaultLocalControlChannel,
+		ArchiveControlResponseChannel: archive.DefaultLocalControlChannel,
+	}
 }
 
 // buildMixedExLeaderRejoinConfig starts from the Go-leader config,
@@ -142,21 +155,26 @@ func buildMixedExLeaderRejoinConfig(t *testing.T) cluster.Config {
 	return cfg
 }
 
-// requireMixedAeronDirsPresent fatals when any of the three mixed Aeron
-// directories is missing. go-leader requires Java peers up before Go opens, so
-// all three CnC trees exist when the smoke starts.
-func requireMixedAeronDirsPresent(t testing.TB) {
+// requireMixedAeronDirsPresent fatals when the Aeron directory of a listed
+// Java member or any directory in goDirs is missing.
+func requireMixedAeronDirsPresent(t testing.TB, javaIDs []int, goDirs ...string) {
 	t.Helper()
 
-	dirs := []string{
-		clusterjava.MixedAeronDirMember0,
-		clusterjava.MixedAeronDirMember1,
-		clusterjava.MixedAeronDirGo,
+	for _, id := range javaIDs {
+		requireDirPresent(t, mixedJavaAeronDirs[id])
 	}
-	for _, dir := range dirs {
-		if _, err := os.Stat(dir); err != nil {
-			t.Fatalf("mixed aeron dir missing: %s: %v", dir, err)
-		}
+
+	for _, dir := range goDirs {
+		requireDirPresent(t, dir)
+	}
+}
+
+// requireDirPresent fatals when dir is missing.
+func requireDirPresent(t testing.TB, dir string) {
+	t.Helper()
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("mixed aeron dir missing: %s: %v", dir, err)
 	}
 }
 
@@ -442,11 +460,17 @@ func awaitJavaLeaderElection(
 
 // requireLiveLogImage asserts the Go follower holds the leader's log image at
 // join position 0. Failure names start-order or membership, not commit.
-func requireLiveLogImage(t *testing.T, f *mixedMemberFixture) {
+//
+// A given membersDump replaces the member state in failure messages.
+func requireLiveLogImage(t testing.TB, f *mixedMemberFixture, membersDump ...string) {
 	t.Helper()
 
 	// Snapshot state once. No duty cycle runs between the asserts below.
 	state := harness.ClusterMemberState(f.module)
+
+	if len(membersDump) > 0 {
+		state = membersDump[0]
+	}
 
 	adapter := f.module.LogAdapter()
 	require.NotNil(t, adapter, "log adapter missing:\n%s", state)
@@ -507,10 +531,13 @@ func requireLiveLogImage(t *testing.T, f *mixedMemberFixture) {
 //   - type-100 counter present for that id
 //
 // Concurrency: runs on the test goroutine. Does not run a duty cycle.
+//
+// A given membersDump replaces the member state in failure messages.
 func requireGoLogRecording(
 	t testing.TB,
 	f *mixedMemberFixture,
 	wantLogSessionID int32,
+	membersDump ...string,
 ) (
 	recordingID int64,
 	recordedPosition int64,
@@ -518,6 +545,11 @@ func requireGoLogRecording(
 	t.Helper()
 
 	state := dumpMixedState(f.module, nil)
+
+	if len(membersDump) > 0 {
+		state = membersDump[0]
+	}
+
 	agent := f.module.Agent()
 	require.NotNil(t, agent, "agent missing:\n%s", state)
 
