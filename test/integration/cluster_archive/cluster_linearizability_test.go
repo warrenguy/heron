@@ -332,7 +332,11 @@ func (c *historyClient) handleNewLeader(r *linearizabilityRun) {
 	}
 }
 
-func (c *historyClient) handleSessionEvent(r *linearizabilityRun, code client.EventCode, detail []byte) {
+func (c *historyClient) handleSessionEvent(
+	r *linearizabilityRun,
+	code client.EventCode,
+	detail []byte,
+) {
 	if code == client.EventCodeClosed {
 		c.closed = true
 		c.storedDetail = string(detail)
@@ -426,7 +430,11 @@ func (r *linearizabilityRun) faultHold() {
 
 // recoverPaused runs restore, then awaits caughtUp at the live commit floor.
 // New calls stay paused until caughtUp holds.
-func (r *linearizabilityRun) recoverPaused(label string, restore func(), caughtUp func(floor int64) bool) {
+func (r *linearizabilityRun) recoverPaused(
+	label string,
+	restore func(),
+	caughtUp func(floor int64) bool,
+) {
 	r.t.Helper()
 
 	r.callsPaused = true
@@ -463,7 +471,10 @@ func (r *linearizabilityRun) awaitNewTermReturns(stoppedIndex int, preTerm int64
 	return term
 }
 
-func (r *linearizabilityRun) successorLeader(stoppedIndex int, preTerm int64) *cluster.ConsensusModule {
+func (r *linearizabilityRun) successorLeader(
+	stoppedIndex int,
+	preTerm int64,
+) *cluster.ConsensusModule {
 	var found *cluster.ConsensusModule
 
 	for i, module := range r.sc.set.Modules() {
