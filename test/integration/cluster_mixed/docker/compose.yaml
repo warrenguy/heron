@@ -1,6 +1,5 @@
 # Base mixed cluster layout. The base file does not add a cross-language
-# depends_on. An overlay supplies the start order: java-leader, go-leader,
-# or ex-leader-rejoin.
+# depends_on. Each compose.<scenario>.yaml overlay supplies the start order.
 #
 # Per-run env from the smoke script:
 # - LUAS_COMPOSE_PROJECT
@@ -157,10 +156,10 @@ services:
       retries: 20
       start_period: 15s
 
-  # Go member 2. Shares the aeronmd network namespace: the member-2 endpoints
-  # on LUAS_CLUSTER_MIXED_IP2 must listen in the C driver process.
+  # Go member 2. The unappointed-go-majority overlay also runs Go member 1
+  # here. The service shares the aeronmd network namespace.
   #
-  # Volumes stay independent. The overlay sets command, gate env, and start order.
+  # Volumes stay independent. The overlay sets command, env, and start order.
   go:
     image: cluster-mixed-go
     build:

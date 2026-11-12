@@ -144,7 +144,7 @@ func TestClusterMixedGoLeaderUnicast(t *testing.T) {
 // planned shutdown. wantLogMDC is the expected Topology().IsLogMDC() of the
 // opened module. The final statement marks the calling test completed.
 func runMixedGoLeaderSmoke(t testing.TB, cfg cluster.Config, wantLogMDC bool) {
-	requireMixedAeronDirsPresent(t)
+	requireMixedAeronDirsPresent(t, []int{0, 1}, clusterjava.MixedAeronDirGo)
 
 	// Java up before the Go member opens. Compose starts Java first.
 	// Nil fixture: no Go duty cycle until openMixedGoMember below.

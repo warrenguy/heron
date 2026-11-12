@@ -124,9 +124,42 @@ func TestMixedHarnessConstants(t *testing.T) {
 			got:  clusterjava.MixedComposeSkipHintGoLeaderSnapshot,
 			want: "cluster mixed requires docker compose; run make smoke-cluster-mixed-go-leader-snapshot",
 		},
+		{
+			name: "MixedComposeUnappointedJavaMajorityEnvKey",
+			got:  clusterjava.MixedComposeUnappointedJavaMajorityEnvKey,
+			want: "LUAS_CLUSTER_MIXED_UNAPPOINTED_JAVA_MAJORITY_COMPOSE",
+		},
+		{
+			name: "MixedComposeUnappointedGoMajorityEnvKey",
+			got:  clusterjava.MixedComposeUnappointedGoMajorityEnvKey,
+			want: "LUAS_CLUSTER_MIXED_UNAPPOINTED_GO_MAJORITY_COMPOSE",
+		},
+		{
+			name: "MixedSmokeNameUnappointedJavaMajority",
+			got:  clusterjava.MixedSmokeNameUnappointedJavaMajority,
+			want: "TestClusterMixedUnappointedJavaMajority",
+		},
+		{
+			name: "MixedSmokeNameUnappointedGoMajority",
+			got:  clusterjava.MixedSmokeNameUnappointedGoMajority,
+			want: "TestClusterMixedUnappointedGoMajority",
+		},
+		{
+			name: "MixedComposeSkipHintUnappointedJavaMajority",
+			got:  clusterjava.MixedComposeSkipHintUnappointedJavaMajority,
+			want: "cluster mixed requires docker compose; run make " +
+				"smoke-cluster-mixed-unappointed-java-majority",
+		},
+		{
+			name: "MixedComposeSkipHintUnappointedGoMajority",
+			got:  clusterjava.MixedComposeSkipHintUnappointedGoMajority,
+			want: "cluster mixed requires docker compose; run make " +
+				"smoke-cluster-mixed-unappointed-go-majority",
+		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},
 		{name: "MixedGoMemberID", got: clusterjava.MixedGoMemberID, want: int32(2)},
+		{name: "MixedSecondGoMemberID", got: clusterjava.MixedSecondGoMemberID, want: int32(1)},
 		{
 			name: "MixedAppointedLeaderIDJavaLeader",
 			got:  clusterjava.MixedAppointedLeaderIDJavaLeader,
@@ -179,6 +212,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 		{name: "MixedAeronDirMember0", got: clusterjava.MixedAeronDirMember0, want: "/dev/shm/aeron-j0"},
 		{name: "MixedAeronDirMember1", got: clusterjava.MixedAeronDirMember1, want: "/dev/shm/aeron-j1"},
 		{name: "MixedAeronDirGo", got: clusterjava.MixedAeronDirGo, want: "/dev/shm/aeron-go"},
+		{
+			name: "MixedAeronDirGoMember1",
+			got:  clusterjava.MixedAeronDirGoMember1,
+			want: "/dev/shm/aeron-go1",
+		},
 		{
 			name: "MixedBaseDirPrefix",
 			got:  clusterjava.MixedBaseDirPrefix,
@@ -295,6 +333,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "MixedTestTimeoutExLeaderRejoin",
 			got:  clusterjava.MixedTestTimeoutExLeaderRejoin,
 			want: 300 * time.Second,
+		},
+		{
+			name: "MixedTestTimeoutUnappointed",
+			got:  clusterjava.MixedTestTimeoutUnappointed,
+			want: 120 * time.Second,
 		},
 	}
 
@@ -454,6 +497,58 @@ func TestMixedRequiredSmoke(t *testing.T) {
 			},
 			wantName: clusterjava.MixedSmokeNameGoLeaderUnicast,
 		},
+		{
+			name: "unappointedJavaMajorityOne",
+			env: map[string]string{
+				clusterjava.MixedComposeUnappointedJavaMajorityEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameUnappointedJavaMajority,
+		},
+		{
+			name: "unappointedGoMajorityOne",
+			env: map[string]string{
+				clusterjava.MixedComposeUnappointedGoMajorityEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameUnappointedGoMajority,
+		},
+		{
+			name: "unappointedJavaMajorityZero",
+			env: map[string]string{
+				clusterjava.MixedComposeUnappointedJavaMajorityEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
+			name: "unappointedGoMajorityZero",
+			env: map[string]string{
+				clusterjava.MixedComposeUnappointedGoMajorityEnvKey: "0",
+			},
+			wantName: "",
+		},
+		{
+			name: "javaBeforeUnappointedJava",
+			env: map[string]string{
+				clusterjava.MixedComposeJavaLeaderEnvKey:              "1",
+				clusterjava.MixedComposeUnappointedJavaMajorityEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameJavaLeader,
+		},
+		{
+			name: "snapshotBeforeUnappointedGo",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderSnapshotEnvKey:      "1",
+				clusterjava.MixedComposeUnappointedGoMajorityEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderSnapshot,
+		},
+		{
+			name: "unappointedJavaBeforeUnappointedGo",
+			env: map[string]string{
+				clusterjava.MixedComposeUnappointedJavaMajorityEnvKey: "1",
+				clusterjava.MixedComposeUnappointedGoMajorityEnvKey:   "1",
+			},
+			wantName: clusterjava.MixedSmokeNameUnappointedJavaMajority,
+		},
 	}
 
 	for _, tt := range tests {
@@ -485,6 +580,10 @@ func TestMixedTopologyInvariants(t *testing.T) {
 
 	// go-leader appoints the Go member.
 	require.Equal(t, clusterjava.MixedGoMemberID, clusterjava.MixedAppointedLeaderIDGoLeader)
+
+	require.GreaterOrEqual(t, clusterjava.MixedSecondGoMemberID, int32(0))
+	require.Less(t, clusterjava.MixedSecondGoMemberID, int32(clusterjava.MixedMemberCount))
+	require.NotEqual(t, clusterjava.MixedSecondGoMemberID, clusterjava.MixedGoMemberID)
 }
 
 func TestMixedIngressEndpoints_omitsGoMember(t *testing.T) {
@@ -560,6 +659,7 @@ func TestMixedReadyPath_outsideAeronDirs(t *testing.T) {
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember0))
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirMember1))
 		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirGo))
+		require.False(t, strings.HasPrefix(path, clusterjava.MixedAeronDirGoMember1))
 		require.True(t, strings.HasPrefix(path, "/dev/shm/luas-mixed/"))
 	}
 }
@@ -727,6 +827,13 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 		clusterjava.MixedRejoinBudget
 	require.Equal(t, 260*time.Second, stackedGoLeaderSnapshot)
 	require.Less(t, stackedGoLeaderSnapshot, clusterjava.MixedTestTimeoutGoLeaderSnapshot)
+
+	// The two MixedCommitBudget terms cover the commit and recording waits.
+	stackedUnappointed := clusterjava.MixedStartupBudget +
+		clusterjava.MixedElectionBudget +
+		2*clusterjava.MixedCommitBudget
+	require.Equal(t, 90*time.Second, stackedUnappointed)
+	require.Less(t, stackedUnappointed, clusterjava.MixedTestTimeoutUnappointed)
 }
 
 func TestSnapshotProbePath_underMemberBaseDir(t *testing.T) {

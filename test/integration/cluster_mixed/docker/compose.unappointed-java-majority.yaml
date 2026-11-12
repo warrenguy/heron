@@ -1,0 +1,26 @@
+# Overlay: no appointed leader. Java members 0 and 1, Go member 2.
+# Use with: docker compose -f compose.yaml -f compose.unappointed-java-majority.yaml
+#
+# The Java members form a majority without Go. A 120s startup canvass holds
+# them until the Go member opens.
+
+services:
+  go:
+    command: ["-test.timeout=120s", "-test.run", "^TestClusterMixedUnappointedJavaMajority$$"]
+    depends_on:
+      cluster-0:
+        condition: service_healthy
+      cluster-1:
+        condition: service_healthy
+    environment:
+      LUAS_CLUSTER_MIXED_UNAPPOINTED_JAVA_MAJORITY_COMPOSE: "1"
+
+  cluster-0:
+    environment:
+      LUAS_CLUSTER_APPOINTED_LEADER_ID: "-1"
+      AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT: "120s"
+
+  cluster-1:
+    environment:
+      LUAS_CLUSTER_APPOINTED_LEADER_ID: "-1"
+      AERON_CLUSTER_STARTUP_CANVASS_TIMEOUT: "120s"

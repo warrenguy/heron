@@ -485,6 +485,12 @@ smoke-cluster-mixed-java-leader-snapshot: aeronmd-compose-image ## Docker smoke:
 smoke-cluster-mixed-go-leader-snapshot: aeronmd-compose-image ## Docker smoke: Java member restarts from a Go-led snapshot
 	./scripts/cluster-mixed-smoke.sh go-leader-snapshot
 
+smoke-cluster-mixed-unappointed-java-majority: aeronmd-compose-image ## Docker smoke: mixed Go/Java, no appointed leader, Java majority
+	./scripts/cluster-mixed-smoke.sh unappointed-java-majority
+
+smoke-cluster-mixed-unappointed-go-majority: aeronmd-compose-image ## Docker smoke: mixed Go/Java, no appointed leader, Go majority
+	./scripts/cluster-mixed-smoke.sh unappointed-go-majority
+
 smoke-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
 	./scripts/cluster-mixed-service-smoke.sh
 
