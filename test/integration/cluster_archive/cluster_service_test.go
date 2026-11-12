@@ -275,7 +275,7 @@ func (sc serviceCluster) dump() string {
 // timeout. The helper logs elapsed time on success. detail, when present,
 // prefixes the timeout dump.
 func requireServiceAwaitTick(
-	t *testing.T,
+	t testing.TB,
 	sc serviceCluster,
 	label string,
 	bound time.Duration,
@@ -330,9 +330,9 @@ func requireMessagesAfterOpen(
 }
 
 // requireNoServiceFailure asserts ServiceFailure and ServiceAckFailure are nil
-// on the member at index. detail is inserted into each failure message.
+// on the member at index. Each failure message includes detail.
 func requireNoServiceFailure(
-	t *testing.T,
+	t testing.TB,
 	sc serviceCluster,
 	index int,
 	detail string,
@@ -412,7 +412,7 @@ type wrapRecorder func(rec *sessionRecorder) service.ClusteredService
 // startWrappedServiceCluster is startServiceCluster with memberCount members
 // and wrap applied to each recorder.
 func startWrappedServiceCluster(
-	t *testing.T,
+	t testing.TB,
 	memberCount int,
 	portBase int,
 	logEndpoint string,
@@ -440,7 +440,7 @@ func startWrappedServiceCluster(
 	return serviceCluster{set: set, members: members}
 }
 
-func requireServicesJoined(t *testing.T, sc serviceCluster) {
+func requireServicesJoined(t testing.TB, sc serviceCluster) {
 	t.Helper()
 
 	requireServiceAwaitTick(
@@ -794,7 +794,7 @@ func offerServiceMessage(
 // openServiceMember opens one session recorder container on the client of the
 // module at index, wrapped by wrap. It attaches the container to the set.
 func openServiceMember(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	index int,
 	wrap wrapRecorder,
@@ -832,7 +832,7 @@ func openServiceMember(
 // restartServiceMember stops the member at index and closes its service
 // container. It restarts the member, then opens and attaches a fresh session
 // recorder container, wrapped by wrap, on the new module's client.
-func restartServiceMember(t *testing.T, sc serviceCluster, index int, wrap wrapRecorder) {
+func restartServiceMember(t testing.TB, sc serviceCluster, index int, wrap wrapRecorder) {
 	t.Helper()
 
 	require.NoError(t, sc.set.StopMember(index))

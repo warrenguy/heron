@@ -515,12 +515,20 @@ bin/aeronmd: specs/versions.yaml test/integration/docker/aeronmd/Dockerfile scri
 # Must exceed the longest single await (often 60s elect or commit bounds) under
 # -race.
 CLUSTER_ARCHIVE_TEST_TIMEOUT ?= 5m
+CLUSTER_ARCHIVE_ARTIFACT_DIR := $(ROOT)/.artifacts/cluster-archive
+CLUSTER_ARCHIVE_RUN ?=
 
-.PHONY: test-cluster-archive
+.PHONY: test-cluster-archive test-linearizability
 test-cluster-archive: bin/aeronmd bin/luas-archive-java.jar bin/luas-cluster-java.jar ## Live: per-member Archive elect and commit
+	mkdir -p $(CLUSTER_ARCHIVE_ARTIFACT_DIR)
 	go test -timeout=$(CLUSTER_ARCHIVE_TEST_TIMEOUT) -race -count=1 \
 		-tags=integration,archive_live \
+		$(if $(CLUSTER_ARCHIVE_RUN),-run '$(CLUSTER_ARCHIVE_RUN)') \
+		-artifacts -outputdir=$(CLUSTER_ARCHIVE_ARTIFACT_DIR) \
 		./test/integration/cluster_archive/
+
+test-linearizability: CLUSTER_ARCHIVE_RUN = ^TestClusterLinearizability_
+test-linearizability: test-cluster-archive ## Live: key-value history across leader faults
 
 # $(1)=module dir under test/integration, $(2)=jar stem.
 define build-java-jar

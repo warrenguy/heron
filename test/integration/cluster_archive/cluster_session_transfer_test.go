@@ -89,7 +89,7 @@ func connectTransferSession(
 //
 // dump, when present, replaces set.State() on a connect-poll timeout.
 func connectTransferSessionWithEgress(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	leader *cluster.ConsensusModule,
 	pump *transferPump,
@@ -821,7 +821,7 @@ func requireLastTimerEventAgrees(
 // failIfServiceTransferStall fails when a live member other than skipIndex
 // reports ServiceFailure, ServiceAckFailure, or a commit-bound violation.
 // Skips a nil module.
-func failIfServiceTransferStall(t *testing.T, sc serviceCluster, skipIndex int) {
+func failIfServiceTransferStall(t testing.TB, sc serviceCluster, skipIndex int) {
 	t.Helper()
 
 	for i, mem := range sc.members {
@@ -1115,7 +1115,7 @@ func survivorServicesHoldSequence(
 
 // closeServiceTransferContainer closes the container at index when present.
 // A missing index or a nil container is a no-op.
-func closeServiceTransferContainer(t *testing.T, sc serviceCluster, index int) {
+func closeServiceTransferContainer(t testing.TB, sc serviceCluster, index int) {
 	t.Helper()
 
 	if index < 0 || index >= len(sc.members) {
@@ -1388,7 +1388,7 @@ func TestClusterSessionTransfer_serviceContinuesAcrossLeaderStop(t *testing.T) {
 //
 // TickUntil runs member Tick first. Election INIT can block member Tick in
 // StopLogRecording. sessionPump then never runs. The client heartbeat dies.
-func startTransferClientKeepAlive(t *testing.T, pump *transferPump) {
+func startTransferClientKeepAlive(t testing.TB, pump *transferPump) {
 	t.Helper()
 	ctx := t.Context()
 	go func() {

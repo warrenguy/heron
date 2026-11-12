@@ -175,6 +175,14 @@ jobs:
       - name: Live Archive cluster tests
         run: make test-cluster-archive
 
+      - name: Upload cluster archive artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cluster-archive-artifacts-${{ matrix.goarch }}
+          path: .artifacts/cluster-archive/
+          if-no-files-found: ignore
+
   # A short run on a fixed seed checks that the soak itself still works.
   soak:
     runs-on: ubuntu-24.04
