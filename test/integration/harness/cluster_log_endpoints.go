@@ -192,6 +192,16 @@ const (
 	ClusterTerminationLogEndpoint = "239.255.12.101:17104"
 )
 
+// Linearizability endpoints. The pair reserves one three-member consensus
+// port block and one shared cluster-log multicast endpoint.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterLinearizabilityPortBase    = 17400
+	ClusterLinearizabilityLogEndpoint = "239.255.12.97:17404"
+)
+
 // Crash restart endpoints. Each pair reserves one three-member consensus port
 // block and one shared cluster-log multicast endpoint.
 //
@@ -913,6 +923,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ClusterTerminationPortBase,
 			memberCount: 3,
 			logEndpoint: ClusterTerminationLogEndpoint,
+		},
+		{
+			name:        "cluster-linearizability",
+			portBase:    ClusterLinearizabilityPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterLinearizabilityLogEndpoint,
 		},
 		{
 			name:        "crash-restart-leader",

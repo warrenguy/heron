@@ -55,7 +55,7 @@ func (s fixedCredentialsSupplier) RespondToChallenge([]byte) []byte {
 // close an injected transport.
 //
 // Uses harness.Start because the calling Test already enabled t.Parallel.
-func startSessionClientTransport(t *testing.T) *aeron.Client {
+func startSessionClientTransport(t testing.TB) *aeron.Client {
 	t.Helper()
 	return harness.ConnectClient(t, harness.Start(t), aeron.Config{})
 }
