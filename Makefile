@@ -37,7 +37,7 @@ COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 GO_MODULE := github.com/warrenguy/luas
 GO_TOOL := go tool -modfile=tools/go.mod
 GO_TEST_PKGS := ./...
-# Conductor cross-package test hooks (test_hooks.go, hook_access.go).
+# Conductor cross-package test hooks and the test helper packages.
 export UNIT_TEST_TAGS := testhooks
 # Packages that gain test files when tag $(1) joins UNIT_TEST_TAGS.
 define tag-gained-pkgs
@@ -90,6 +90,7 @@ help: ## List Makefile targets
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
 	check-go-mod \
+	check-public-packages \
 	check-sbe-stale \
 	check-sbe-stale-archive \
 	check-sbe-stale-nodestate \
@@ -113,7 +114,7 @@ check-static-extra:
 		check-sbe-stale \
 		check-sbe-stale-archive \
 		check-sbe-stale-nodestate
-	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions check-public-packages \
 		contract-oracles test-golden-fixtures-unit check-go-mod
 
 check-test:
@@ -127,6 +128,9 @@ test-all: ## Full suite: check rapid integration cluster-archive smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
+
+check-public-packages:
+	@scripts/check-public-packages.sh
 
 check-go-mod: ## Fail when go.mod lists a tool or either module needs a tidy
 	@tools="$$(go list tool 2>/dev/null)" && test -z "$${tools}" || { \
@@ -161,7 +165,7 @@ CLUSTER_SBE_CATALOG_JSON := test/integration/cluster_sbe/clustersbe/fixtures/cat
 CLUSTER_SBE_CATALOG_GEN_SRC := test/integration/cluster_sbe/cmd/cluster-sbe-catalog-gen
 
 cluster-sbe-catalog-regen: ## Regenerate cluster SBE catalog.json hex from fields
-	go run ./$(CLUSTER_SBE_CATALOG_GEN_SRC) \
+	go run -tags=$(UNIT_TEST_TAGS) ./$(CLUSTER_SBE_CATALOG_GEN_SRC) \
 		-catalog $(CLUSTER_SBE_CATALOG_JSON) -out $(CLUSTER_SBE_CATALOG_JSON)
 
 GOLDEN_FIXTURES_POM := test/integration/golden_fixtures/pom.xml

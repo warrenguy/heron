@@ -22,15 +22,11 @@ type safetyObserver struct {
 	prev election.ElectionState
 }
 
-func newSafetyObserver(sim *ElectionSim, node *Node) election.StateObserver {
+func newSafetyObserver(sim *ElectionSim, node *Node) *safetyObserver {
 	return &safetyObserver{
 		StateObserver: StateObserver{sim: sim, nodeID: node.id},
 		node:          node,
 	}
-}
-
-func init() {
-	newElectionStateObserver = newSafetyObserver
 }
 
 func (o *safetyObserver) OnElectionStateChange(s election.ElectionState) {

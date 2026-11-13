@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package sim
 
 import (
@@ -98,9 +100,8 @@ func (n *Network) Register(node *Node) {
 // The publish check runs before the drop policy, so a dropped grant still
 // enters the vote ledger.
 func (n *Network) Enqueue(from int32, msg election.SentMessage) {
-	if publishSafetyCheck != nil {
-		publishSafetyCheck(n.sim, from, msg)
-	}
+	checkPublishSafety(n.sim, from, msg)
+
 	to := msg.Dst.MemberID
 	entry := TimelineEntry{To: to, TemplateID: msg.TemplateID}
 	drop, extraLatency := n.policy.Allow(from, to, msg, n.sim.rng)

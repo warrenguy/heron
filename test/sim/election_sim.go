@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package sim
 
 import (
@@ -57,9 +59,9 @@ type Config struct {
 	// SkipSplitBrainCheck disables the election after-step scan for two live
 	// members in self-leader states on the same term. Transition-time
 	// first-winner recording (leaderWins) and candidate-term monotonicity
-	// still run under testhooks. Set when a script intentionally forms illegal
-	// intermediate wire state and must not stop the step loop on the election
-	// live scan alone.
+	// still run. Set when a script intentionally forms illegal intermediate
+	// wire state and must not stop the step loop on the election live scan
+	// alone.
 	//
 	// Continuous commit safety (UseReplicationHost && !SkipReplicationSafety)
 	// still fails dual self-leaders via CheckSingleCommitAuthority. To force
@@ -129,8 +131,8 @@ type ElectionSim struct {
 	safetyErr   error
 	leaderWins  map[int64]int32
 
-	// votes holds every vote grant under testhooks. A crash keeps it, so the
-	// one grant per term check spans restarts.
+	// votes holds every vote grant. A crash keeps it, so the one grant per
+	// term check spans restarts.
 	votes electiontest.VoteLedger
 
 	// inbound is the message in delivery, or nil outside Network.Deliver.
@@ -145,7 +147,7 @@ type ElectionSim struct {
 	lastCommitSignals map[commitSignalKey]int64
 
 	// restartLeaveInitHook replaces post-rebuild Init DoWork when non-nil
-	// (stuck-Init rollback tests under testhooks).
+	// (stuck-Init rollback tests).
 	restartLeaveInitHook func(*Node, int64)
 }
 
@@ -278,22 +280,6 @@ func (s *ElectionSim) recordSafetyErr(err error) {
 	s.safetyErr = err
 	s.appendTimelineNow("safety", 0, TimelineEntry{Detail: err.Error()})
 }
-
-// continuousSafetyAfterStep is set under testhooks to run after each step:
-//   - candidate-term monotonicity
-//   - the live two-self-leaders scan, unless SkipSplitBrainCheck
-//   - the ballot vote count scan
-//   - continuous commit safety (monotonic, floor-on-advance, single
-//     authority) when UseReplicationHost && !SkipReplicationSafety
-//
-// Untagged builds leave it nil.
-var continuousSafetyAfterStep func(*ElectionSim) error
-
-// publishSafetyCheck is set under testhooks to check each published message
-// before the drop policy runs.
-//
-// Untagged builds leave it nil.
-var publishSafetyCheck func(s *ElectionSim, from int32, msg election.SentMessage)
 
 // Node returns the Node for a member id, nil when unknown.
 func (s *ElectionSim) Node(id int32) *Node {
@@ -504,14 +490,10 @@ func (s *ElectionSim) step() error {
 	}
 
 	// Safety before MaxSteps: over-budget step must not bury a violation.
-	if s.safetyErr != nil {
-		return s.safetyErr
+	if err := checkContinuousSafety(s); err != nil {
+		return err
 	}
-	if continuousSafetyAfterStep != nil {
-		if err := continuousSafetyAfterStep(s); err != nil {
-			return err
-		}
-	}
+
 	if s.steps > s.cfg.MaxSteps {
 		return ErrMaxSteps
 	}

@@ -52,7 +52,7 @@ func TestSafety_stepSurfacesSafetyErr(t *testing.T) {
 
 // When a step is over MaxSteps and also has two live self-leaders, the error
 // is the two-self-leaders fault, not ErrMaxSteps. Budget exhaustion must not
-// hide safety failures that run after each step under testhooks.
+// hide safety failures that run after each step.
 func TestSafety_maxStepsDoesNotBurySafetyErr(t *testing.T) {
 	t.Parallel()
 
@@ -235,8 +235,8 @@ func TestSafety_voteChecks(t *testing.T) {
 			name: "short quorum",
 			plant: func(t *testing.T, s *ElectionSim, _ int64) {
 				n := s.Node(1)
-				obs, ok := n.observer.(*safetyObserver)
-				require.True(t, ok)
+				obs := n.observer
+				require.NotNil(t, obs)
 				obs.prev = election.ElectionStateCandidateBallot
 				election.SetStateForTest(n.election, election.ElectionStateLeaderLogReplication)
 				obs.OnElectionStateChange(election.ElectionStateLeaderLogReplication)
@@ -339,8 +339,8 @@ func TestSafety_candidateTermObserverDecrease(t *testing.T) {
 		require.NoError(t, s.RunSteps(3))
 
 		n := s.Node(1)
-		obs, ok := n.observer.(*safetyObserver)
-		require.True(t, ok)
+		obs := n.observer
+		require.NotNil(t, obs)
 
 		n.maxCandidateSeen = election.CandidateTermIDForTest(n.election) + 50
 		n.initLoaded = true
@@ -430,8 +430,8 @@ func forceTwoLiveSelfLeaders(s *ElectionSim) {
 // or conflict). Unlike forceTwoLiveSelfLeaders, this exercises transition logic.
 func forceSelfLeaderTransition(t *testing.T, n *Node) {
 	t.Helper()
-	obs, ok := n.observer.(*safetyObserver)
-	require.True(t, ok)
+	obs := n.observer
+	require.NotNil(t, obs)
 	obs.prev = election.ElectionStateCanvass
 	election.SetStateForTest(n.election, election.ElectionStateLeaderReady)
 	obs.OnElectionStateChange(election.ElectionStateLeaderReady)
