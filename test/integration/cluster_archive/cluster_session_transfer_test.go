@@ -271,7 +271,7 @@ func awaitTransferReElection(
 //
 // dump, when present, replaces set.State() on offer failure.
 func offerTransferSessionMessage(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	pump *transferPump,
 	payload []byte,
@@ -289,7 +289,7 @@ func offerTransferSessionMessage(
 // offerSessionMessage offers payload on session until the offer returns a
 // positive position. Each attempt ticks set.
 func offerSessionMessage(
-	t *testing.T,
+	t testing.TB,
 	set *harness.ClusterMemberSet,
 	session *client.AeronCluster,
 	payload []byte,
@@ -1059,7 +1059,7 @@ func requireTransferSessionRecovery(
 // skipIndex already has a close, extra open, extra message, or prefix
 // mismatch. A short correct prefix does not fail.
 func failIfRecorderSequenceCorrupt(
-	t *testing.T,
+	t testing.TB,
 	sc serviceCluster,
 	skipIndex int,
 	sessionID int64,

@@ -173,6 +173,16 @@ const (
 	ProcessClusterSmokeLogEndpoint = "239.255.12.107:15604"
 )
 
+// Service-stop endpoints. The pair reserves one three-member consensus port
+// block and one shared cluster-log multicast endpoint.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterServiceStopPortBase    = 16200
+	ClusterServiceStopLogEndpoint = "239.255.12.105:16204"
+)
+
 // Live soak endpoints. The pair reserves one three-member consensus port
 // block and one shared cluster-log multicast endpoint.
 //
@@ -911,6 +921,12 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    ProcessClusterSmokePortBase,
 			memberCount: 3,
 			logEndpoint: ProcessClusterSmokeLogEndpoint,
+		},
+		{
+			name:        "service-stop",
+			portBase:    ClusterServiceStopPortBase,
+			memberCount: 3,
+			logEndpoint: ClusterServiceStopLogEndpoint,
 		},
 		{
 			name:        "live-soak",
