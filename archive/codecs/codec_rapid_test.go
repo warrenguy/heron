@@ -145,7 +145,7 @@ func TestAuthConnectRequest_codec_rapid(t *testing.T) {
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeAuthConnectRequest),
-			authConnectRequestOracle(fields, actingVersion),
+			codecs.AuthConnectRequestOracleFields(fields, actingVersion),
 		)
 	})
 }
@@ -172,7 +172,7 @@ func TestReplayRequest_codec_rapid(t *testing.T) {
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeReplayRequest),
-			replayRequestOracle(fields, actingVersion),
+			codecs.ReplayRequestOracleFields(fields, actingVersion),
 		)
 	})
 }
@@ -205,7 +205,7 @@ func TestReplicateRequest2_codec_rapid(t *testing.T) {
 			actingVersion,
 			offset,
 			encodeAt(actingVersion, fields, codecs.EncodeReplicateRequest2),
-			replicateRequest2Oracle(fields, actingVersion),
+			codecs.ReplicateRequest2OracleFields(fields, actingVersion),
 		)
 	})
 }

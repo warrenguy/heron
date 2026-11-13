@@ -92,7 +92,8 @@ help: ## List Makefile targets
 	check-sbe-stale-archive \
 	check-sbe-stale-nodestate \
 	cluster-sbe-catalog-regen recordinglog-fixtures-regen \
-	node-state-fixtures-regen recovery-state-key-fixtures-regen
+	node-state-fixtures-regen recovery-state-key-fixtures-regen \
+	archive-sbe-catalog-regen
 
 check: ## Lint pins unit stress norace examples contract-oracles (needs java + mvn)
 	@T=$$(command -v timeout 2>/dev/null \
@@ -173,6 +174,14 @@ recovery-state-key-fixtures-regen: ## Regenerate cluster/codecs/testdata/recover
 	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
 		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recovery-state-key
+
+archive-sbe-catalog-regen: ## Regenerate archive SBE catalog.json hex from Java
+	@command -v mvn >/dev/null || { \
+		echo "luas: mvn required (JDK 26 per $(ARCHIVE_SBE_POM))" >&2; \
+		exit 1; \
+	}
+	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
+		mvn -q -f $(ARCHIVE_SBE_POM) compile exec:java@catalog
 
 # Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
@@ -397,18 +406,21 @@ JAVA_INTEROP_POM := test/integration/java_interop/pom.xml
 CLUSTER_SBE_POM := test/integration/cluster_sbe/pom.xml
 CLUSTER_JAVA_POM := test/integration/cluster_java/pom.xml
 ARCHIVE_JAVA_POM := test/integration/archive_java/pom.xml
+ARCHIVE_SBE_POM := test/integration/archive_sbe/pom.xml
 
 CONTRACT_ORACLE_TIMEOUT ?= 30s
 JAVA_INTEROP_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_SBE_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 CLUSTER_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 ARCHIVE_JAVA_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
+ARCHIVE_SBE_ORACLE_TIMEOUT ?= $(CONTRACT_ORACLE_TIMEOUT)
 
 JAVA_INTEROP_ORACLE_TAGS := testhooks,integration,java_interop
 CLUSTER_SBE_ORACLE_TAGS := integration,cluster_sbe
 CLUSTER_JAVA_ORACLE_TAGS := integration,cluster_java
 ARCHIVE_JAVA_ORACLE_TAGS := integration,archive_java
-CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java archive-java
+ARCHIVE_SBE_ORACLE_TAGS := integration
+CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java archive-java archive-sbe
 
 # Run mvn test for an integration POM; $(1)=logical name, $(2)=pom path.
 define mvn-integration-unit
@@ -504,8 +516,9 @@ $(eval $(call contract-oracle-module,java-interop,$(JAVA_INTEROP_POM),JAVA_INTER
 $(eval $(call contract-oracle-module,cluster-sbe,$(CLUSTER_SBE_POM),CLUSTER_SBE_ORACLE_TIMEOUT,CLUSTER_SBE_ORACLE_TAGS,./test/integration/cluster_sbe/clustersbe/))
 $(eval $(call contract-oracle-module,cluster-java,$(CLUSTER_JAVA_POM),CLUSTER_JAVA_ORACLE_TIMEOUT,CLUSTER_JAVA_ORACLE_TAGS,./test/integration/cluster_java/clusterjava/))
 $(eval $(call contract-oracle-module,archive-java,$(ARCHIVE_JAVA_POM),ARCHIVE_JAVA_ORACLE_TIMEOUT,ARCHIVE_JAVA_ORACLE_TAGS,./test/integration/archive_java/archivejava/))
+$(eval $(call contract-oracle-module,archive-sbe,$(ARCHIVE_SBE_POM),ARCHIVE_SBE_ORACLE_TIMEOUT,ARCHIVE_SBE_ORACLE_TAGS,./test/integration/archive_sbe/archivesbe/))
 
-contract-oracles: ## All four contract oracle suites (mvn + go)
+contract-oracles: ## All contract oracle suites (mvn + go)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) \
 		$(foreach s,$(CONTRACT_ORACLE_SUITES),test-$(s)-contract)
 

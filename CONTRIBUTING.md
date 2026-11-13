@@ -51,7 +51,7 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 `make help` lists every target with a one-line description, including the
 contract suites and Docker Compose smokes.
 
-**Contract suites** (`make contract-oracles` and the four `*-contract` targets): run `mvn test`
+**Contract suites** (`make contract-oracles` and the `*-contract` targets below): run `mvn test`
 (Java goldens) then matching Go oracle tests. No aeronmd or Docker.
 
 | Target | Live smoke | What it checks (examples) |
@@ -60,6 +60,7 @@ contract suites and Docker Compose smokes.
 | `test-cluster-java-contract` | `smoke-cluster-java` / `smoke-cluster-mixed-java-leader` | IPC channels; streams 101/102; ports 9000/9002; failover and mixed topology goldens |
 | `test-archive-java-contract` | `smoke-archive-java` | record/replay streams 1200/1201; IPC channels; archive dir layout |
 | `test-cluster-sbe-contract` | (none; wire oracle only) | cluster SBE bytes vs `catalog.json` |
+| `test-archive-sbe-contract` | (none; wire oracle only) | archive control SBE bytes vs `catalog.json` |
 
 **Compose smokes** (Docker Compose). Image tag: `java-interop-aeronmd`.
 
@@ -121,6 +122,7 @@ Upstream path prefixes under the matching Aeron module:
 | Target | What it refreshes | Needs |
 |--------|-------------------|-------|
 | `make cluster-sbe-catalog-regen` | `hex` from `fields` in `test/integration/cluster_sbe/clustersbe/fixtures/catalog.json` | (none) |
+| `make archive-sbe-catalog-regen` | `hex` in `test/integration/archive_sbe/archivesbe/fixtures/catalog.json` from Java encoders | mvn + java |
 | `make node-state-fixtures-regen` | committed node-state oracle bytes | mvn + java |
 | `make recordinglog-fixtures-regen` | committed recording-log oracle bytes | mvn + java |
 | `make recovery-state-key-fixtures-regen` | committed recovery state key oracle bytes | mvn + java |
@@ -140,9 +142,12 @@ Java golden fixture layout:
 5. If port notes or subset changed, update the matching entries in
    [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 6. `make check` (needs java + mvn for SBE stale and contract-oracles) and `make test-rapid`.
-7. `make test-cluster-sbe-contract` for cluster wire. Fix failures under:
+7. `make test-cluster-sbe-contract` for cluster wire and
+   `make test-archive-sbe-contract` for archive control. Fix failures under:
    - `cluster/codecs/`
    - `test/integration/cluster_sbe/clustersbe/`
+   - `archive/codecs/`
+   - `test/integration/archive_sbe/archivesbe/`
 8. Node-state failures from step 6: fix under
    - `cluster/election/`
    - `cluster/election/nodewire/`

@@ -29,9 +29,6 @@ var (
 					FileIoMaxLengthSinceVersion())
 	replayTokenMinVersion = uint16((&archivewire.ReplayRequest{}).ReplayTokenSinceVersion())
 
-	replayFileIoMaxLengthNullValue = (&archivewire.ReplayRequest{}).FileIoMaxLengthNullValue()
-	replayTokenNullValue           = (&archivewire.ReplayRequest{}).ReplayTokenNullValue()
-
 	replicateFileIoMaxLengthMinVersion = uint16((&archivewire.ReplicateRequest2{}).
 						FileIoMaxLengthSinceVersion())
 	replicateReplicationSessionIDMinVersion = uint16((&archivewire.ReplicateRequest2{}).
@@ -40,11 +37,6 @@ var (
 						EncodedCredentialsSinceVersion())
 	replicateSrcResponseChannelMinVersion = uint16((&archivewire.ReplicateRequest2{}).
 						SrcResponseChannelSinceVersion())
-
-	replicateFileIoMaxLengthNullValue = (&archivewire.ReplicateRequest2{}).
-						FileIoMaxLengthNullValue()
-	replicateReplicationSessionIDNullValue = (&archivewire.ReplicateRequest2{}).
-						ReplicationSessionIdNullValue()
 
 	archiveAllControlResponseCodes = []archivewire.ControlResponseCode{
 		archivewire.ControlResponseCode_OK,
@@ -119,54 +111,6 @@ var (
 		Channel:          []byte("aeron:ipc"),
 	}
 )
-
-// authConnectRequestOracle drops ClientInfo below the version that admits it,
-// matching EncodeAuthConnectRequest.
-func authConnectRequestOracle(
-	fields codecs.AuthConnectRequestFields,
-	actingVersion uint16,
-) codecs.AuthConnectRequestFields {
-	if actingVersion < authConnectClientInfoMinVersion {
-		fields.ClientInfo = nil
-	}
-	return fields
-}
-
-// replayRequestOracle applies the FileIoMaxLength and ReplayToken null reads for
-// versions below the fields' introduction.
-func replayRequestOracle(
-	fields codecs.ReplayRequestFields,
-	actingVersion uint16,
-) codecs.ReplayRequestFields {
-	if actingVersion < replayFileIoMaxLengthMinVersion {
-		fields.FileIoMaxLength = replayFileIoMaxLengthNullValue
-	}
-	if actingVersion < replayTokenMinVersion {
-		fields.ReplayToken = replayTokenNullValue
-	}
-	return fields
-}
-
-// replicateRequest2Oracle nulls the fixed fields and drops the var fields that
-// actingVersion does not admit.
-func replicateRequest2Oracle(
-	fields codecs.ReplicateRequest2Fields,
-	actingVersion uint16,
-) codecs.ReplicateRequest2Fields {
-	if actingVersion < replicateFileIoMaxLengthMinVersion {
-		fields.FileIoMaxLength = replicateFileIoMaxLengthNullValue
-	}
-	if actingVersion < replicateReplicationSessionIDMinVersion {
-		fields.ReplicationSessionID = replicateReplicationSessionIDNullValue
-	}
-	if actingVersion < replicateEncodedCredentialsMinVersion {
-		fields.EncodedCredentials = nil
-	}
-	if actingVersion < replicateSrcResponseChannelMinVersion {
-		fields.SrcResponseChannel = nil
-	}
-	return fields
-}
 
 func encodeControlResponseAt(buf []byte, offset int, f codecs.ControlResponseFields) (int, bool) {
 	var msg archivewire.ControlResponse
@@ -710,7 +654,7 @@ func TestAuthConnectRequest_roundtrip(t *testing.T) {
 				archivewire.AuthConnectRequestSbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, tc.fields, codecs.EncodeAuthConnectRequest),
-				authConnectRequestOracle(tc.fields, tc.actingVer),
+				codecs.AuthConnectRequestOracleFields(tc.fields, tc.actingVer),
 			)
 		})
 	}
@@ -776,7 +720,7 @@ func TestReplayRequest_roundtrip(t *testing.T) {
 				archivewire.ReplayRequestSbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, tc.fields, codecs.EncodeReplayRequest),
-				replayRequestOracle(tc.fields, tc.actingVer),
+				codecs.ReplayRequestOracleFields(tc.fields, tc.actingVer),
 			)
 		})
 	}
@@ -829,7 +773,7 @@ func TestReplicateRequest2_roundtrip(t *testing.T) {
 				archivewire.ReplicateRequest2SbeTemplateID,
 				tc.actingVer,
 				encodeAt(tc.actingVer, fields, codecs.EncodeReplicateRequest2),
-				replicateRequest2Oracle(fields, tc.actingVer),
+				codecs.ReplicateRequest2OracleFields(fields, tc.actingVer),
 			)
 
 			// An exact-size buffer catches an encoder that writes a var field
