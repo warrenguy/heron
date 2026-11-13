@@ -8,6 +8,15 @@ import (
 	"github.com/warrenguy/luas/cluster/election"
 )
 
+// crashSnap holds election log identity restored on mid-run restart.
+//
+// Candidate term stays in durable nodeState (not snapshotted here).
+type crashSnap struct {
+	leadershipTerm    int64
+	logPosition       int64
+	logLeadershipTerm int64
+}
+
 // CrashNode marks id dead: snapshots log identity, clears election host
 // wiring, keeps nodeState and Network registration.
 //

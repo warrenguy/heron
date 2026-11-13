@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package sim
 
 import "math/rand/v2"

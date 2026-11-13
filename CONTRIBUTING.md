@@ -104,6 +104,7 @@ Compose-image rows above.
 | Unit | `bench`, `testhooks` |
 | Property | `rapid` (`*_rapid_test.go`) |
 | IDE / gopls (`go.buildTags`) | `testhooks,rapid,stress,integration,example,java_interop,cluster_sbe,cluster_java,archive_java,archive_live,cluster_soak,cluster_mixed,electionsim,replicationsim,bench` |
+| Test helper packages | under an internal directory, or tagged `testhooks` |
 
 ```bash
 make test                                             # unit only
@@ -111,7 +112,7 @@ go test -race -tags=bench,testhooks ./...             # ad-hoc unit
 make test-rapid                                       # property only
 ```
 
-Prefer Makefile targets over bare `go test`.
+Prefer Makefile targets over bare `go test`. `make check-public-packages` compares a default-tag build with `scripts/public-packages.txt`.
 
 ## SBE codecs (cluster + archive + node-state)
 

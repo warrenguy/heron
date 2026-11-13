@@ -1,3 +1,5 @@
+//go:build integration || testhooks
+
 package catalogschema_test
 
 import (

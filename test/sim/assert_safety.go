@@ -11,11 +11,6 @@ import (
 	"github.com/warrenguy/luas/internal/electiontest"
 )
 
-func init() {
-	continuousSafetyAfterStep = checkContinuousSafety
-	publishSafetyCheck = checkPublishSafety
-}
-
 // checkPublishSafety adds a TRUE vote to the ledger. from is the voter. The
 // vote must answer the RequestVote in delivery. Inject votes skip that check:
 // focus peers never receive a RequestVote.
@@ -172,7 +167,7 @@ func CheckCandidateTermMonotonicity(s *ElectionSim) error {
 	return nil
 }
 
-// checkContinuousSafety runs after every step under testhooks.
+// checkContinuousSafety runs after every step.
 //
 // Always checks candidate-term monotonicity. Checks for two live self-leaders
 // on the same term unless SkipSplitBrainCheck is set. Always scans each ballot

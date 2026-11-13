@@ -1,3 +1,5 @@
+//go:build integration || testhooks
+
 package main
 
 import (

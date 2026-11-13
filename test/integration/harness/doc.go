@@ -1,3 +1,5 @@
+//go:build integration || testhooks
+
 // Package harness provides integration-test fixtures for Aeron clients, CnC
 // wiring, and media drivers.
 //

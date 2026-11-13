@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package sim
 
 import (
@@ -16,13 +18,7 @@ func (o *StateObserver) OnElectionStateChange(s election.ElectionState) {
 	o.sim.appendTimelineNow("state", o.nodeID, TimelineEntry{State: s})
 }
 
-// StatesCopy implements stateHistory.
+// StatesCopy returns a copy of the recorded states.
 func (o *StateObserver) StatesCopy() []election.ElectionState {
 	return append([]election.ElectionState(nil), o.States...)
-}
-
-// newElectionStateObserver builds the timeline-only observer. Testhooks may
-// replace this var in init with the safety-aware observer.
-var newElectionStateObserver = func(sim *ElectionSim, node *Node) election.StateObserver {
-	return &StateObserver{sim: sim, nodeID: node.id}
 }

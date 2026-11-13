@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package sim
 
 import (
@@ -38,7 +40,7 @@ type Node struct {
 	agent     *simAgentHandler
 	clock     *NodeClock
 	nodeState election.CandidateTermStore
-	observer  election.StateObserver
+	observer  *safetyObserver
 	network   *Network
 
 	// agentCM is the consensus Agent when UseReplicationHost; nil otherwise.
@@ -50,8 +52,8 @@ type Node struct {
 	// crashSnap holds log identity for RestartNode; set only while crashed.
 	crashSnap *crashSnap
 
-	// Candidate-term tracking for testhooks safety (maxCandidateSeen only
-	// checked after leave Init; initLoaded enables that check).
+	// Candidate-term tracking for safety checks. The check reads
+	// maxCandidateSeen only after the node leaves Init. initLoaded enables it.
 	initLoaded       bool
 	maxCandidateSeen int64
 
@@ -83,17 +85,6 @@ type wireCommitScan struct {
 	// first differing pair, kept for dual-authority reporting.
 	leaderByTerm   map[int64]int32
 	conflictByTerm map[int64][2]int32
-}
-
-// crashSnap holds election log identity restored on mid-run restart.
-//
-// Untagged so Node can hold the field; only testhooks code fills it.
-//
-// Candidate term stays in durable nodeState (not snapshotted here).
-type crashSnap struct {
-	leadershipTerm    int64
-	logPosition       int64
-	logLeadershipTerm int64
 }
 
 // Election returns the underlying election instance.
@@ -150,16 +141,10 @@ func (n *Node) Tick(nowNs int64) int {
 
 // ObserverStatesForTest returns state transitions recorded by the election observer.
 func (n *Node) ObserverStatesForTest() []election.ElectionState {
-	o, ok := n.observer.(stateHistory)
-	if !ok {
+	if n.observer == nil {
 		return nil
 	}
-	return o.StatesCopy()
-}
-
-// stateHistory is implemented by timeline and safety observers.
-type stateHistory interface {
-	StatesCopy() []election.ElectionState
+	return n.observer.StatesCopy()
 }
 
 // ReceivedFromOrderForTest returns inbound sender order for delivered messages.
@@ -320,7 +305,7 @@ func attachLiveElection(sim *ElectionSim, node *Node, cfg election.ElectionConfi
 		ActingVersion: clusterwire.CanvassPositionSbeSchemaVersion,
 		SentHandler:   func(msg election.SentMessage) { network.Enqueue(id, msg) },
 	}
-	observer := newElectionStateObserver(sim, node)
+	observer := newSafetyObserver(sim, node)
 
 	node.publishGen++
 	node.publisher = publisher

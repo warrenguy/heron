@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build testhooks && !integration
 
 package harness
 
