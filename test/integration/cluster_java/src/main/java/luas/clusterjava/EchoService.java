@@ -18,7 +18,7 @@
 // Echoes inbound session messages via session.offer with idle-strategy retries.
 //
 // On term start, writes a service-probe file under the member baseDir.
-// Mixed go-leader smokes assert that file for Java service term-event decode.
+// On session open, message, and close, appends a line to the session-probe file.
 package luas.clusterjava;
 
 import io.aeron.ExclusivePublication;
@@ -37,15 +37,21 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.HexFormat;
 import java.util.concurrent.TimeUnit;
 
 class EchoService implements ClusteredService
 {
+    private static final HexFormat HEX_FORMAT = HexFormat.of();
+
     static final int SEND_ATTEMPTS = 3;
     static final String OFFER_EXHAUSTED_MESSAGE =
         "luas: EchoService offer exhausted after " + SEND_ATTEMPTS + " attempts";
     static final String SERVICE_PROBE_WRITE_FAILED_PREFIX =
         probeWriteFailedPrefix(ClusterConstants.SERVICE_PROBE_FILENAME);
+    static final String SESSION_PROBE_WRITE_FAILED_PREFIX =
+        probeWriteFailedPrefix(ClusterConstants.SESSION_PROBE_FILENAME);
 
     private IdleStrategy idleStrategy;
     private Cluster cluster;
@@ -62,10 +68,12 @@ class EchoService implements ClusteredService
 
     public void onSessionOpen(final ClientSession session, final long timestamp)
     {
+        appendSessionProbe(formatSessionOpen(session.id(), session.encodedPrincipal()));
     }
 
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason)
     {
+        appendSessionProbe(formatSessionClose(session.id(), closeReason));
     }
 
     public void onSessionMessage(
@@ -76,6 +84,10 @@ class EchoService implements ClusteredService
         final int length,
         final Header header)
     {
+        final byte[] payload = new byte[length];
+        buffer.getBytes(offset, payload);
+        appendSessionProbe(formatSessionMessage(session.id(), payload));
+
         idleStrategy.reset();
         int attempts = SEND_ATTEMPTS;
         do
@@ -153,6 +165,45 @@ class EchoService implements ClusteredService
         writeProbeFile(baseDir, ClusterConstants.SNAPSHOT_PROBE_FILENAME, formatSnapshotProbe(logPosition));
     }
 
+    private void appendSessionProbe(final String line)
+    {
+        final File baseDir = probeBaseDir();
+        if (baseDir == null)
+        {
+            return;
+        }
+
+        final String fileName = ClusterConstants.SESSION_PROBE_FILENAME;
+        try
+        {
+            if (!ensureProbeDir(baseDir, fileName))
+            {
+                return;
+            }
+            // A concurrent reader may see a partial last line.
+            Files.writeString(
+                new File(baseDir, fileName).toPath(),
+                line,
+                StandardCharsets.US_ASCII,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND);
+        }
+        catch (final IOException ex)
+        {
+            System.err.println(SESSION_PROBE_WRITE_FAILED_PREFIX + ex.getMessage());
+        }
+    }
+
+    private static boolean ensureProbeDir(final File baseDir, final String fileName)
+    {
+        if (baseDir.exists() || baseDir.mkdirs())
+        {
+            return true;
+        }
+        System.err.println(probeWriteFailedPrefix(fileName) + "mkdirs " + baseDir);
+        return false;
+    }
+
     private static String probeWriteFailedPrefix(final String fileName)
     {
         return "luas: EchoService " + fileName + " write failed: ";
@@ -165,9 +216,8 @@ class EchoService implements ClusteredService
 
         try
         {
-            if (!baseDir.exists() && !baseDir.mkdirs())
+            if (!ensureProbeDir(baseDir, fileName))
             {
-                System.err.println(probeWriteFailedPrefix(fileName) + "mkdirs " + baseDir);
                 return;
             }
             Files.writeString(tmp.toPath(), content, StandardCharsets.US_ASCII);
@@ -193,7 +243,7 @@ class EchoService implements ClusteredService
     }
 
     /**
-     * Member baseDir that holds the service-probe and snapshot-probe files.
+     * Member baseDir that holds the service-probe, session-probe, and snapshot-probe files.
      *
      * <p>Returns null when cluster is unset, context is null, or clusterDir is null.
      * clusterDir is null before {@link #onStart} when the context omits it.
@@ -231,5 +281,46 @@ class EchoService implements ClusteredService
     static String formatSnapshotProbe(final long logPosition)
     {
         return ClusterConstants.SERVICE_PROBE_KEY_LOG_POSITION + "=" + logPosition + "\n";
+    }
+
+    static String formatSessionOpen(final long sessionId, final byte[] principal)
+    {
+        return formatSessionLine(
+            ClusterConstants.SESSION_PROBE_KIND_OPEN,
+            sessionId,
+            "principal",
+            hexBytes(principal));
+    }
+
+    static String formatSessionMessage(final long sessionId, final byte[] payload)
+    {
+        return formatSessionLine(
+            ClusterConstants.SESSION_PROBE_KIND_MESSAGE,
+            sessionId,
+            "payload",
+            hexBytes(payload));
+    }
+
+    static String formatSessionClose(final long sessionId, final CloseReason closeReason)
+    {
+        return formatSessionLine(
+            ClusterConstants.SESSION_PROBE_KIND_CLOSE,
+            sessionId,
+            "reason",
+            closeReason.name());
+    }
+
+    private static String formatSessionLine(
+        final String kind,
+        final long sessionId,
+        final String field,
+        final String value)
+    {
+        return kind + " session=" + sessionId + " " + field + "=" + value + "\n";
+    }
+
+    private static String hexBytes(final byte[] bytes)
+    {
+        return bytes == null ? "" : HEX_FORMAT.formatHex(bytes);
     }
 }

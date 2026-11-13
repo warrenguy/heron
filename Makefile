@@ -522,6 +522,9 @@ smoke-cluster-mixed-unappointed-java-majority: aeronmd-compose-image ## Docker s
 smoke-cluster-mixed-unappointed-go-majority: aeronmd-compose-image ## Docker smoke: mixed Go/Java, no appointed leader, Go majority
 	./scripts/cluster-mixed-smoke.sh unappointed-go-majority
 
+smoke-cluster-mixed-go-leader-java-client: aeronmd-compose-image ## Docker smoke: Java client sessions under a Go leader
+	./scripts/cluster-mixed-smoke.sh go-leader-java-client
+
 smoke-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
 	./scripts/cluster-mixed-service-smoke.sh
 

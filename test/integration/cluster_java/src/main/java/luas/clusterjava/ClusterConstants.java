@@ -112,6 +112,18 @@ public final class ClusterConstants {
     public static final String SERVICE_PROBE_KEY_ROLE = "role";
     public static final String SERVICE_PROBE_KEY_MEMBER_ID = "memberId";
 
+    // Session event file name under each member baseDir.
+    //
+    // Hand-sync with clusterjava.SessionProbeFilename.
+    public static final String SESSION_PROBE_FILENAME = "session-probe";
+
+    // Line kinds in the session-probe file.
+    //
+    // Hand-sync with clusterjava.SessionProbeKind*.
+    public static final String SESSION_PROBE_KIND_OPEN = "open";
+    public static final String SESSION_PROBE_KIND_MESSAGE = "message";
+    public static final String SESSION_PROBE_KIND_CLOSE = "close";
+
     // Snapshot load file name under each member baseDir. EchoService writes the
     // file when onStart receives a snapshot image.
     //

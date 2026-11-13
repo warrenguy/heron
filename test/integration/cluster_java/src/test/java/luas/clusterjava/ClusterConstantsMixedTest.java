@@ -185,6 +185,22 @@ class ClusterConstantsMixedTest {
                 "memberId",
                 ClusterConstants.SERVICE_PROBE_KEY_MEMBER_ID),
             Arguments.of(
+                "SESSION_PROBE_FILENAME",
+                "session-probe",
+                ClusterConstants.SESSION_PROBE_FILENAME),
+            Arguments.of(
+                "SESSION_PROBE_KIND_OPEN",
+                "open",
+                ClusterConstants.SESSION_PROBE_KIND_OPEN),
+            Arguments.of(
+                "SESSION_PROBE_KIND_MESSAGE",
+                "message",
+                ClusterConstants.SESSION_PROBE_KIND_MESSAGE),
+            Arguments.of(
+                "SESSION_PROBE_KIND_CLOSE",
+                "close",
+                ClusterConstants.SESSION_PROBE_KIND_CLOSE),
+            Arguments.of(
                 "SNAPSHOT_PROBE_FILENAME",
                 "snapshot-probe",
                 ClusterConstants.SNAPSHOT_PROBE_FILENAME)

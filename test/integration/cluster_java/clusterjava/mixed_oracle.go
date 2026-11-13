@@ -3,6 +3,7 @@
 package clusterjava
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/cluster/client"
+	"github.com/warrenguy/luas/test/integration/harness"
 )
 
 // Mixed Go/Java multi-node goldens. Hand-sync with ClusterConstantsMixedTest.
@@ -91,6 +94,16 @@ const (
 	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
 	MixedSmokeNameUnappointedGoMajority = "TestClusterMixedUnappointedGoMajority"
 
+	// MixedComposeGoLeaderJavaClientEnvKey names the env key that the
+	// go-leader-java-client overlay sets to "1".
+	MixedComposeGoLeaderJavaClientEnvKey = "LUAS_CLUSTER_MIXED_GO_LEADER_JAVA_CLIENT_COMPOSE"
+
+	// MixedSmokeNameGoLeaderJavaClient is the
+	// TestClusterMixedGoLeaderJavaClient function name.
+	//
+	// Same multi-site literal contract as MixedSmokeNameJavaLeader.
+	MixedSmokeNameGoLeaderJavaClient = "TestClusterMixedGoLeaderJavaClient"
+
 	// Skip-hint strings name the make target for each mixed compose overlay.
 	MixedComposeSkipHintJavaLeader = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-java-leader"
@@ -108,6 +121,8 @@ const (
 		"smoke-cluster-mixed-unappointed-java-majority"
 	MixedComposeSkipHintUnappointedGoMajority = "cluster mixed " + composeSkipRunMake +
 		"smoke-cluster-mixed-unappointed-go-majority"
+	MixedComposeSkipHintGoLeaderJavaClient = "cluster mixed " + composeSkipRunMake +
+		"smoke-cluster-mixed-go-leader-java-client"
 
 	MixedMemberCount = 3
 	MixedGoMemberID  = int32(2)
@@ -165,10 +180,9 @@ const (
 )
 
 const (
-	// MixedIngressEndpoints is the induction client endpoint map for Java members
-	// 0 and 1 on the default topology. The map omits Go member 2. That member has
-	// no client ingress listener. The cluster members string still carries member
-	// 2's ingress port slot for topology. Compose smokes use
+	// MixedIngressEndpoints is the induction client endpoint map for Java
+	// members 0 and 1 on the default topology. The cluster members string still
+	// carries member 2's ingress port slot. Compose smokes use
 	// MixedComposeIngressEndpoints for the compose host list.
 	MixedIngressEndpoints = "0=" + MixedMember0Address + ":9002,1=" + MixedMember1Address + ":9102"
 
@@ -225,6 +239,19 @@ const (
 	//
 	// Hand-sync with ClusterConstants.SNAPSHOT_PROBE_FILENAME.
 	SnapshotProbeFilename = "snapshot-probe"
+
+	// SessionProbeFilename is the session event file under each Java member
+	// baseDir.
+	//
+	// Hand-sync with ClusterConstants.SESSION_PROBE_FILENAME.
+	SessionProbeFilename = "session-probe"
+
+	// Session-probe line kinds.
+	//
+	// Hand-sync with ClusterConstants.SESSION_PROBE_KIND_*.
+	SessionProbeKindOpen    = "open"
+	SessionProbeKindMessage = "message"
+	SessionProbeKindClose   = "close"
 )
 
 const (
@@ -284,6 +311,10 @@ const (
 	// smoke wall clock.
 	MixedTestTimeoutGoLeader = 140 * time.Second
 
+	// MixedTestTimeoutGoLeaderJavaClient bounds the go-leader-java-client
+	// smoke wall clock.
+	MixedTestTimeoutGoLeaderJavaClient = 180 * time.Second
+
 	// MixedRejoinStartupCanvassTimeout shortens the Go member's startup canvass
 	// from the 60s default. A restart keeps the value. Java rejects a Go vote
 	// when the Java log is ahead.
@@ -331,6 +362,7 @@ var mixedOverlays = []struct {
 	{MixedComposeGoLeaderSnapshotEnvKey, MixedSmokeNameGoLeaderSnapshot},
 	{MixedComposeUnappointedJavaMajorityEnvKey, MixedSmokeNameUnappointedJavaMajority},
 	{MixedComposeUnappointedGoMajorityEnvKey, MixedSmokeNameUnappointedGoMajority},
+	{MixedComposeGoLeaderJavaClientEnvKey, MixedSmokeNameGoLeaderJavaClient},
 }
 
 // MixedRequiredSmoke reports which mixed proof the current overlay requires.
@@ -431,6 +463,31 @@ func MixedComposeClusterMembers(sharedLogEndpoint string) (string, error) {
 	})
 }
 
+// MixedComposeClientIngressEndpoints is the client ingress endpoint map for
+// members 0, 1, and 2 on the compose host list.
+//
+// Every member opens client ingress. Only the steady-state leader accepts
+// connects.
+//
+// Returns an error when:
+//   - MixedComposeHostnames fails
+func MixedComposeClientIngressEndpoints() (string, error) {
+	hosts, err := MixedComposeHostnames()
+	if err != nil {
+		return "", err
+	}
+	return formatMixedIngressEndpoints(hosts), nil
+}
+
+// MixedComposeClientEgressChannel is the Java client egress channel on the
+// compose member-2 host.
+//
+// Returns an error when:
+//   - MixedComposeHostnames fails
+func MixedComposeClientEgressChannel() (string, error) {
+	return mixedComposeGoMemberUDPEndpoint(harness.ClientEgressPort(harness.ClusterJavaPortBase))
+}
+
 // MixedComposeIngressEndpoints is the induction client endpoint map for Java
 // members 0 and 1 on the compose host list.
 //
@@ -443,9 +500,7 @@ func MixedComposeIngressEndpoints() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	port0 := cluster.CalculatePort(0, cluster.DefaultPortBase, cluster.ClientFacingPortOffset)
-	port1 := cluster.CalculatePort(1, cluster.DefaultPortBase, cluster.ClientFacingPortOffset)
-	return fmt.Sprintf("0=%s:%d,1=%s:%d", hosts[0], port0, hosts[1], port1), nil
+	return formatMixedIngressEndpoints(hosts[:2]), nil
 }
 
 // MixedComposeEgressChannel advertises the compose member-2 / aeronmd address.
@@ -471,11 +526,24 @@ func MixedComposeEgressChannel() (string, error) {
 // Returns an error when:
 //   - MixedComposeHostnames fails
 func MixedComposeReplicationChannel() (string, error) {
+	return mixedComposeGoMemberUDPEndpoint(0)
+}
+
+func formatMixedIngressEndpoints(hosts []string) string {
+	return client.FormatIngressEndpointsFromHostnames(
+		hosts,
+		cluster.DefaultPortBase,
+		cluster.PortsPerNode,
+		cluster.ClientFacingPortOffset,
+	)
+}
+
+func mixedComposeGoMemberUDPEndpoint(port int) (string, error) {
 	hosts, err := MixedComposeHostnames()
 	if err != nil {
 		return "", err
 	}
-	return UDPChannel + "?endpoint=" + hosts[2] + ":0", nil
+	return UDPChannel + "?endpoint=" + hosts[MixedGoMemberID] + ":" + strconv.Itoa(port), nil
 }
 
 // ServiceProbe is one parsed EchoService service-probe file.
@@ -490,7 +558,7 @@ type ServiceProbe struct {
 //
 // Ownership: the caller owns the returned string.
 func ServiceProbePath(memberID int) string {
-	return MixedBaseDirPrefix + strconv.Itoa(memberID) + "/" + ServiceProbeFilename
+	return mixedMemberProbePath(memberID, ServiceProbeFilename)
 }
 
 // ParseServiceProbe parses key=value lines from an EchoService probe file.
@@ -571,7 +639,7 @@ type SnapshotProbe struct {
 //
 // Ownership: the caller owns the returned string.
 func SnapshotProbePath(memberID int) string {
-	return MixedBaseDirPrefix + strconv.Itoa(memberID) + "/" + SnapshotProbeFilename
+	return mixedMemberProbePath(memberID, SnapshotProbeFilename)
 }
 
 // ParseSnapshotProbe parses an EchoService snapshot-probe file. The file holds
@@ -612,4 +680,113 @@ func ParseSnapshotProbe(data []byte) (SnapshotProbe, error) {
 		return SnapshotProbe{}, fmt.Errorf("snapshot-probe missing key %q", ServiceProbeKeyLogPosition)
 	}
 	return probe, nil
+}
+
+// SessionProbeEvent is one parsed EchoService session-probe line.
+type SessionProbeEvent struct {
+	Kind      string
+	SessionID int64
+	Principal []byte
+	Payload   []byte
+	Reason    string
+}
+
+// SessionProbePath returns the session-probe path for memberID under
+// MixedBaseDirPrefix.
+func SessionProbePath(memberID int) string {
+	return mixedMemberProbePath(memberID, SessionProbeFilename)
+}
+
+func mixedMemberProbePath(memberID int, filename string) string {
+	return MixedBaseDirPrefix + strconv.Itoa(memberID) + "/" + filename
+}
+
+// ParseSessionProbe parses EchoService session-probe lines.
+//
+// Behaviour: ParseSessionProbe turns each newline-terminated line into one
+// SessionProbeEvent. ParseSessionProbe ignores a final line without a
+// newline. That line can be a partial write. ParseSessionProbe returns a nil
+// slice when data holds no complete line.
+//
+// Ownership: the caller owns the returned slice and its byte fields.
+//
+// Returns an error when:
+//   - a complete line does not hold three fields
+//   - the kind is not open, message, or close
+//   - a field lacks its key= prefix
+//   - session is not an integer
+//   - principal or payload is not hex
+func ParseSessionProbe(data []byte) ([]SessionProbeEvent, error) {
+	parts := strings.Split(string(data), "\n")
+	complete := parts[:len(parts)-1]
+	if len(complete) == 0 {
+		return nil, nil
+	}
+
+	events := make([]SessionProbeEvent, 0, len(complete))
+	for i, line := range complete {
+		event, err := parseSessionProbeLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("session-probe line %d: %w", i+1, err)
+		}
+		events = append(events, event)
+	}
+
+	return events, nil
+}
+
+func parseSessionProbeLine(line string) (SessionProbeEvent, error) {
+	fields := strings.Fields(line)
+	if len(fields) != 3 {
+		return SessionProbeEvent{}, fmt.Errorf("want 3 fields, got %q", line)
+	}
+
+	sessionRaw, err := cutSessionProbeField(line, fields[1], "session")
+	if err != nil {
+		return SessionProbeEvent{}, err
+	}
+
+	sessionID, err := strconv.ParseInt(sessionRaw, 10, 64)
+	if err != nil {
+		return SessionProbeEvent{}, fmt.Errorf("session: %w", err)
+	}
+
+	event := SessionProbeEvent{Kind: fields[0], SessionID: sessionID}
+
+	switch fields[0] {
+	case SessionProbeKindOpen:
+		event.Principal, err = cutSessionProbeHex(line, fields[2], "principal")
+	case SessionProbeKindMessage:
+		event.Payload, err = cutSessionProbeHex(line, fields[2], "payload")
+	case SessionProbeKindClose:
+		event.Reason, err = cutSessionProbeField(line, fields[2], "reason")
+	default:
+		return SessionProbeEvent{}, fmt.Errorf("unknown kind %q", fields[0])
+	}
+
+	if err != nil {
+		return SessionProbeEvent{}, err
+	}
+	return event, nil
+}
+
+func cutSessionProbeField(line, field, key string) (string, error) {
+	raw, ok := strings.CutPrefix(field, key+"=")
+	if !ok {
+		return "", fmt.Errorf("%s field, got %q", key, line)
+	}
+	return raw, nil
+}
+
+func cutSessionProbeHex(line, field, key string) ([]byte, error) {
+	raw, err := cutSessionProbeField(line, field, key)
+	if err != nil || raw == "" {
+		return nil, err
+	}
+
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return decoded, nil
 }

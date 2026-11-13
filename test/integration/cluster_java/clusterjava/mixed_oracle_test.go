@@ -156,6 +156,22 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: "cluster mixed requires docker compose; run make " +
 				"smoke-cluster-mixed-unappointed-go-majority",
 		},
+		{
+			name: "MixedComposeGoLeaderJavaClientEnvKey",
+			got:  clusterjava.MixedComposeGoLeaderJavaClientEnvKey,
+			want: "LUAS_CLUSTER_MIXED_GO_LEADER_JAVA_CLIENT_COMPOSE",
+		},
+		{
+			name: "MixedSmokeNameGoLeaderJavaClient",
+			got:  clusterjava.MixedSmokeNameGoLeaderJavaClient,
+			want: "TestClusterMixedGoLeaderJavaClient",
+		},
+		{
+			name: "MixedComposeSkipHintGoLeaderJavaClient",
+			got:  clusterjava.MixedComposeSkipHintGoLeaderJavaClient,
+			want: "cluster mixed requires docker compose; run make " +
+				"smoke-cluster-mixed-go-leader-java-client",
+		},
 		{name: "PortBase", got: clusterjava.PortBase, want: 9000},
 		{name: "MixedMemberCount", got: clusterjava.MixedMemberCount, want: 3},
 		{name: "MixedGoMemberID", got: clusterjava.MixedGoMemberID, want: int32(2)},
@@ -248,6 +264,26 @@ func TestMixedHarnessConstants(t *testing.T) {
 			want: "snapshot-probe",
 		},
 		{
+			name: "SessionProbeFilename",
+			got:  clusterjava.SessionProbeFilename,
+			want: "session-probe",
+		},
+		{
+			name: "SessionProbeKindOpen",
+			got:  clusterjava.SessionProbeKindOpen,
+			want: "open",
+		},
+		{
+			name: "SessionProbeKindMessage",
+			got:  clusterjava.SessionProbeKindMessage,
+			want: "message",
+		},
+		{
+			name: "SessionProbeKindClose",
+			got:  clusterjava.SessionProbeKindClose,
+			want: "close",
+		},
+		{
 			name: "ServiceProbeKeyTerm",
 			got:  clusterjava.ServiceProbeKeyTerm,
 			want: "term",
@@ -313,6 +349,11 @@ func TestMixedHarnessConstants(t *testing.T) {
 			name: "MixedTestTimeoutGoLeader",
 			got:  clusterjava.MixedTestTimeoutGoLeader,
 			want: 140 * time.Second,
+		},
+		{
+			name: "MixedTestTimeoutGoLeaderJavaClient",
+			got:  clusterjava.MixedTestTimeoutGoLeaderJavaClient,
+			want: 180 * time.Second,
 		},
 		{
 			name: "MixedRejoinStartupCanvassTimeout",
@@ -549,6 +590,29 @@ func TestMixedRequiredSmoke(t *testing.T) {
 			},
 			wantName: clusterjava.MixedSmokeNameUnappointedJavaMajority,
 		},
+		{
+			name: "goLeaderJavaClientOne",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderJavaClientEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderJavaClient,
+		},
+		{
+			name: "goLeaderJavaClientWithGoLeaderZero",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey:           "0",
+				clusterjava.MixedComposeGoLeaderJavaClientEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeaderJavaClient,
+		},
+		{
+			name: "goLeaderBeforeJavaClient",
+			env: map[string]string{
+				clusterjava.MixedComposeGoLeaderEnvKey:           "1",
+				clusterjava.MixedComposeGoLeaderJavaClientEnvKey: "1",
+			},
+			wantName: clusterjava.MixedSmokeNameGoLeader,
+		},
 	}
 
 	for _, tt := range tests {
@@ -752,6 +816,26 @@ func TestMixedComposeIngressAndEgress_useEnvHosts(t *testing.T) {
 	egress, err := clusterjava.MixedComposeEgressChannel()
 	require.NoError(t, err)
 	require.Equal(t, "aeron:udp?endpoint=172.30.9.12:0|term-length=64k", egress)
+
+	clientIngress, err := clusterjava.MixedComposeClientIngressEndpoints()
+	require.NoError(t, err)
+	require.Equal(t, "0=172.30.9.10:9002,1=172.30.9.11:9102,2=172.30.9.12:9202", clientIngress)
+
+	clientEgress, err := clusterjava.MixedComposeClientEgressChannel()
+	require.NoError(t, err)
+	require.Equal(t, "aeron:udp?endpoint=172.30.9.12:9006", clientEgress)
+}
+
+func TestMixedComposeClientEndpoints_defaultsWithoutEnv(t *testing.T) {
+	t.Setenv(clusterjava.MixedHostnamesEnvKey, "")
+
+	ingress, err := clusterjava.MixedComposeClientIngressEndpoints()
+	require.NoError(t, err)
+	require.Equal(t, "0=172.30.0.10:9002,1=172.30.0.11:9102,2=172.30.0.12:9202", ingress)
+
+	egress, err := clusterjava.MixedComposeClientEgressChannel()
+	require.NoError(t, err)
+	require.Equal(t, "aeron:udp?endpoint=172.30.0.12:9006", egress)
 }
 
 func TestMixedComposeIngressAndEgress_rejectBadEnv(t *testing.T) {
@@ -762,6 +846,10 @@ func TestMixedComposeIngressAndEgress_rejectBadEnv(t *testing.T) {
 	_, err = clusterjava.MixedComposeEgressChannel()
 	require.Error(t, err)
 	_, err = clusterjava.MixedComposeClusterMembers("")
+	require.Error(t, err)
+	_, err = clusterjava.MixedComposeClientIngressEndpoints()
+	require.Error(t, err)
+	_, err = clusterjava.MixedComposeClientEgressChannel()
 	require.Error(t, err)
 }
 
@@ -834,6 +922,15 @@ func TestMixedStackedBudgets_fitInsideTestTimeout(t *testing.T) {
 		2*clusterjava.MixedCommitBudget
 	require.Equal(t, 90*time.Second, stackedUnappointed)
 	require.Less(t, stackedUnappointed, clusterjava.MixedTestTimeoutUnappointed)
+
+	// The two MixedElectionBudget terms cover the election and the service term start.
+	// The three MixedCommitBudget terms cover the session open, messages, and close.
+	stackedGoLeaderJavaClient := clusterjava.MixedStartupBudget +
+		2*clusterjava.MixedElectionBudget +
+		clusterjava.MixedConnectBudget +
+		3*clusterjava.MixedCommitBudget
+	require.Equal(t, 150*time.Second, stackedGoLeaderJavaClient)
+	require.Less(t, stackedGoLeaderJavaClient, clusterjava.MixedTestTimeoutGoLeaderJavaClient)
 }
 
 func TestSnapshotProbePath_underMemberBaseDir(t *testing.T) {
@@ -1015,6 +1112,134 @@ func TestParseServiceProbe_rejectMatrix(t *testing.T) {
 			require.Contains(t, err.Error(), tt.wantSub)
 		})
 	}
+}
+
+func TestParseSessionProbe(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		want    []clusterjava.SessionProbeEvent
+		wantErr string
+	}{
+		{
+			name: "open",
+			data: "open session=7 principal=0abc\n",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindOpen,
+				SessionID: 7,
+				Principal: []byte{0x0a, 0xbc},
+			}},
+		},
+		{
+			name: "message",
+			data: "message session=7 payload=6a632d31\n",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindMessage,
+				SessionID: 7,
+				Payload:   []byte("jc-1"),
+			}},
+		},
+		{
+			name: "close",
+			data: "close session=7 reason=CLIENT_ACTION\n",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindClose,
+				SessionID: 7,
+				Reason:    "CLIENT_ACTION",
+			}},
+		},
+		{
+			name: "hexFields",
+			data: "open session=1 principal=00ff\n" +
+				"message session=1 payload=0001\n" +
+				"close session=1 reason=TIMEOUT\n",
+			want: []clusterjava.SessionProbeEvent{
+				{
+					Kind:      clusterjava.SessionProbeKindOpen,
+					SessionID: 1,
+					Principal: []byte{0x00, 0xff},
+				},
+				{
+					Kind:      clusterjava.SessionProbeKindMessage,
+					SessionID: 1,
+					Payload:   []byte{0x00, 0x01},
+				},
+				{
+					Kind:      clusterjava.SessionProbeKindClose,
+					SessionID: 1,
+					Reason:    "TIMEOUT",
+				},
+			},
+		},
+		{
+			name: "emptyPrincipal",
+			data: "open session=4 principal=\n",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindOpen,
+				SessionID: 4,
+			}},
+		},
+		{
+			name: "upperHex",
+			data: "message session=2 payload=0ABC\n",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindMessage,
+				SessionID: 2,
+				Payload:   []byte{0x0a, 0xbc},
+			}},
+		},
+		{
+			name: "partialFinalLine",
+			data: "open session=7 principal=0abc\nmessage session=7 payload=6a",
+			want: []clusterjava.SessionProbeEvent{{
+				Kind:      clusterjava.SessionProbeKindOpen,
+				SessionID: 7,
+				Principal: []byte{0x0a, 0xbc},
+			}},
+		},
+		{
+			name: "partialOnly",
+			data: "open session=7 principal=0a",
+		},
+		{
+			name:    "malformedLine",
+			data:    "not-a-probe-line\n",
+			wantErr: "session-probe",
+		},
+		{
+			name:    "badHex",
+			data:    "open session=1 principal=zz\n",
+			wantErr: "session-probe",
+		},
+		{
+			name:    "badSession",
+			data:    "close session=nope reason=CLIENT_ACTION\n",
+			wantErr: "session-probe",
+		},
+		{
+			name:    "emptyCompleteLine",
+			data:    "open session=1 principal=aa\n\n",
+			wantErr: "session-probe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := clusterjava.ParseSessionProbe([]byte(tt.data))
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSessionProbePath_underMemberBaseDir(t *testing.T) {
+	require.Equal(t, "/tmp/luas-cluster-0/session-probe", clusterjava.SessionProbePath(0))
+	require.Equal(t, "/tmp/luas-cluster-1/session-probe", clusterjava.SessionProbePath(1))
 }
 
 // TestMixedAppVersion_matchesJavaMajor asserts Go DefaultElectionConfig AppVersion
