@@ -138,10 +138,7 @@ Partial:
 - Reusing the id of a timer that has fired carries the same risk. A follower
   may drop the new schedule, so the timer never fires once that follower
   becomes leader.
-- Cluster time unit is always nanoseconds; Java members of a mixed cluster need
-  a nanosecond cluster clock.
-- Mixed Java/Go clusters: only a cold start with an appointed leader is
-  supported.
+- Cluster time unit is always nanoseconds.
 - Node control toggle: the module ignores REPLICATE_STANDBY_SNAPSHOT and
   VALIDATE_RECORDING_LOG.
 
