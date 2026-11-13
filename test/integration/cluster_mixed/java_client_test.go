@@ -168,6 +168,7 @@ func awaitMixedJavaClientMessages(
 	seenBefore := len(events.seen)
 	events.client.Send(mixedJavaClientMessageCount)
 	want := wantSessionProbe(sessionID, payloads, false)
+	wantLast := strconv.Itoa(mixedJavaClientMessageCount)
 	var commitTarget int64
 
 	start := time.Now()
@@ -177,7 +178,7 @@ func awaitMixedJavaClientMessages(
 		if !saw {
 			return false
 		}
-		if sent.Fields["first"] != "1" || sent.Fields["last"] != strconv.Itoa(mixedJavaClientMessageCount) {
+		if sent.Fields["first"] != "1" || sent.Fields["last"] != wantLast {
 			events.fail("SENT " + sent.Line)
 		}
 		if !mixedJavaFollowerProbesMatch(events, want) {
