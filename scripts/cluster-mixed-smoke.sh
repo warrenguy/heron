@@ -31,6 +31,7 @@ OVERLAYS=(
 	go-leader-snapshot
 	unappointed-java-majority
 	unappointed-go-majority
+	go-leader-java-client
 )
 OCTET_SPAN=$((254 / ${#OVERLAYS[@]}))
 
@@ -100,6 +101,14 @@ unappointed-java-majority)
 	;;
 unappointed-go-majority)
 	SMOKE_NAME="TestClusterMixedUnappointedGoMajority"
+	;;
+go-leader-java-client)
+	OVERLAY_FILES=(
+		"${COMPOSE_DIR}/compose.go-leader.yaml"
+		"${COMPOSE_DIR}/compose.java-client.yaml"
+	)
+	SMOKE_NAME="TestClusterMixedGoLeaderJavaClient"
+	OUTER_TIMEOUT_S=190
 	;;
 *)
 	usage

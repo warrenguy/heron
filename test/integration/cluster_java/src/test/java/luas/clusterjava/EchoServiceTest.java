@@ -3,6 +3,7 @@ package luas.clusterjava;
 import io.aeron.Aeron;
 import io.aeron.DirectBufferVector;
 import io.aeron.Publication;
+import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredServiceContainer;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EchoServiceTest {
@@ -189,17 +191,7 @@ class EchoServiceTest {
     void writeServiceProbe_logsWhenWriteFails(@TempDir final Path tempDir) throws IOException {
         // baseDir is a regular file. Probe tmp write must fail.
         final Path baseFile = tempDir.resolve("blocked-base");
-        Files.writeString(baseFile, "not-a-directory", StandardCharsets.US_ASCII);
-        final Path clusterDir = baseFile.resolve(ClusterConfig.CLUSTER_SUB_DIR);
-
-        final EchoService service = new EchoService();
-        service.onStart(
-            ProbeCluster.withClusterDir(
-                NoOpIdleStrategy.INSTANCE,
-                0,
-                Cluster.Role.FOLLOWER,
-                clusterDir.toFile()),
-            null);
+        final EchoService service = startedWithBlockedBaseDir(baseFile);
 
         final String stderr = ClusterNodeTest.captureStderr(
             () -> service.writeServiceProbe(1L, 0L));
@@ -227,6 +219,70 @@ class EchoServiceTest {
                 StandardCharsets.US_ASCII));
     }
 
+    @Test
+    void onSessionMessage_appendsPayloadLineBeforeOffer(@TempDir final Path tempDir) throws IOException {
+        final byte[] inbound = { 9, 0x61, 0x62, 7 };
+        final EchoService service = startedWithClusterDir(tempDir, 0, Cluster.Role.FOLLOWER);
+        final RecordingClientSession session = new RecordingClientSession(4L, new byte[0]);
+
+        final IllegalStateException ex = assertThrows(
+            IllegalStateException.class,
+            () -> service.onSessionMessage(session, 0L, new UnsafeBuffer(inbound), 1, 2, null));
+
+        assertEquals("unexpected offer call 1", ex.getMessage());
+        assertEquals(
+            ClusterConstants.SESSION_PROBE_KIND_MESSAGE + " session=4 payload=6162\n",
+            readSessionProbe(tempDir));
+    }
+
+    @Test
+    void sessionProbe_appendsOpenMessagesAndClose(@TempDir final Path tempDir) throws IOException {
+        final byte[] principal = { 0x00, (byte) 0xff };
+        final byte[] first = { 'j', 'c', '-', '1' };
+        final byte[] second = { 'j', 'c', '-', '2' };
+        final EchoService service = startedWithClusterDir(tempDir, 0, Cluster.Role.LEADER);
+        final RecordingClientSession session = new RecordingClientSession(3L, principal, 1L, 1L);
+
+        service.onSessionOpen(session, 1L);
+        service.onSessionMessage(session, 2L, new UnsafeBuffer(first), 0, first.length, null);
+        service.onSessionMessage(session, 3L, new UnsafeBuffer(second), 0, second.length, null);
+        service.onSessionClose(session, 4L, CloseReason.TIMEOUT);
+
+        assertEquals(
+            ClusterConstants.SESSION_PROBE_KIND_OPEN + " session=3 principal=00ff\n"
+                + ClusterConstants.SESSION_PROBE_KIND_MESSAGE + " session=3 payload=6a632d31\n"
+                + ClusterConstants.SESSION_PROBE_KIND_MESSAGE + " session=3 payload=6a632d32\n"
+                + ClusterConstants.SESSION_PROBE_KIND_CLOSE + " session=3 reason=TIMEOUT\n",
+            readSessionProbe(tempDir));
+        assertFalse(Files.exists(tempDir.resolve(ClusterConstants.SESSION_PROBE_FILENAME + ".tmp")));
+        assertEquals(2, session.offerCount());
+    }
+
+    @Test
+    void onSessionMessage_logsWhenSessionProbeWriteFailsAndStillOffers(@TempDir final Path tempDir)
+        throws IOException
+    {
+        final Path baseFile = tempDir.resolve("blocked-base");
+        final EchoService service = startedWithBlockedBaseDir(baseFile);
+        final RecordingClientSession session = new RecordingClientSession(1L);
+        final byte[] inbound = { 5, 6 };
+
+        final String stderr = ClusterNodeTest.captureStderr(
+            () -> service.onSessionMessage(session, 0L, new UnsafeBuffer(inbound), 0, inbound.length, null));
+
+        assertTrue(
+            stderr.startsWith(EchoService.SESSION_PROBE_WRITE_FAILED_PREFIX),
+            "stderr=" + stderr);
+        assertEquals(1, session.offerCount());
+        assertFalse(Files.exists(baseFile.resolve(ClusterConstants.SESSION_PROBE_FILENAME)));
+    }
+
+    private static String readSessionProbe(final Path tempDir) throws IOException {
+        return Files.readString(
+            tempDir.resolve(ClusterConstants.SESSION_PROBE_FILENAME),
+            StandardCharsets.US_ASCII);
+    }
+
     private static EchoService newStartedEchoService() {
         final EchoService service = new EchoService();
         service.onStart(clusterWithIdleStrategy(NoOpIdleStrategy.INSTANCE), null);
@@ -240,6 +296,19 @@ class EchoServiceTest {
     {
         final EchoService service = new EchoService();
         service.onStart(newProbeCluster(tempDir, memberId, role, 0L), null);
+        return service;
+    }
+
+    private static EchoService startedWithBlockedBaseDir(final Path baseFile) throws IOException {
+        Files.writeString(baseFile, "not-a-directory", StandardCharsets.US_ASCII);
+        final EchoService service = new EchoService();
+        service.onStart(
+            ProbeCluster.withClusterDir(
+                NoOpIdleStrategy.INSTANCE,
+                0,
+                Cluster.Role.FOLLOWER,
+                baseFile.resolve(ClusterConfig.CLUSTER_SUB_DIR).toFile()),
+            null);
         return service;
     }
 
@@ -415,6 +484,8 @@ class EchoServiceTest {
     }
 
     private static final class RecordingClientSession implements ClientSession {
+        private final long sessionId;
+        private final byte[] principal;
         private final long[] offerResults;
         private int offerCount;
         private DirectBuffer lastBuffer;
@@ -422,6 +493,16 @@ class EchoServiceTest {
         private int lastLength;
 
         private RecordingClientSession(final long... offerResults) {
+            this(1L, new byte[0], offerResults);
+        }
+
+        private RecordingClientSession(
+            final long sessionId,
+            final byte[] principal,
+            final long... offerResults)
+        {
+            this.sessionId = sessionId;
+            this.principal = principal;
             this.offerResults = offerResults;
         }
 
@@ -458,7 +539,7 @@ class EchoServiceTest {
 
         @Override
         public long id() {
-            return 1L;
+            return sessionId;
         }
 
         @Override
@@ -473,7 +554,7 @@ class EchoServiceTest {
 
         @Override
         public byte[] encodedPrincipal() {
-            return new byte[0];
+            return principal.clone();
         }
 
         @Override

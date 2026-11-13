@@ -1,0 +1,15 @@
+# Overlay: Java client sessions under the Go appointed leader.
+# Use with: docker compose -f compose.yaml -f compose.go-leader.yaml \
+#   -f compose.java-client.yaml
+#
+# A separate image tag keeps this build from overwriting cluster-mixed-go.
+
+services:
+  go:
+    image: cluster-mixed-go-java-client
+    build:
+      target: java-client-runtime
+    command: ["-test.timeout=180s", "-test.run", "^TestClusterMixedGoLeaderJavaClient$$"]
+    environment:
+      LUAS_CLUSTER_MIXED_GO_LEADER_COMPOSE: "0"
+      LUAS_CLUSTER_MIXED_GO_LEADER_JAVA_CLIENT_COMPOSE: "1"
