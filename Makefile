@@ -35,6 +35,7 @@ COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 	-args -test.gocoverdir=$(COVERAGE_ROOT)/$(COVERAGE_SLICE),)
 
 GO_MODULE := github.com/warrenguy/luas
+GO_TOOL := go tool -modfile=tools/go.mod
 GO_TEST_PKGS := ./...
 # Conductor cross-package test hooks (test_hooks.go, hook_access.go).
 export UNIT_TEST_TAGS := testhooks
@@ -88,6 +89,7 @@ help: ## List Makefile targets
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
 .PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
+	check-go-mod \
 	check-sbe-stale \
 	check-sbe-stale-archive \
 	check-sbe-stale-nodestate \
@@ -112,7 +114,7 @@ check-static-extra:
 		check-sbe-stale-archive \
 		check-sbe-stale-nodestate
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions \
-		contract-oracles test-golden-fixtures-unit
+		contract-oracles test-golden-fixtures-unit check-go-mod
 
 check-test:
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress test-norace check-examples
@@ -125,6 +127,19 @@ test-all: ## Full suite: check rapid integration cluster-archive smokes
 
 check-aeron-versions:
 	@scripts/check-aeron-versions.sh
+
+check-go-mod: ## Fail when go.mod lists a tool or either module needs a tidy
+	@tools="$$(go list tool 2>/dev/null)" && test -z "$${tools}" || { \
+		echo "luas: go.mod lists a tool; move it to tools/go.mod" >&2; \
+		exit 1; \
+	}
+	go mod tidy -diff
+	go -C tools mod tidy -diff
+
+.PHONY: tools-update
+tools-update: ## Upgrade every dev tool in tools/go.mod to latest
+	go -C tools get tool
+	go -C tools mod tidy
 
 # $(1)=target suffix (empty, -archive, or -nodestate), $(2)=help label, $(3)=generate-sbe.sh arg
 define sbe-generate-target
@@ -195,8 +210,8 @@ lint: ## golangci-lint and shellcheck
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) lint-golangci lint-shell
 
 lint-golangci:
-	go tool golangci-lint run $(GO_TEST_PKGS)
-	go tool golangci-lint run --build-tags=$(INTEGRATION_LINT_TAGS) \
+	$(GO_TOOL) golangci-lint run $(GO_TEST_PKGS)
+	$(GO_TOOL) golangci-lint run --build-tags=$(INTEGRATION_LINT_TAGS) \
 		./test/integration/...
 
 lint-shell:
@@ -212,10 +227,10 @@ lint-shell:
 	shellcheck $(SHELL_SCRIPTS)
 
 goimports: ## goimports on non-generated Go sources
-	go tool goimports -local $(GO_MODULE) -w $(GO_SOURCES)
+	$(GO_TOOL) goimports -local $(GO_MODULE) -w $(GO_SOURCES)
 
 gofumpt: goimports ## gofumpt after goimports
-	go tool gofumpt -extra -w $(GO_SOURCES)
+	$(GO_TOOL) gofumpt -extra -w $(GO_SOURCES)
 
 .PHONY: fuzz fuzz-list
 # go test -fuzz must match exactly one Fuzz* per invocation.

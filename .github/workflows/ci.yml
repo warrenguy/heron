@@ -24,7 +24,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/golangci-lint
-          key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
+          key: golangci-${{ runner.os }}-${{ env.GOARCH }}-${{ hashFiles('.golangci.yml', 'go.sum', 'tools/go.sum') }}
           restore-keys: |
             golangci-${{ runner.os }}-${{ env.GOARCH }}-
 

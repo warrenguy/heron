@@ -46,6 +46,17 @@ SBE tool and Aeron C media driver are pinned in [`specs/versions.yaml`](specs/ve
 `aeron.commit` is the commit the `aeron.ref` tag resolves to.
 `sbe_tool.sha256` is the sha256 of the sbe-all JAR; a fetch with a stale pin prints the actual hash.
 
+Dev tools live in `tools/go.mod`. Dependabot version updates skip them.
+`make tools-update` upgrades every tool to latest.
+To add a tool or pin a version, run:
+
+```bash
+go -C tools get [-tool] <package>@<version>
+go -C tools mod tidy
+```
+
+Pass `-tool` for a tool package; omit it for any other requirement.
+
 ## Tests
 
 `make help` lists every target with a one-line description, including the
