@@ -32,10 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup
 
       - name: Benchmark baseline
         run: make bench-baseline
@@ -65,10 +62,7 @@ jobs:
           path: .bench
           fail-on-cache-miss: false
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup
 
       # Cache is a fast path. On a miss, generate a baseline from the PR base.
       - name: Ensure baseline

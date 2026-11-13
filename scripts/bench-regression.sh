@@ -180,12 +180,12 @@ NEW_CPU="$(bench_cpus "${NEW}")"
 echo "bench-regression: baseline cpu: ${BASELINE_CPU}" >&2
 echo "bench-regression: current cpu: ${NEW_CPU}" >&2
 echo "bench-regression: vs ${BASELINE}" >&2
-if ! go tool benchstat -format csv -ignore=cpu \
+if ! go tool -modfile=tools/go.mod benchstat -format csv -ignore=cpu \
 	"${BASELINE}" "${NEW}" >"${REPORT}"
 then
 	benchstat_fail
 fi
-if ! go tool benchstat -ignore=cpu "${BASELINE}" "${NEW}" >"${BENCHSTAT_TEXT}"
+if ! go tool -modfile=tools/go.mod benchstat -ignore=cpu "${BASELINE}" "${NEW}" >"${BENCHSTAT_TEXT}"
 then
 	benchstat_fail
 fi

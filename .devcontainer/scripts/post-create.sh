@@ -14,11 +14,12 @@ go version | grep -qE "go${GO_MINOR//./\\.}\\." || {
 go mod download &
 download_pid=$!
 
-go tool -n golangci-lint >/dev/null &
+go_tool=(go tool -modfile=tools/go.mod)
+"${go_tool[@]}" -n golangci-lint >/dev/null &
 lint_pid=$!
-go tool -n goimports >/dev/null &
+"${go_tool[@]}" -n goimports >/dev/null &
 imports_pid=$!
-go tool -n gofumpt >/dev/null &
+"${go_tool[@]}" -n gofumpt >/dev/null &
 fumpt_pid=$!
 
 command -v shellcheck >/dev/null || {

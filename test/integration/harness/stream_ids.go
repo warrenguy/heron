@@ -8,7 +8,7 @@ package harness
 // binary. Duplicate IDs on one shared aeronmd cause cross-test IPC interference
 // under t.Parallel. Add a new constant rather than reusing an existing one.
 //
-//go:generate go tool constnamemap-gen -source=stream_ids.go -output=stream_ids_registry_test.go -package=harness -build=integration -var=sharedDriverStreamIDs -valuetype=int32 -suffix=StreamID -doc "sharedDriverStreamIDs lists every named stream ID constant in stream_ids.go consumed by parallel Shared(t) tests." -doc "Regenerate via go generate -tags=integration ./test/integration/harness/."
+//go:generate go tool -modfile=../../../tools/go.mod constnamemap-gen -source=stream_ids.go -output=stream_ids_registry_test.go -package=harness -build=integration -var=sharedDriverStreamIDs -valuetype=int32 -suffix=StreamID -doc "sharedDriverStreamIDs lists every named stream ID constant in stream_ids.go consumed by parallel Shared(t) tests." -doc "Regenerate via go generate -tags=integration ./test/integration/harness/."
 const (
 	ChannelStatusCounterStreamID      int32 = 1001
 	PubSubRoundtripStreamID           int32 = 1007

@@ -22,6 +22,7 @@ runs:
         cache: true
         cache-dependency-path: |
           go.sum
+          tools/go.sum
           .go-arch-cache-marker
 
     - if: inputs.java == 'true'
