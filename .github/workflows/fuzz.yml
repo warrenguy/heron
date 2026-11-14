@@ -6,10 +6,6 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths:
-      - .github/workflows/fuzz.yml
-      - Makefile
-      - "**/*_fuzz_test.go"
 
 permissions:
   contents: read
@@ -27,16 +23,35 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
+      run: ${{ steps.changes.outputs.run }}
       matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
-      - uses: actions/setup-go@v7
+      # A PR run fuzzes only when the PR changes the workflow, the Makefile, or a fuzz file.
+      - name: Detect fuzz changes
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "${EVENT}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- \
+            .github/workflows/fuzz.yml Makefile ':(glob)**/*_fuzz_test.go'; then
+            run=false
+          fi
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+
+      - if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
 
       - name: List fuzz targets
+        if: steps.changes.outputs.run == 'true'
         id: list
         run: |
           set -euo pipefail
@@ -47,6 +62,7 @@ jobs:
 
   fuzz:
     needs: targets
+    if: needs.targets.outputs.run == 'true'
     name: fuzz ${{ matrix.pkg }} ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 42 }}
@@ -109,3 +125,19 @@ jobs:
           path: ${{ runner.temp }}/fuzz-crashers/
           if-no-files-found: ignore
           retention-days: 30
+
+  fuzz-ok:
+    if: always()
+    needs: [targets, fuzz]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fuzz jobs passed
+        env:
+          TARGETS: ${{ needs.targets.result }}
+          FUZZ: ${{ needs.fuzz.result }}
+        run: |
+          source .github/scripts/require-job-result.sh
+          require_job targets "${TARGETS}"
+          require_job fuzz "${FUZZ}" true
+          require_jobs_exit "fuzz jobs passed"

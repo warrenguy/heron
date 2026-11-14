@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by ci-ok and bench-ok to fail closed when required jobs did not succeed.
+# Sourced by ci-ok, bench-ok, and fuzz-ok to fail closed when required jobs did not succeed.
 set -euo pipefail
 
 REQUIRE_JOB_FAILED=0
