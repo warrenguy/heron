@@ -40,8 +40,8 @@ jobs:
         with:
           java: true
 
-      - name: Contract oracles and stale checks
-        run: make check-static-extra
+      - name: Drift checks and contract oracles
+        run: make check-drift check-oracles
 
   unit:
     strategy: &go-matrix

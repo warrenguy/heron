@@ -70,7 +70,7 @@ FUZZ_TIME ?= 45s
 # Shrink budget per new corpus entry and crasher.
 # A short budget returns workers to mutation sooner.
 FUZZ_MINIMIZE_TIME ?= 2s
-# Wall-clock cap for full check (check-static + unit + stress).
+# Wall-clock cap for make check.
 CHECK_TIMEOUT ?= 5m
 
 .PHONY: help
@@ -88,7 +88,7 @@ help: ## List Makefile targets
 	@echo "Golden fixtures (mvn only): test-golden-fixtures-unit"
 
 # Without GNU timeout/gtimeout on PATH, CHECK_TIMEOUT is not enforced; TEST_TIMEOUT still applies.
-.PHONY: check check-inner check-static check-static-extra check-test check-aeron-versions \
+.PHONY: check check-inner check-drift check-oracles check-test check-aeron-versions \
 	check-go-mod \
 	check-public-packages \
 	check-sbe-stale \
@@ -98,7 +98,7 @@ help: ## List Makefile targets
 	node-state-fixtures-regen recovery-state-key-fixtures-regen \
 	archive-sbe-catalog-regen
 
-check: ## Lint pins unit stress norace examples contract-oracles (needs java + mvn)
+check: ## Lint, drift, oracle and test checks (needs java + mvn)
 	@T=$$(command -v timeout 2>/dev/null \
 		|| command -v gtimeout 2>/dev/null); \
 	if [ -n "$$T" ]; then \
@@ -107,20 +107,27 @@ check: ## Lint pins unit stress norace examples contract-oracles (needs java + m
 		$(MAKE) --no-print-directory check-inner; \
 	fi
 
-check-static: lint check-static-extra
-
-check-static-extra:
+check-drift: ## Generated codecs, Aeron pins, public packages, go.mod (needs java)
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) \
 		check-sbe-stale \
 		check-sbe-stale-archive \
 		check-sbe-stale-nodestate
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) check-aeron-versions check-public-packages \
-		contract-oracles test-golden-fixtures-unit check-go-mod
+		check-go-mod
 
-check-test:
+check-oracles: ## Contract oracles and golden fixtures (needs java + mvn)
+	+@$(MAKE) --no-print-directory $(SUBMAKE_J3) contract-oracles test-golden-fixtures-unit
+
+check-test: ## Unit, stress, norace and example tests
 	+@$(MAKE) --no-print-directory $(SUBMAKE_J2) test test-stress test-norace check-examples
 
-check-inner: check-static check-test
+CHECK_STEPS := lint check-drift check-oracles check-test
+
+# Runs in order. check-drift rewrites the generated codecs that later steps compile.
+check-inner:
+	+@for step in $(CHECK_STEPS); do \
+		$(MAKE) --no-print-directory $${step} || exit 1; \
+	done
 
 .PHONY: test-all
 test-all: ## Full suite: check rapid integration cluster-archive smokes
